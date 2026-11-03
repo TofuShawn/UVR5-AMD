@@ -1,0 +1,11 @@
+# local virtualenv (py -3.12, ROCm wheels are cp312-only)
+.venv/
+
+# test harness byproducts
+__pycache__/
+.pytest_cache/
+tests/_artifacts/
+tests/golden/_artifacts/
+
+# agent planning scratch
+.superpowers/
