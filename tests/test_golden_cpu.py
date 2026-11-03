@@ -107,15 +107,17 @@ def test_seperate_attributes_contract_is_derivable():
 
     Guards the guard -- if ``SeperateAttributes.__init__`` is restructured so
     this walk silently finds nothing, the coverage test below would pass on an
-    empty requirement set. ``process_method``/``primary_stem``/``secondary_stem``
-    are read inside the ``if model_data.process_method == ...`` tests
-    themselves, so they belong to every arch's requirement set, not to the
-    unconditional base.
+    empty requirement set. Note that some names (``process_method``,
+    ``primary_stem``, ``secondary_stem``) appear in both the base set and an
+    arch block: they are read unconditionally at ``separate.py:105/120/122``
+    *and* re-read inside the arch blocks, which is why the split is done per
+    statement rather than by subtracting block names from the base.
     """
     always, blocks = _seperate_attributes_contract()
     for arch in APPLY:
         required = _required_attrs(arch)
         assert {"process_method", "model_path", "primary_stem", "secondary_stem"} <= required
+    assert {"process_method", "primary_stem", "secondary_stem"} <= always
     assert {"DENOISER_MODEL", "overlap", "wav_type_set", "device_set"} <= always
     assert {"vr_model_param", "window_size", "aggression_setting"} <= blocks["vr"]
     assert {"demucs_source_map", "segment", "shifts"} <= blocks["demucs"]
