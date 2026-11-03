@@ -60,6 +60,18 @@ CROP_FILE = ARTIFACTS_DIR / "golden_input_30s.wav"
 BASELINE_DIR = ARTIFACTS_DIR / "baseline"
 MANIFEST_FILE = BASELINE_DIR / "manifest.json"
 
+#: The authoritative fingerprint store. Unlike everything under
+#: ``_artifacts/`` (git-ignored, regenerated) this file is **tracked**, and it
+#: is the only thing ``test_pinned_fingerprint_did_not_move`` compares against.
+#: Kept outside ``_artifacts/`` on purpose: a ``git clean`` of the generated
+#: baselines must not be able to take the pins with it.
+PINS_FILE = Path(__file__).resolve().parent / "pins.json"
+
+#: The ONE way the harness is allowed to move a pin or to overwrite a baseline
+#: that disagrees with its pin. ``1`` exactly; anything else means "do not".
+#: See ``runner.should_repin`` / ``runner.write_pins``.
+REPIN_ENV_VAR = "UVR_REPIN"
+
 #: Seed for ``random`` before each separation. demucs/apply.py:220 draws
 #: ``random.randint`` for the "shift trick" (``shifts=2`` is the shipped
 #: default), so an unseeded capture is not repeatable *on the same device*, let

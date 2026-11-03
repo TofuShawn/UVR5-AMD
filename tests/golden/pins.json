@@ -1,0 +1,209 @@
+{
+  "archs_blocked": {
+    "mdx_c": "no MDX-C checkpoint on this machine (model_data/mdx_c_configs yaml only)",
+    "onnx": "out of scope for this harness; Task 6 asserts the DirectML provider",
+    "roformer": "no BS/Mel-Band/Apollo weights on this machine (configs only)"
+  },
+  "archs_covered": [
+    "demucs",
+    "vr"
+  ],
+  "gate": {
+    "expected_repin_drift_class": "1 PCM_16 LSB = 3.0518e-05 per sample",
+    "fingerprint_rule": "sha256 of the PCM_16 WAV container, exact",
+    "metric": "snr_db(reference=pinned_baseline, candidate=rerun)",
+    "threshold_db": 40.0
+  },
+  "identity": {
+    "crop_channels": 2,
+    "crop_frames": 1323000,
+    "crop_sample_rate": 44100,
+    "crop_sha256": "6c56f6b1bc9cb8c8227ac4c736487decd9cbd04c4a88ccbe407bcea234f21e04",
+    "device": "cpu",
+    "gpu_name": "AMD Radeon RX 7900 XTX",
+    "librosa": "1.0.0",
+    "model_root": "F:\\Software\\Ultimate Vocal Remover\\models",
+    "numpy": "2.5.4",
+    "platform": "Windows-11-10.0.26340-SP0",
+    "python": "3.12.0",
+    "random_seed": 20261103,
+    "scipy": "1.18.1",
+    "soundfile": "0.9.0",
+    "torch": "2.9.1+rocm7.2.1",
+    "torch_cuda_available": true,
+    "torch_cuda_version": null,
+    "torch_hip": "7.2.53211-158bd99533"
+  },
+  "pins": {
+    "demucs": {
+      "Bass": {
+        "bytes": 5292044,
+        "duration_seconds": 30.0,
+        "frames": 1323000,
+        "sha256": "aae538221db3030905197fd162a18405dbb7bea2a011d215d89c645941ce9444",
+        "subtype": "PCM_16"
+      },
+      "Drums": {
+        "bytes": 5292044,
+        "duration_seconds": 30.0,
+        "frames": 1323000,
+        "sha256": "d9e4f6f980187dbabc87a846d2f8d4d6aa6533e302c793156cc857d95ce28f5f",
+        "subtype": "PCM_16"
+      },
+      "Other": {
+        "bytes": 5292044,
+        "duration_seconds": 30.0,
+        "frames": 1323000,
+        "sha256": "7770d12f75a9b3b2bb83e82ee65e3508d0843fae769155c441d02e17200b7096",
+        "subtype": "PCM_16"
+      },
+      "Vocals": {
+        "bytes": 5292044,
+        "duration_seconds": 30.0,
+        "frames": 1323000,
+        "sha256": "0deb9eb6b7215a2b89fd22eb6667c4e33c62f8361524fd75d1d5f9cc1ecd4282",
+        "subtype": "PCM_16"
+      }
+    },
+    "vr": {
+      "Instrumental": {
+        "bytes": 5290028,
+        "duration_seconds": 29.988571,
+        "frames": 1322496,
+        "sha256": "e8dd1e461049d8a8f383d9dbd4d2d6fd96d7bc060237eb440f4e3c79461bd5c2",
+        "subtype": "PCM_16"
+      },
+      "Vocals": {
+        "bytes": 5290028,
+        "duration_seconds": 29.988571,
+        "frames": 1322496,
+        "sha256": "aba5607811f260541ff6ae43c18c7e79a594ea3d1335bf4eef5a4273de641cb8",
+        "subtype": "PCM_16"
+      }
+    }
+  },
+  "provenance": {
+    "absorbed_audio_delta": {
+      "demucs": {
+        "Bass": {
+          "changed_fraction": 0.0,
+          "deviation_above_1_pcm16_lsb": false,
+          "frames_equal": true,
+          "max_abs_dev": 0.0,
+          "one_pcm16_lsb": 3.0517578125e-05,
+          "samples_compared": 2646000,
+          "samples_differing": 0,
+          "snr_below_40db_gate": false,
+          "snr_db": null,
+          "snr_is_infinite": true
+        },
+        "Drums": {
+          "changed_fraction": 0.0,
+          "deviation_above_1_pcm16_lsb": false,
+          "frames_equal": true,
+          "max_abs_dev": 0.0,
+          "one_pcm16_lsb": 3.0517578125e-05,
+          "samples_compared": 2646000,
+          "samples_differing": 0,
+          "snr_below_40db_gate": false,
+          "snr_db": null,
+          "snr_is_infinite": true
+        },
+        "Other": {
+          "changed_fraction": 0.0,
+          "deviation_above_1_pcm16_lsb": false,
+          "frames_equal": true,
+          "max_abs_dev": 0.0,
+          "one_pcm16_lsb": 3.0517578125e-05,
+          "samples_compared": 2646000,
+          "samples_differing": 0,
+          "snr_below_40db_gate": false,
+          "snr_db": null,
+          "snr_is_infinite": true
+        },
+        "Vocals": {
+          "changed_fraction": 0.0,
+          "deviation_above_1_pcm16_lsb": false,
+          "frames_equal": true,
+          "max_abs_dev": 0.0,
+          "one_pcm16_lsb": 3.0517578125e-05,
+          "samples_compared": 2646000,
+          "samples_differing": 0,
+          "snr_below_40db_gate": false,
+          "snr_db": null,
+          "snr_is_infinite": true
+        }
+      },
+      "vr": {
+        "Instrumental": {
+          "changed_fraction": 0.0,
+          "deviation_above_1_pcm16_lsb": false,
+          "frames_equal": true,
+          "max_abs_dev": 0.0,
+          "one_pcm16_lsb": 3.0517578125e-05,
+          "samples_compared": 2644992,
+          "samples_differing": 0,
+          "snr_below_40db_gate": false,
+          "snr_db": null,
+          "snr_is_infinite": true
+        },
+        "Vocals": {
+          "changed_fraction": 0.0,
+          "deviation_above_1_pcm16_lsb": false,
+          "frames_equal": true,
+          "max_abs_dev": 0.0,
+          "one_pcm16_lsb": 3.0517578125e-05,
+          "samples_compared": 2644992,
+          "samples_differing": 0,
+          "snr_below_40db_gate": false,
+          "snr_db": null,
+          "snr_is_infinite": true
+        }
+      }
+    },
+    "elapsed_seconds": {
+      "demucs": 54.302,
+      "vr": 8.458
+    },
+    "reason": "explicit operator re-pin (UVR_REPIN=1) for the Task 5 ruling: CPU baselines re-captured with device forced to 'cpu' on the torch wheel this fork ships (2.9.1+rocm7.2.1), so Task 7's gate varies device only, never device + torch version. Lineage: Task 4 pinned torch 2.15.0+cpu (stem shas 01ee2cdfd480, e12c9f904e0a, c9ad85d18ce3, a1e429496cd7, d86869223c88, b15c877ae5f4). The 2.15 -> 2.9.1 move shifted CPU output by exactly 1 PCM_16 LSB on 0.002-0.23% of samples at SNR 53.45-125.88 dB (task-5-report.md section 6.3) and the self-healing fixture that used to read its own manifest as the pin store absorbed it, so the 2.15 WAVs no longer exist on disk; the delta stored beside this note is therefore 2.9.1-vs-2.9.1 and is zero by construction.",
+    "superseded_pins": {
+      "demucs": {
+        "Bass": "aae538221db3030905197fd162a18405dbb7bea2a011d215d89c645941ce9444",
+        "Drums": "d9e4f6f980187dbabc87a846d2f8d4d6aa6533e302c793156cc857d95ce28f5f",
+        "Other": "7770d12f75a9b3b2bb83e82ee65e3508d0843fae769155c441d02e17200b7096",
+        "Vocals": "0deb9eb6b7215a2b89fd22eb6667c4e33c62f8361524fd75d1d5f9cc1ecd4282"
+      },
+      "vr": {
+        "Instrumental": "e8dd1e461049d8a8f383d9dbd4d2d6fd96d7bc060237eb440f4e3c79461bd5c2",
+        "Vocals": "aba5607811f260541ff6ae43c18c7e79a594ea3d1335bf4eef5a4273de641cb8"
+      }
+    },
+    "supersedes": {
+      "identity": {
+        "crop_channels": 2,
+        "crop_frames": 1323000,
+        "crop_sample_rate": 44100,
+        "crop_sha256": "6c56f6b1bc9cb8c8227ac4c736487decd9cbd04c4a88ccbe407bcea234f21e04",
+        "device": "cpu",
+        "gpu_name": "AMD Radeon RX 7900 XTX",
+        "librosa": "1.0.0",
+        "model_root": "F:\\Software\\Ultimate Vocal Remover\\models",
+        "numpy": "2.5.4",
+        "platform": "Windows-11-10.0.26340-SP0",
+        "python": "3.12.0",
+        "random_seed": 20261103,
+        "scipy": "1.18.1",
+        "soundfile": "0.9.0",
+        "torch": "2.9.1+rocm7.2.1",
+        "torch_cuda_available": true,
+        "torch_cuda_version": null,
+        "torch_hip": "7.2.53211-158bd99533"
+      },
+      "reason": "explicit operator re-pin (UVR_REPIN=1): baselines re-captured with device forced to cpu under the torch wheel this fork ships, so Task 7's only variable is device and not device + torch version.",
+      "written_at_utc": null
+    },
+    "written_at_utc": "2026-11-03T11:04:54Z"
+  },
+  "purpose": "Committed CPU fingerprints for the golden gate. The ONLY pin store tests/golden reads; _artifacts/baseline/manifest.json is a run report, not a pin. Rewritten only by an operator passing UVR_REPIN=1 -- see tests/golden/runner.write_pins.",
+  "schema": 1
+}
