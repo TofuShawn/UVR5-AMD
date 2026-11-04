@@ -535,19 +535,30 @@ def test_nested_slots_are_none_when_empty_or_unresolvable_and_a_plan_when_named(
         vr_is_secondary_model_activate=True), selections=_selections_for(DEMUCS_WEIGHT))
     assert isinstance(ok.secondary_model, plan.RunPlan)
     assert ok.secondary_model.primary_model_primary_stem == ok.primary_stem   # :7078
-    split = _build(tmp_path, VR_WEIGHT, selections={"vocal_splitter": {"name": DEMUCS_WEIGHT}})
+    split = _build(tmp_path, VR_WEIGHT, selections={
+        "vocal_splitter": {"name": DEMUCS_WEIGHT, "is_activated": True}})
     assert isinstance(split.vocal_split_model, plan.RunPlan)
     assert split.vocal_split_model.is_vocal_split_model is True               # :7108
     assert split.vocal_split_model.vocal_split_model is None                  # :667
-    assert _build(tmp_path, VR_WEIGHT, selections={"vocal_splitter": {"name": "gone"}}
-                  ).vocal_split_model is None
+    assert _build(tmp_path, VR_WEIGHT, selections={
+        "vocal_splitter": {"name": "gone", "is_activated": True}}).vocal_split_model is None
 
 
-def test_a_secondary_named_like_the_primary_drops_itself(tmp_path):
-    """`UVR.py:680-681`: the basename comparison, not an identity comparison."""
+def test_a_secondary_named_like_the_primary_is_kept_but_deactivated(tmp_path):
+    """`UVR.py:677-681` — upstream writes the model *and* the scale, then clears only the flag.
+
+    The plan used to null the slot here (`a6a0f4f` corrected it). For the single-slot
+    path the two are runtime-equivalent, because `separate.py:613`/`:799`/`:1099` all
+    gate on the flag **and** the object; the 4-stem loop is where a nulled slot actually
+    skips a blend upstream performs (`UVR.py:640` recomputes the flag from the slots).
+    So this test pins the upstream shape rather than the locally-simpler one.
+    """
     p = _build(tmp_path, VR_WEIGHT, s=settings_module.Settings(
         vr_is_secondary_model_activate=True), selections=_selections_for(VR_WEIGHT))
-    assert p.secondary_model is None and p.is_secondary_model_activated is False
+    assert isinstance(p.secondary_model, plan.RunPlan)
+    assert p.secondary_model.model_basename == p.model_basename
+    assert p.secondary_model_scale == 0.5
+    assert p.is_secondary_model_activated is False
 
 
 # --------------------------------------------------------------------------- #
@@ -582,4 +593,12 @@ def test_a_spec_the_catalog_cannot_answer_is_refused(tmp_path):
 
 def test_runplan_field_count_matches_the_ruling():
     assert len(dataclasses.fields(plan.RunPlan)) == 92
-    assert len(set(plan.PLAN_FIELD_NAMES)) == 92
+    # `len(set(PLAN_FIELD_NAMES)) == 92` could not fail independently of the line
+    # above: that list is derived from `dataclasses.fields(RunPlan)`, and duplicate
+    # field names would break class construction. The invariant worth pinning is the
+    # two-sided one -- the names the plan exposes are exactly the names the engine
+    # reads -- so a rename on either side shows up here.
+    assert frozenset(plan.PLAN_FIELD_NAMES) == PINNED_PLAN_READS, (
+        f"RunPlan fields vs the pinned engine reads: "
+        f"fields-only={sorted(set(plan.PLAN_FIELD_NAMES) - PINNED_PLAN_READS)} "
+        f"reads-only={sorted(PINNED_PLAN_READS - set(plan.PLAN_FIELD_NAMES))}")

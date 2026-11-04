@@ -583,7 +583,8 @@ def build_parser() -> argparse.ArgumentParser:
             "\n"
             "Exit codes: 0 ok, 1 engine failure, 2 usage, 3 unknown model params "
             "(tier 3), 4 blocked arch, 5 missing weight, 6 unknown name, 7 plan "
-            "refused, 8 refresh refused, 9 input audio missing.\n"),
+            "refused, 8 refresh refused, 9 input audio missing, 10 writable catalog "
+            "location refused.\n"),
     )
     parser.add_argument("model_positional", nargs="?", default=None, metavar="MODEL",
                         help="model name, as an alternative to --model")

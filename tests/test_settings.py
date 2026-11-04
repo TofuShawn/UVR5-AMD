@@ -206,6 +206,17 @@ NUMERIC_FIELDS = {
     "window_size": int, "post_process_threshold": float,
 }
 NUMERIC_NAMES = set(NUMERIC_FIELDS)
+#: The 18 string-typed fields, pinned by name. The three buckets are what Task 9's
+#: ruling rests on -- "type by stored domain, not by the consumer's coercion" -- and
+#: a count-only pin cannot see a swap between two str fields, or a str field that
+#: quietly becomes `str | None`. So this list is hand-written, exactly like
+#: BOOL_FIELDS and NUMERIC_FIELDS above it.
+STR_FIELDS = {
+    "batch_size", "chosen_process_method", "compensate", "demucs_stems",
+    "denoise_option", "deverb_vocal_opt", "device_set", "ensemble_main_stem",
+    "mdx_batch_size", "mdxnet_stems", "mp3_bit_set", "overlap", "overlap_mdx",
+    "overlap_mdx23", "save_format", "segment", "semitone_shift", "wav_type_set",
+}
 
 
 def test_type_buckets_are_24_bool_8_numeric_18_str():
@@ -217,7 +228,10 @@ def test_type_buckets_are_24_bool_8_numeric_18_str():
     assert len(NUMERIC_NAMES) == 8
     strings = {n for n, t in types.items() if t is str}
     assert len(strings) == 18, sorted(strings ^ (set(types) - BOOL_FIELDS - NUMERIC_NAMES))
-    assert strings == set(types) - BOOL_FIELDS - NUMERIC_NAMES
+    # Names, not a set difference: `set(types) - BOOL_FIELDS - NUMERIC_NAMES` is the
+    # complement of what line 214/215 already pinned, so comparing to it could never
+    # fail. This compares to a hand-written list.
+    assert strings == STR_FIELDS, sorted(strings ^ STR_FIELDS)
     # every field is exactly one of the three buckets -- no Any, no Optional
     assert set(types.values()) <= {bool, int, float, str}
 

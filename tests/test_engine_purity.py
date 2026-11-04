@@ -128,6 +128,15 @@ PINNED_ENGINE_IMPORTS = frozenset({
 # for the wrong reason.)
 LINT_GLOBS = ("separate.py", "backends.py", "lib_v5/**/*.py", "demucs/**/*.py")
 
+#: Hand-written copy of `LINT_GLOBS`, for the hole the per-pattern loop above cannot
+#: see: *deleting* a pattern leaves every surviving pattern matching, so the sweep
+#: silently narrows (measured -- `LINT_GLOBS = ("separate.py",)` swept one file and
+#: the test stayed green, leaving `backends.py`, `lib_v5/**` and `demucs/**` unlinted).
+#: Same reason `PINNED_ENGINE_IMPORTS` exists: the guard's own inputs must not be
+#: editable in the same commit as the guard's satisfaction. Patterns are pinned, not
+#: the file total -- a vendored file must be addable without breaking this.
+PINNED_LINT_GLOBS = ("separate.py", "backends.py", "lib_v5/**/*.py", "demucs/**/*.py")
+
 # The child imports torch, so the run has a real cost: measured ~5.2s for the 14
 # modules on this machine. Hundreds of seconds is headroom for a cold start that
 # still bounds a hang -- without a bound, a future blocking import (`demucs
@@ -241,6 +250,12 @@ def test_engine_imports_with_tkinter_unavailable():
 def test_no_global_tkinter_root_reference():
     files = engine_lint_files()
     assert files, "lint swept nothing"
+    assert frozenset(LINT_GLOBS) == frozenset(PINNED_LINT_GLOBS), (
+        "guard 2's own pattern list has drifted from its pinned copy: "
+        f"live={sorted(LINT_GLOBS)} pinned={sorted(PINNED_LINT_GLOBS)}. Dropping a "
+        "pattern here drops a whole engine tree from the lint without changing any "
+        "other signal in this file. Add the pattern back, or change both lists in "
+        "the same commit and say why.")
     # Per pattern, not per sweep: one dead pattern hides inside a total that still
     # looks healthy (see the LINT_GLOBS comment for the two measured examples).
     for pattern in LINT_GLOBS:
