@@ -54,7 +54,8 @@ import settings as settings_module
 import uvr_paths
 
 __all__ = ["ARCH_CLASS", "PROCESS_DATA_KEYS", "build_process_data", "main",
-           "make_catalog", "run", "writable_model_data_dir"]
+           "make_catalog", "run", "describe_compute_device", "describe_device",
+           "writable_model_data_dir"]
 
 # --------------------------------------------------------------------------- #
 # exit codes -- a script may branch on these, so they are named, not ad-hoc
@@ -301,6 +302,71 @@ def describe_device(backend: backends.Backend, requested: str | None) -> list[st
     return lines
 
 
+#: `gui_data.constants.DEFAULT`, inlined because this module may not import
+#: `gui_data` (see the module docstring's no-GUI claim, executed by
+#: `tests/test_engine_purity.py`). It is the one `device_set` value that means "no
+#: index suffix", exactly as `separate.py:272` treats it.
+DEVICE_SET_DEFAULT = "Default"
+
+
+def describe_compute_device(is_gpu_conversion: int, backend: backends.Backend,
+                            requested: str | None = None,
+                            device_set: str | None = None) -> list[str]:
+    """What the engine will *actually* compute on, derived from the plan.
+
+    Why this line exists next to the `backend:` line rather than replacing it: they
+    answer two different questions, and a run has to satisfy both. `backends.resolve()`
+    answers "which device does this machine offer?", and `separate.py:233-241` answers
+    "which device will this run use?" -- by *ignoring* the authority whenever
+    `plan.is_gpu_conversion < 0` (`separate.py:253` never enters the GPU block, so
+    `self.device` stays CPU and `self.run_type` stays `['CPUExecutionProvider']`).
+    `is_gpu_conversion` comes from `Settings.gpu_conversion`, which is the user's
+    persisted config, so an un-flagged CLI run on a box whose saved setting is "GPU
+    off" prints `backend: name=rocm` and computes on CPU. That is the defect this
+    function kills: it is the second line, and it states the engine's own decision.
+
+    The rule for the pair is that they may never disagree about what runs, so the
+    branch conditions are lifted verbatim from `separate.py`:
+    `mps` when torch reports one (`:254`), `<torch_device>[:device_set]` when the
+    backend asks for a GPU device *and* torch can open one (`:270-272`), and CPU
+    otherwise -- including "the plan says GPU but torch has no device" and "the
+    saved setting says GPU off". Nothing here overrides `Settings`; the only way to
+    turn the GPU on from the command line is `--device`, which
+    `effective_settings()` already maps onto `gpu_conversion`.
+    """
+    import torch  # lazy: the no-run commands never reach this line
+
+    hip = getattr(torch.version, "hip", None)
+
+    if is_gpu_conversion < 0:
+        why = (f"--device {requested!r} asked for it" if requested == "cpu"
+               else "pass --device rocm to use the GPU")
+        return [f"[cli] compute device: cpu (is_gpu_conversion={is_gpu_conversion} "
+                f"from Settings; {why})"]
+
+    is_macos = sys.platform == "darwin"
+    mps = bool(torch.backends.mps.is_available()) if is_macos else False
+    if mps:
+        return [f"[cli] compute device: mps (is_gpu_conversion={is_gpu_conversion}; "
+                "separate.py takes the Apple path and sets is_other_gpu)"]
+
+    if backend.torch_device == "cpu":
+        return [f"[cli] compute device: cpu (is_gpu_conversion={is_gpu_conversion} "
+                f"asks for the GPU, but backends.resolve() returned "
+                f"torch_device='cpu' (hip={hip!r}), so separate.py keeps its CPU "
+                f"device)"]
+
+    if not torch.cuda.is_available():
+        return [f"[cli] compute device: cpu (is_gpu_conversion={is_gpu_conversion} "
+                f"asks for the GPU and the backend is {backend.name!r}, but "
+                f"torch.cuda.is_available() is False (hip={hip!r}), so separate.py "
+                f"keeps its CPU device -- see the WARNING above]"]
+
+    device = ("cuda" if device_set in (None, "", DEVICE_SET_DEFAULT)
+              else f"cuda:{device_set}")
+    return [f"[cli] compute device: {device} (torch.version.hip={hip})"]
+
+
 # --------------------------------------------------------------------------- #
 # the commands
 # --------------------------------------------------------------------------- #
@@ -421,6 +487,15 @@ def run(args: argparse.Namespace, *, out: TextIO = sys.stdout,
     except plan.PlanError as exc:
         return failure(f"[cli] plan refused: {exc}", EXIT_PLAN)
 
+    # The second device line, and it is printed *after* the plan because the plan is
+    # what the engine acts on (`separate.py:253` gates the whole GPU block on
+    # `is_gpu_conversion`). Printing it here rather than inside describe_device() is
+    # what keeps the pair honest: the backend line may only say what the machine
+    # offers, this one says what the run uses.
+    for line in describe_compute_device(rp.is_gpu_conversion, backend,
+                                        requested_device, rp.device_set):
+        printer(line)
+
     if args.dry_run:
         print_plan(rp, printer)
         printer(f"[cli] --dry-run: model {spec.name} (arch {spec.arch}, "
@@ -442,13 +517,24 @@ def run(args: argparse.Namespace, *, out: TextIO = sys.stdout,
                        f"known: {', '.join(sorted(ARCH_CLASS))}", EXIT_PLAN)
 
     process_data = build_process_data(audio, export_path, printer=printer)
+    # Snapshot *before* the run. The check below asks "did this run write anything",
+    # and a post-run rglob of a directory that already holds an earlier run's stems
+    # always answers yes -- re-running into a non-empty export dir would let an
+    # engine that produced nothing exit 0. The snapshot is a path -> (mtime, size)
+    # map rather than a set of paths, because re-running the same model overwrites
+    # the same two filenames: a new name or a changed stamp counts as written, and
+    # only a file this run did not touch at all counts as absent.
+    export_path.mkdir(parents=True, exist_ok=True)
+    before = {p: p.stat().st_mtime_ns for p in export_path.rglob("*.wav")
+              if "_(" in p.stem}
     try:
         job = engine_class(rp, process_data)
         job.seperate()
     except Exception as exc:                              # engine failures are reported
         return failure(f"[cli] engine failed ({type(exc).__name__}): {exc}", EXIT_ENGINE)
 
-    written = sorted(p for p in export_path.rglob("*.wav") if "_(" in p.stem)
+    written = sorted(p for p in export_path.rglob("*.wav")
+                     if "_(" in p.stem and before.get(p) != p.stat().st_mtime_ns)
     if not written:
         return failure(f"[cli] the engine returned without writing any stem to "
                        f"{export_path}; that is an engine failure, not a success.",
@@ -486,6 +572,14 @@ def build_parser() -> argparse.ArgumentParser:
             "  python separate_cli.py --refresh-model-tables --confirm  (the only\n"
             "      command in this fork that contacts the network; without --confirm\n"
             "      it refuses and exits non-zero)\n"
+            "\n"
+            "Scope: this CLI runs the single-model path only -- plan.build() is called\n"
+            "    with selections={}, so a secondary model, a pre-proc model and the\n"
+            "    vocal splitter are unreachable from here (they need the legacy GUI's\n"
+            "    model-selection widgets; Plan 2's app is where they return).\n"
+            "    --device picks the compute device; without it the saved\n"
+            "    Settings.gpu_conversion decides, and the 'compute device:' line prints\n"
+            "    whichever device the engine will actually use.\n"
             "\n"
             "Exit codes: 0 ok, 1 engine failure, 2 usage, 3 unknown model params "
             "(tier 3), 4 blocked arch, 5 missing weight, 6 unknown name, 7 plan "

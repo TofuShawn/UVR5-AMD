@@ -51,6 +51,50 @@ def clear_gpu_cache():
     else:
         torch.cuda.empty_cache()
 
+
+def check_ort_providers(session, requested_providers, model_path):
+    """Loudly report an execution provider that ONNX Runtime did not attach.
+
+    ``InferenceSession(path, providers=self.run_type)`` does *not* fail when it
+    cannot honour the list: it silently keeps the providers it could load and drops
+    the rest. Two downgrades are therefore invisible by default, and both put DirectML
+    (the only GPU an AMD box has for ONNX) on the CPU path:
+
+    1. at creation -- no DML dll / no compatible driver, so
+       ``get_providers()`` returns ``['CPUExecutionProvider']`` while
+       ``self.run_type`` still reads ``['DmlExecutionProvider', ...]``;
+    2. at run time -- ``enable_fallback`` defaults to ``True`` in the installed
+       onnxruntime (1.24.4: ``run_with_fallback`` catches ``EPFail`` and retries on
+       CPU), so a session that *did* attach DML can still compute each failing node on
+       CPU, per call.
+
+    This function covers (1), which is observable and cheap: one ``get_providers()``
+    call at load time. (2) is not observable from here without turning fallback off
+    via ``SessionOptions``, and that changes which kernels run for every arch sharing
+    this loader -- including the ones with no golden baseline (``mdx``/``onnx`` have
+    none, so this path is guarded by this check and by unit tests, not by SNR). The
+    conservative call is to warn, and only for the provider that was actually asked
+    for, so a CPU-only machine that never requested DML says nothing.
+
+    Returns the session's provider list so a caller (or a test) can assert on it.
+    """
+    attached = list(session.get_providers())
+    requested = list(requested_providers or [])
+    missing = [p for p in requested if p != 'CPUExecutionProvider' and p not in attached]
+    if missing:
+        active = attached[0] if attached else 'no provider at all'
+        warn_degradation(
+            f"ONNX Runtime dropped an execution provider for "
+            f"{os.path.basename(str(model_path))}: it was asked for {requested} and "
+            f"reports {attached}, so the first provider actually in use is {active}. "
+            f"backends.resolve() chose {missing[0]!r} for this machine; a provider "
+            f"dropped at session creation is a slowdown that is otherwise invisible, "
+            f"and onnxruntime's default enable_fallback=True can additionally retry "
+            f"individual failing nodes on CPU at run time."
+        )
+    return attached
+
+
 warnings.filterwarnings("ignore")
 cpu = torch.device('cpu')
 
@@ -184,8 +228,13 @@ class SeperateAttributes:
         self.primary_model_primary_stem = plan.primary_model_primary_stem
         self.primary_stem_native = plan.primary_stem_native
         self.primary_stem = plan.primary_stem #
-        print(self.primary_stem)
         self.secondary_stem = plan.secondary_stem #
+        # Upstream debug line (`print(self.primary_stem)` at this spot), kept as
+        # information but routed through the caller's console sink: a bare print put
+        # unattributed text in the CLI's stdout, where every other line is prefixed
+        # and the run's own log is collected from write_to_console.
+        self.write_to_console(f'stem resolution: primary={self.primary_stem} '
+                              f'secondary={self.secondary_stem}')
         self.is_invert_spec = plan.is_invert_spec #
         self.is_deverb_vocals = plan.is_deverb_vocals
         self.is_target_instrument = plan.is_target_instrument
@@ -590,6 +639,10 @@ class SeperateMDX(SeperateAttributes):
             else:
                 if self.mdx_segment_size == self.dim_t and not self.is_other_gpu:
                     ort_ = ort.InferenceSession(self.model_path, providers=self.run_type)
+                    # The provider list this run asked for is not the provider list
+                    # this session got; see check_ort_providers for why that is a
+                    # report rather than an exception.
+                    check_ort_providers(ort_, self.run_type, self.model_path)
                     self.model_run = lambda spek:ort_.run(None, {'input': spek.cpu().numpy()})[0]
                 else:
                     self.model_run = ConvertModel(load(self.model_path))

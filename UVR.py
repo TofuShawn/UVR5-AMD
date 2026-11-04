@@ -1,3 +1,23 @@
+# --------------------------------------------------------------------------- #
+# The refusal is the FIRST statement of this file, above every import.
+#
+# Task 11d retired ModelData -- the only thing this block's MainWindow could ever
+# resolve a model through -- and Plan 2 replaces this GUI with a PySide6 app. The
+# refusal used to sit at the bottom of the file, below ~7,290 lines of module-level
+# imports, which meant `python UVR.py` never reached it: this file is not importable
+# in the venv it ships in (`import pyglet` fails here, and `separate` no longer
+# exports `directml_available`), so a user got a ModuleNotFoundError traceback
+# instead of the sentence telling them to use separate_cli.py. Nothing above a raise
+# runs, so the raise has to be above everything.
+# --------------------------------------------------------------------------- #
+if __name__ == "__main__":
+    raise SystemExit("legacy tkinter GUI removed; use separate_cli.py (PySide6 app arrives in Plan 2)")
+
+    # The legacy launcher body below (see legacy_main() at the end of the file)
+    # stays for reference; it is unreachable, exactly as before -- the difference is
+    # only that the refusal now precedes the imports instead of following them.
+
+
 # GUI modules
 import time
 #start_time = time.time()
@@ -48,7 +68,7 @@ from pathlib  import Path
 from separate import (
     SeperateDemucs, SeperateMDX, SeperateMDXC, SeperateVR,  # Model-related
     save_format, clear_gpu_cache,  # Utility functions
-    cuda_available, directml_available, mps_available
+    cuda_available, mps_available
 )
 from playsound import playsound
 from typing import List
@@ -62,13 +82,17 @@ from os.path import expanduser
 # import faulthandler
 # faulthandler.enable()
 
-if not is_macos:
-    import torch_directml # type:ignore
-
-is_choose_arch = cuda_available and directml_available
-is_directml_only = not cuda_available and directml_available
-is_cuda_only = cuda_available and not directml_available
-is_gpu_available = cuda_available or directml_available or mps_available
+# The legacy GUI's DirectML device path is gone: `separate.py` no longer exports
+# `directml_available` and `torch_directml` is not a dependency of this fork (Task 12
+# moved the ONNX provider decision into backends.resolve(), which picks
+# DmlExecutionProvider by the PCI vendor scan). These flags only fed the removed
+# device pickers, so they are constants now instead of probes of a module that does
+# not exist. The settings key `is_use_directml` survives in settings.py as inert
+# data; nothing reads it as a device choice.
+is_choose_arch = False
+is_directml_only = False
+is_cuda_only = False
+is_gpu_available = cuda_available or mps_available
 
 # Change the current working directory to the directory
 # this file sits in
@@ -3088,16 +3112,18 @@ class MainWindow(TkinterDnD.Tk if is_dnd_compatible else tk.Tk):
                 self.cuda_device_list.insert(0, DEFAULT)
                 print(self.cuda_device_list)
             
-            if directml_available:
-                self.directml_list = [f"{torch_directml.device_name(i)}:{i}" for i in range(torch_directml.device_count())]
-                self.directml_list.insert(0, DEFAULT)
+            # The DirectML device list is gone with the device path itself: it read
+            # `directml_available`/`torch_directml`, which this branch removed, and
+            # it only ever fed the legacy GUI's GPU-index picker. The CUDA list is now
+            # the only list, so the picker's `directml_list if … else cuda_device_list`
+            # choice collapsed to the CUDA list.
         except Exception as e:
             print(e)
             
         if is_cuda_only:
             self.is_use_directml_var.set(False)
             
-        check_gpu_list = self.directml_list if is_directml_only or self.is_use_directml_var.get() else self.cuda_device_list
+        check_gpu_list = self.cuda_device_list
         if not self.device_set_var.get() in check_gpu_list:
             self.device_set_var.set(DEFAULT)
 
@@ -3256,7 +3282,7 @@ class MainWindow(TkinterDnD.Tk if is_dnd_compatible else tk.Tk):
             self.vocal_splitter_Button_opt(settings_menu, settings_menu_format_Frame, width=SETTINGS_BUT_WIDTH-2, pady=MENU_PADDING_4)
 
         if not is_macos and self.is_gpu_available:
-            gpu_list_options = lambda:self.loop_gpu_list(device_set_Option, 'gpudevice', self.directml_list if is_directml_only or self.is_use_directml_var.get() else self.cuda_device_list)
+            gpu_list_options = lambda:self.loop_gpu_list(device_set_Option, 'gpudevice', self.cuda_device_list)
             device_set_Label = self.menu_title_LABEL_SET(settings_menu_format_Frame, CUDA_NUM_TEXT)
             device_set_Label.grid(pady=MENU_PADDING_2)
             
@@ -4213,7 +4239,7 @@ class MainWindow(TkinterDnD.Tk if is_dnd_compatible else tk.Tk):
                 config_local = os.path.join(MDX_C_CONFIG_PATH, config)
                 if not os.path.isfile(config_local):
                     try:
-                        with urllib.request.urlopen(config_link) as response:
+                        with urllib.request.urlopen(config_link, timeout=30) as response:
                             with open(config_local, 'wb') as out_file:
                                 out_file.write(response.read())
                     except Exception as e:
@@ -5255,7 +5281,7 @@ which writes them into the user-writable catalog directory (never the weights ro
                     
                     config_local = os.path.join(MDX_C_CONFIG_PATH, config)
                     if not os.path.isfile(config_local):
-                        with urllib.request.urlopen(config_link) as response:
+                        with urllib.request.urlopen(config_link, timeout=30) as response:
                             with open(config_local, 'wb') as out_file:
                                 out_file.write(response.read())
                 else:
@@ -7291,19 +7317,20 @@ def extract_stems(audio_file_base, export_path):
 
     return list(set(filtered_lst))
 
-if __name__ == "__main__":
-    # Task 11d retires ModelData -- the only thing this block's MainWindow could
-    # ever resolve a model through. Refuse as the first statement, before the DPI
-    # call and before tkinter opens a window: a user must not be able to half-run
-    # the legacy GUI. The body below stays for reference; it is unreachable.
-    raise SystemExit("legacy tkinter GUI removed; use separate_cli.py (PySide6 app arrives in Plan 2)")
+def legacy_main():
+    """The legacy tkinter entry point, kept for reference and never reachable.
 
+    `__main__` refuses at the very top of this file, before any import runs, so this
+    function has no caller: it is the body that used to sit under the `__main__`
+    guard, moved here so the refusal can be first. Do not wire it back up -- Plan 2's
+    PySide6 app replaces it, and `separate_cli.py` is the GUI-free path today.
+    """
     try:
         windll.user32.SetThreadDpiAwarenessContext(wintypes.HANDLE(-1))
     except Exception as e:
         if OPERATING_SYSTEM == 'Windows':
             print(e)
-    
+
     root = MainWindow()
     root.update_checkbox_text()
     root.is_root_defined_var.set(True)
