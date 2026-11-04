@@ -2,18 +2,18 @@
 
 `separate.py`, `backends.py` and every `lib_v5/**/*.py`, `demucs/**/*.py` file
 must be importable with the tkinter GUI packages unavailable -- but read that
-sentence against the split below, because it spans both guards: guard 1 imports
-the **15** modules named in `ENGINE_IMPORTS` and nothing else, and the
+sentence against the split below, because it spans both guards: guard 1 imports the
+**16** modules named in `ENGINE_IMPORTS` and nothing else, and the
 **38-file** "every file" claim belongs to guard 2, which *lints* all of them and
 imports none. Note the scope:
 that is a *tkinter*-freedom claim, not a GUI-freedom one -- PySide6/Qt are
 deliberately not blocked here (Task 13 owns that), so nothing in this file
 proves the engine is GUI-free. Two guards, split deliberately, and each one is
-blind to exactly what the other sees. The 15th name in guard 1, `plan`, is Task
-11b's composition layer rather than part of `engine`, and it joined
-`ENGINE_IMPORTS` on purpose: Task 13's GUI-free CLI imports it, so "imports clean
-with the GUI blocked" has to hold for the whole call path a CLI takes and not only
-for the modules under `LINT_GLOBS`.
+blind to exactly what the other sees. The names after `plan` -- `plan` (15th, Task
+11b) and `separate_cli` (16th, Task 13) -- are composition layers rather than part of
+`engine`, and they joined on purpose: Task 13's GUI-free CLI is the thing that must
+import clean with the GUI blocked, and guard 1 is the only place that proves it for
+the whole call path and not only for the modules under `LINT_GLOBS`.
 
   1. `test_engine_imports_with_tkinter_unavailable` proves the *import graph*     behaves, which is the only way to see a coupling that arrives transitively
      through a wildcard import (`separate.py:18` does
@@ -59,20 +59,23 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 # The per-module form of this table -- one child process per module, so a red run
 # names every failing module instead of only the first -- is the committed control
 # `tools/task8_red_controls.py::test_red_table_names_every_engine_module`; today's
-# column is 15 GREEN since Task 11b (14 before it), and the 7-RED column lives in
+# column is 16 GREEN since Task 13 (15 since Task 11b, 14 before it), and the 7-RED
+# column lives in
 # `git show 3e612ea` (the two
 # deletions), which the controls re-create the failure signature of by planting.
 # Membership is pinned by `PINNED_ENGINE_IMPORTS` below: "do not trim" in prose is
-# not enforceable, and 14 of these 15 names can be deleted with both guards
+# not enforceable, and 15 of these 16 names can be deleted with both guards
 # passing.
-# Task 11b added `plan`, widening guard 1 from 14 to 15 on purpose: `plan.py` is the
-# composition layer between `app` and `engine`, Task 13's GUI-free CLI imports it, and
-# the ratchet is the only thing that proves it imports clean with tkinter,
-# `gui_data.tkinterdnd2`, `gui_data.sv_ttk` and `PIL.ImageTk` blocked. It imports
-# `settings`, `catalog` and `backends`, which is legal for `plan.py` and illegal for
-# everything under `LINT_GLOBS`; that glob stays a statement about the engine, so
-# `plan.py` is deliberately NOT added to it.
-ENGINE_IMPORTS = ["separate", "backends", "plan", "lib_v5.mdxnet", "lib_v5.bs_roformer",
+# Task 11b added `plan`, widening guard 1 from 14 to 15, and Task 13 added
+# `separate_cli`, widening it to 16: `plan.py` and `separate_cli.py` are the
+# composition layers between `app` and `engine`, Task 13's GUI-free CLI is the thing a
+# user runs without a GUI, and the ratchet is the only thing that proves they import
+# clean with tkinter, `gui_data.tkinterdnd2`, `gui_data.sv_ttk` and `PIL.ImageTk`
+# blocked. They import `settings`, `catalog` and `backends`, which is legal for them
+# and illegal for everything under `LINT_GLOBS`; that glob stays a statement about the
+# engine, so neither file is added to it.
+ENGINE_IMPORTS = ["separate", "backends", "plan", "separate_cli", "lib_v5.mdxnet",
+                  "lib_v5.bs_roformer",
                   "lib_v5.mel_band_roformer", "lib_v5.attend", "lib_v5.results",
                   "lib_v5.apollo_inference", "demucs.apply", "demucs.utils",
                   "demucs.repo", "demucs.pretrained", "demucs.states",
@@ -105,7 +108,8 @@ PINNED_GUI_PACKAGES = frozenset({"tkinter", "gui_data.tkinterdnd2",
                                  "gui_data.sv_ttk", "PIL.ImageTk"})
 
 PINNED_ENGINE_IMPORTS = frozenset({
-    "separate", "backends", "plan", "lib_v5.mdxnet", "lib_v5.bs_roformer",
+    "separate", "backends", "plan", "separate_cli", "lib_v5.mdxnet",
+    "lib_v5.bs_roformer",
     "lib_v5.mel_band_roformer", "lib_v5.attend", "lib_v5.results",
     "lib_v5.apollo_inference", "demucs.apply", "demucs.utils", "demucs.repo",
     "demucs.pretrained", "demucs.states", "demucs.htdemucs"})
