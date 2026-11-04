@@ -92,8 +92,12 @@ class RefreshError(RuntimeError):
 
 def _default_opener(url: str):
     """The only place in this module that calls `urlopen` — and it is reached only from
-    an explicit refresh, never at import."""
-    return urllib.request.urlopen(url)
+    an explicit refresh, never at import.
+
+    `timeout=30` because this is a command a person waits on: without it a stalled
+    connection hangs the CLI forever with nothing on screen to explain why.
+    """
+    return urllib.request.urlopen(url, timeout=30)
 
 
 def fetch_json(url: str, *, opener: Callable[[str], object] | None = None) -> dict:
