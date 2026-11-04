@@ -51,23 +51,28 @@ GPU_RUNS = 4
 
 #: PROVENANCE OF THE HEADLINE DIVISOR. These are *not* measurements this script
 #: can take: they were captured on a different torch build (2.15.0+cpu) than the
-#: one in this venv, so the only honest form is a quoted constant with its
-#: source. task-5-report.md section 5 (the "healthy CPU" reference timings on the
-#: same 30-second crop, torch 2.15.0+cpu): vr 9.845 s, demucs 11.108 s.
+#: one in this venv, so the only honest form is a quoted constant with its source.
+#: task-5-report.md section 5.5's reference table ("VR ... 9.845 s -> 6.0x",
+#: "Demucs ... 11.108 s -> 4.0x"), restated in section 6.2; those CPU times were
+#: themselves measured in Task 4 under torch 2.15.0+cpu on this same 30-second
+#: crop. Important 5 of the Task 7 review is exactly this: a divisor the script
+#: cannot re-measure has to name where it came from, in the output as well as in
+#: the source.
 #:
 #: Why both columns exist: this ROCm wheel's own CPU Demucs path runs ~5x slower
-#: than torch 2.15's does (56.5 s vs 11.1 s, reproduced in task-5-report.md and
-#: in two runs of this script), so dividing a GPU time by *it* inflates the ratio
-#: to 20.62x. That number is a measurement of this wheel's CPU regression, not a
-#: GPU claim; the healthy column is the publishable one. If this wheel's CPU path
-#: ever gets fixed, the same-wheel column moves and this quoted one does not.
+#: than torch 2.15's does (51-62 s here, 54.745 s in task-5-report.md section 6.2, vs
+#: 11.108 s healthy), so dividing a GPU time by *it* inflates the ratio to ~18-20x.
+#: That number is a measurement of this wheel's CPU regression, not a GPU claim;
+#: the healthy column is the publishable one. If this wheel's CPU path ever gets
+#: fixed, the same-wheel column moves and this quoted one does not.
 HEALTHY_CPU_SECONDS = {
     "vr": 9.845,
     "demucs": 11.108,
 }
 HEALTHY_CPU_PROVENANCE = (
-    "torch 2.15.0+cpu, same 30 s crop, task-5-report.md section 5 -- a quoted "
-    "constant this venv cannot re-measure (it holds only 2.9.1+rocm7.2.1)")
+    "torch 2.15.0+cpu, same 30 s crop; task-5-report.md section 5.5 table, restated in "
+    "section 6.2, measured there by Task 4 -- a quoted constant this venv cannot "
+    "re-measure (it holds only 2.9.1+rocm7.2.1)")
 
 #: ``separate.py``'s own words for "the GPU was asked for and not used".
 DEGRADATION_MARK = "computes on CPU"
