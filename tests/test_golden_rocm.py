@@ -24,9 +24,13 @@ moves is the device. ``settings.make(arch, "cuda")`` sets ``is_gpu_conversion =
 THE TWO GUARDS THAT MAKE "A GREEN ROW IS A REAL GPU RUN" A CHECKED FACT
 ----------------------------------------------------------------------
 The switch above is a *request*, not an outcome: ``separate.py`` initialises
-``self.device = cpu`` and overwrites it only inside
-``if self.backend.torch_device == 'cuda' and cuda_available``. If that condition
-ever fails, the engine warns and computes on CPU; the candidate is then
+``self.device = cpu`` and overwrites it only inside the *nested*
+``if self.backend.torch_device == 'cuda':`` / ``if cuda_available:`` of
+``separate.py:274-293``. The two ways that condition fails are not symmetric,
+and only one of them speaks: a cuda-shaped answer with no reachable GPU takes
+the ``warn_degradation`` branch and computes on CPU *aloud*; an authority that
+returns ``torch_device == 'cpu'`` never enters the branch and computes on CPU in
+silence, emitting nothing to catch. Either way the candidate is
 byte-identical to the CPU baseline, ``snr_db`` returns ``inf``, ``inf >= 40``
 passes, and the stems still match by name. That is CPU scored against CPU while
 the suite reads green, which is the one failure mode this file exists to prevent,
@@ -38,7 +42,9 @@ so every run here is wrapped twice:
    recorded *per run*: ``backends.warn_degradation`` de-dupes per message
    through the module-level ``_warned`` set, so inspecting that set afterwards
    says "this process degraded once", never "this run degraded" -- and a second
-   CPU-fallback run in a long-lived process never warns again.
+   CPU-fallback run in a long-lived process never warns again. Note its reach:
+   this guard only exists for the *loud* half above; a silent cpu
+   ``torch_device`` produces no warning for it to find.
 2. **allocator-window comparison** -- ``torch.cuda.memory_allocated()`` is read
    *before* ``reset_peak_memory_stats()``, and the run must push
    ``max_memory_allocated()`` strictly above that inherited value. ``peak > 0``
@@ -46,8 +52,12 @@ so every run here is wrapped twice:
    arch still holds (this suite leaves ~76 MiB of it, measured), so ``peak > 0``
    asks only "has this process ever touched the device". Comparing against
    ``before`` asks "did *this* run allocate", which is the question. Both
-   guards are needed: the warning one is de-duped away after the first hit, the
-   allocator one is not.
+   guards are needed -- the warning one is de-duped away after the first hit,
+   the allocator one is not -- but the allocator guard only *infers* the device
+   from an allocation, so neither of them is what catches the silent half. That
+   is the premise assert in
+   ``test_the_gpu_presents_as_cuda_and_is_the_chosen_device``, which is why its
+   message spells the expectation out.
 
 What neither guard can see is *placement* -- ``runner.separate()`` returns only
 ``{stem: Path}``, so no consumer can assert ``SeperateAttributes.device``. That
@@ -63,8 +73,12 @@ so the quiet vocal stems read low in dB for a byte-near-identical rerun -- see
 ``tests.golden.runner``'s docstring. Nothing here may widen the threshold: a
 number below 40 dB is the finding.
 
-MEASUREMENT TRAPS THIS FILE AVOIDS (both observed in task-5-report.md)
-----------------------------------------------------------------------
+MEASUREMENT TRAPS THIS FILE AVOIDS (both observed on this box during Task 5)
+----------------------------------------------------------------------------
+The Task 5 report that first recorded them is plan scratch under the git-ignored
+``.superpowers/`` tree: not in this repository, and gone once the plan completes.
+Both traps are restated below in full, so this file cites no file a reader cannot
+open.
 1. ``torch.cuda.max_memory_allocated()`` is a process-wide high-water mark that
    is never reset; in Task 5 that put a 3577 MiB figure -- which was not any one
    arch's peak -- on the demucs row. The counter is reset immediately before each
@@ -73,14 +87,19 @@ MEASUREMENT TRAPS THIS FILE AVOIDS (both observed in task-5-report.md)
    tensors an earlier arch still holds are counted *forward* into the next
    arch's window (~76 MiB from demucs into vr in suite order), so the guard
    compares the peak against that inherited ``before`` value and the print
-   shows both. Numbers quoted *as* per-arch peaks are still re-measured alone
-   (`-k <arch>`, fresh process) for task-7-report.md: 1081 MiB vr / 617 MiB
-   demucs, versus 1157 MiB for vr in-suite.
+   shows both. Numbers quoted *as* per-arch peaks are re-measured alone --
+   ``-k <arch>`` in a fresh process, where nothing precedes the window -- and
+   that command is the whole procedure, so the isolated figures are in-tree
+   reproducible and are recorded right here: 1081 MiB vr / 617 MiB demucs,
+   against 1157 MiB for vr in-suite. Anyone may re-run the command; nobody has
+   to open a report file to know what the peak claim is.
 2. MIOpen's cold kernel search makes the *first* separation after an install
    roughly 20x slower than every later one (36.84 s -> 1.65 s). Nothing in this
-   file is a speed claim; Step 3's timings are warm and counted, and they live in
-   the task report rather than in the suite (the plan's position: speed is
-   measured, never asserted).
+   file is a speed claim; Step 3's timings are warm and counted, they are
+   reproduced by ``tools/task7_timing.py``, and the healthy-CPU baseline behind
+   the published 5.90x / 4.05x is a quoted external figure whose status that file
+   states -- speed is measured, never asserted, and this suite asserts nothing
+   about it either way.
 
 SCOPE: the archs in ``pins.json["archs_covered"]`` and nothing more -- two archs,
 six stems (``demucs/{Bass,Drums,Other,Vocals}`` + ``vr/{Instrumental,Vocals}``),
@@ -299,12 +318,15 @@ def test_rocm_matches_cpu(arch, tmp_path):
     # Both numbers print, because only one of them is the arch's own: the peak is
     # inflated by whatever the earlier arch leaked into this window (vr reads
     # 1157 MiB in-suite against 1081 MiB isolated), so a reader copying the
-    # printed figure has to be able to see the inheritance in the same line.
+    # printed figure has to be able to see the inheritance in the same line -- and
+    # the isolated number is reachable from here, not from a report file.
     print(f"\n[task7] {arch}/cuda peak GPU memory allocated: {peak_bytes / 2**20:.0f} "
           f"MiB (inherited before this run: {before_bytes / 2**20:.0f} MiB -- the "
-          "per-arch peak is that peak *with* the inheritance, isolated numbers are "
-          "in task-7-report.md; gate: SNR >= "
-          f"{pins['gate']['threshold_db']}dB, {len(pinned_stems)} stems)")
+          f"peak above covers this window *plus* whatever an earlier arch still "
+          f"holds, so the arch's own number is the same measurement with nothing "
+          f"before it: this file run alone as `-k {arch}` in a fresh process, "
+          f"recorded in this module's docstring as 1081 MiB vr / 617 MiB demucs. "
+          f"Gate: SNR >= {pins['gate']['threshold_db']}dB, {len(pinned_stems)} stems)")
     # Recorded, never pinned: which attention path produced these numbers. The
     # flags are torch's switches; the notices are what the run actually said.
     print(f"[task7] {arch}/cuda attention: sdpa[{_sdpa_config()}] "
