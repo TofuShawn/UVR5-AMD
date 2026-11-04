@@ -10,9 +10,14 @@ Every value here is *derived*, never invented. Two sources of truth:
   line (each carries a ``UVR.py:NNN`` comment) because ``separate.py`` types its
   first constructor argument as ``ModelData`` and reads ~50 attributes off it.
 
-Task 11 replaces this stand-in with ``RunPlan``; until then this module is the
-only place the harness decides what "the same run" means, which is why the
-values land in the baseline manifest rather than in code comments.
+Since Task 11c this module is no longer the object the engine is handed: the run
+goes through ``runner.settings_from_ui`` (a real ``Settings`` over the same
+``DEFAULT_DATA`` snapshot) and ``plan.build`` (the ``RunPlan`` ``separate()``
+receives). What ``make()`` still is: the description the published pins were
+captured under, and the reference side of ``tests/test_golden_refactor.py``'s
+field-by-field comparison. It stays the only place the harness decides what "the
+same run" means, which is why the values land in the baseline manifest rather
+than in code comments.
 
 The gate this feeds is *cross-device* equivalence on the modernised stack --
 see ``tests.golden.runner``'s module docstring for why these numbers are not,

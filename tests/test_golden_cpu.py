@@ -589,7 +589,10 @@ def test_manifest_records_the_crop_environment_and_timings(captures):
     assert env["torch"] == torch.__version__
     assert env["torch_hip"] == getattr(torch.version, "hip", None)
 
-    assert manifest["archs_covered"] == APPLY
+    # Literal, not `== APPLY`: `records` is built by `for arch in APPLY` and this
+    # field is derived from `records`, so comparing them can never fail (the
+    # neighbouring archs_blocked line is the pattern a check has to follow).
+    assert set(manifest["archs_covered"]) == {"vr", "demucs"}
     assert set(manifest["archs_blocked"]) == {"mdx_c", "roformer", "onnx"}
     assert manifest["random_seed"] == settings.RANDOM_SEED
     for arch in APPLY:

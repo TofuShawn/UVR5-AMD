@@ -11,14 +11,15 @@ even on byte-identical audio. That red is not something you broke.
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1 -Backend rocm
-.venv\Scripts\python.exe -m pytest -q                    # ~150 s on this box
+.venv\Scripts\python.exe -m pytest -q   # 3 min here (RX 7900 XTX, warm MIOpen cache)
 ```
 
 ## 2. A GUI-free run cannot open the model-params dialog: an unknown model is a hard error
 
 Upstream resolves params from the per-model `<hash>.json`, then a baked table, then **asks a
-human through a popup**. A CLI has no popup, so the third case exits non-zero naming the hash
-and the exact file it wanted — that message is the only self-service path there is:
+human through a popup**. A CLI has no popup: the third case exits non-zero naming the hash and
+the exact file it wanted, and that message is the only self-service path there is. It refuses
+during resolution, before any device is chosen, so this example needs no `--device`:
 
 ```
 $ .venv/Scripts/python.exe separate_cli.py --arch vr --model mystery-model -a song.flac -o out
@@ -29,9 +30,9 @@ $ .venv/Scripts/python.exe separate_cli.py --arch vr --model mystery-model -a so
 ```
 
 Write that JSON — `Catalog.write_params("vr", "<hash>", params)` or by hand — and the same
-command resolves. Weights dirs (`F:/Software/Ultimate Vocal Remover/models`, and the repo's
-tracked `models/` tree) are **read-only**: new per-model JSON goes to the writable catalog dir
-`%APPDATA%\UVR-fork\model_data`, which the catalog reads *before* the baked tables.
+command resolves. Weights dirs (`F:/Software/Ultimate Vocal Remover/models` and the tracked
+`models/` tree) are **read-only**: new per-model JSON goes to `%APPDATA%\UVR-fork\model_data`,
+which the catalog reads *before* the baked tables.
 
 ## 3. Speed claims carry their conditions
 
@@ -45,12 +46,20 @@ being ~20× slower (36.84 s → 1.65 s). Re-derive any figure below with the com
 UVR_MODEL_ROOT="F:/Software/Ultimate Vocal Remover/models" .venv/Scripts/python.exe tools/task7_timing.py
 ```
 
-* Headline: **absolute warm GPU times**, stable to ~2% — **VR 1.67–1.88 s**, **htdemucs 2.74 s**
-  for the 30 s crop (n=4 GPU runs per session; the warm figure is the best of the 3 after cold).
+* Headline: **absolute warm GPU times** — **VR 1.67–1.88 s**, **htdemucs 2.74 s** for the
+  30 s crop (n=4 GPU runs per session; warm = best of the 3 after cold). Repeats *within* a
+  session agree to ~2%; *across* sessions VR spans 1.67–1.88 s (12.6%), so ~2% is never a
+  cross-session claim — the driver itself says ~10% session-to-session is normal.
 * The healthy-CPU ratio appears **only as a range with its n**: **5.24–5.90×** (VR, n=3
-  published sessions) and **4.03–4.05×** (htdemucs, n=2). Its divisor (9.845 s / 11.108 s) was
-  measured on `torch 2.15.0+cpu` elsewhere and this repository cannot re-measure it, so quoting
-  the top of that range as a single number is a policy violation — a test asserts its absence.
+  published sessions) and **4.05×** (htdemucs, n=2 — the driver recorded 2.74 s warm in both,
+  so both compute to 4.05 and there is no low bound to state). Its divisor (9.845 s / 11.108 s)
+  came from `torch 2.15.0+cpu` elsewhere and this repository cannot re-measure it, so quoting
+  the top of the VR range as a single number is a policy violation — a test asserts its absence.
+* **Numerically verified**: SNR ≥ 40 dB, CPU output vs ROCm output, for `vr` and `htdemucs`
+  only — single-model runs, one 30 s crop, one device pair (the RX 7900 XTX and this wheel).
+  **Not verified**: no `mdx`, `onnx`, `roformer` or `mdx_c` baseline exists, and demucs **v1/v2
+  on ROCm is unverified** — no v1/v2 weight is installed here (`Catalog.names("demucs")` gives
+  `955717e8-8726e21a.th` and `htdemucs.yaml`, both `demucs_version="v4"`).
 * Same-wheel CPU ratios (VR ~4.3–4.7×, htdemucs ~18–20×) are printed by the driver and are
   reproducible here, but are **not** headlined: this ROCm wheel's CPU path runs ~5× slower than
   a healthy build's, so that demucs figure measures a CPU regression, not a GPU result.
@@ -71,16 +80,21 @@ a refresh is what makes newer names resolvable.
 
 ## Running separations without the GUI
 
+**Without `--device`, a run computes on CPU**: `Settings.gpu_conversion` defaults to `False`
+(the GUI's GPU checkbox, off) and `--device` is the only thing that overrides it.
+
 ```
 .venv/Scripts/python.exe separate_cli.py --list-models vr
-.venv/Scripts/python.exe separate_cli.py -a song.flac -o out --arch vr --model 1_HP-UVR
+.venv/Scripts/python.exe separate_cli.py -a song.flac -o out --arch vr --model 1_HP-UVR --device rocm
 .venv/Scripts/python.exe separate_cli.py -a song.flac -o out --model NAME --device rocm --dry-run
 ```
 
-`--device` is `backends.resolve()`'s argument, never a silent downgrade: the run prints the
-backend it chose (`name=rocm torch_device=cuda …`) and says out loud when the requested device
-cannot be opened. Exit codes: 0 ok, 1 engine failure, 2 usage, 3 unknown model params, 4 blocked
-arch, 5 missing weight, 6 unknown name, 7 plan refused, 8 refresh refused, 9 input missing.
+`--device` goes to `backends.resolve()` and is never a silent downgrade: the run prints the
+backend it chose (`name=rocm torch_device=cuda …`) and a `[cli] compute device:` line stating
+the device it will actually use, and says out loud when the requested device cannot be opened.
+Exit codes: 0 ok, 1 engine failure, 2 usage, 3 unknown model params, 4 blocked arch, 5 missing
+weight, 6 unknown name, 7 plan refused, 8 refresh refused, 9 input missing, 10 writable-location
+refused (the catalog write dir resolved inside a read-only or git-tracked weights tree).
 **Blocked:** `mdx_c`, `onnx` and `roformer` are refused rather than simulated — no weights of
 those classes exist on this machine (configs only), so this fork publishes no result for them.
 Internals (the `Settings`/`Catalog`/`RunPlan` split, the purity ratchet) live in module

@@ -117,9 +117,15 @@ PINNED_ENGINE_IMPORTS = frozenset({
 
 # Guard 2's whole sweep, as a glob, so it follows the engine as it grows instead
 # of drifting behind a hand-named list. This is the set the plan's constraint
-# speaks of; `assert files` below is what keeps a wrong glob from reading as a
-# pass. (The count is printed, never asserted: pinning it to 38 today would break
-# the suite the day a vendored file is added, for the wrong reason.)
+# speaks of. A wrong pattern here does NOT shrink the printed total to zero, so a
+# single `assert files` cannot see it: measured on this repo, `lib_v6/**` in place
+# of `lib_v5/**` still swept 19 files and stayed green, and `LINT_GLOBS =
+# ("separate.py",)` swept 1 file and stayed green -- the sweep silently narrowed to
+# a fraction of the engine. What keeps a wrong glob from reading as a pass is the
+# per-pattern assertion in `test_no_global_tkinter_root_reference`, which fails on
+# any single pattern that stops matching. (The *total* is printed, never asserted:
+# pinning it to 38 today would break the suite the day a vendored file is added,
+# for the wrong reason.)
 LINT_GLOBS = ("separate.py", "backends.py", "lib_v5/**/*.py", "demucs/**/*.py")
 
 # The child imports torch, so the run has a real cost: measured ~5.2s for the 14
@@ -235,6 +241,14 @@ def test_engine_imports_with_tkinter_unavailable():
 def test_no_global_tkinter_root_reference():
     files = engine_lint_files()
     assert files, "lint swept nothing"
+    # Per pattern, not per sweep: one dead pattern hides inside a total that still
+    # looks healthy (see the LINT_GLOBS comment for the two measured examples).
+    for pattern in LINT_GLOBS:
+        assert list(ROOT.glob(pattern)), (
+            f"guard 2's pattern {pattern!r} matched no file, so the engine half it "
+            "was meant to lint is no longer linted at all -- the sweep total can "
+            "stay large while this goes unexamined. Point the pattern at the tree "
+            "it is meant to cover, or delete it in the same commit and say why.")
     hits, unparseable = global_root_hits(files)
     print(f"[purity] guard 2 swept {len(files)} engine files: "
           f"{len(hits)} global-`root.` attribute hits, "

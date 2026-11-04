@@ -302,11 +302,13 @@ def test_rocm_matches_cpu(arch, tmp_path):
         "device, so scoring it against the CPU baselines would be vacuous."
     )
 
-    pins = json.loads(PINS.read_text(encoding="utf-8"))
+    pins = runner.read_pins()
     # Coverage cannot narrow: the loop below walks the run's own stems, so a stem
     # the engine stops writing would simply drop out of the gate. The harness
     # calls this bucket `missing` (runner.compare_fingerprints); assert it here.
     pinned_stems = set(pins["pins"][arch])
+    #: The same pin set in the shape the fingerprint helpers take: {stem: sha256}.
+    pinned_stems_sha = runner.pins_by_arch(pins).get(arch, {})
     assert set(rocm) == pinned_stems, (
         f"{arch}/cuda wrote {sorted(rocm)} against the pinned {sorted(pinned_stems)}: "
         f"missing={sorted(pinned_stems - set(rocm))} "
@@ -314,6 +316,25 @@ def test_rocm_matches_cpu(arch, tmp_path):
         f"{len(pinned_stems)} stems for this arch, and it is not allowed to be "
         "measured on fewer."
     )
+
+    # The reference side of every row below is a *file under _artifacts/*, and
+    # `_artifacts/` is gitignored: `ref.exists()` alone would score a copied-in
+    # regression as a pass (identical bytes give snr_db == inf), and this file is
+    # documented to run alone via `-k <arch>`, where the CPU suite's integrity
+    # check -- the only one of those bytes, in another file -- never executes. So
+    # the gate verifies its own reference audio here, against the tracked pins,
+    # using the runner's own helpers rather than a second hand-rolled sha256.
+    reference = runner.baseline_fingerprints(arch).get(arch, {})
+    reference_drift = runner.compare_fingerprints(pinned_stems_sha, reference)
+    assert pinned_stems_sha and not any(reference_drift.values()), (
+        f"{arch}: the on-disk CPU reference audio in {settings.BASELINE_DIR} is not "
+        f"the audio {PINS} pins -- changed={reference_drift['changed']} "
+        f"missing={reference_drift['missing']} "
+        f"unpinned={reference_drift['unpinned']}. Scoring a GPU run against bytes no "
+        "pin vouches for measures nothing (a file compared with itself is inf dB), "
+        "and these WAVs are gitignored, so the substitution would not show up in "
+        "git. Delete the disagreeing file and rerun the Task 4 CPU suite to "
+        "republish the pinned bytes; do not re-pin to make this line go green.")
 
     # Both numbers print, because only one of them is the arch's own: the peak is
     # inflated by whatever the earlier arch leaked into this window (vr reads

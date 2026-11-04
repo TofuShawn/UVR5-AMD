@@ -466,12 +466,46 @@ def baseline_target(arch: str, stem_name: str) -> Path:
 
 
 def publish_baseline(record: dict) -> None:
-    """Copy a staged capture into ``baseline/`` and point the record at it.
+    """Copy a staged capture into ``baseline/``, after re-checking it against the pins.
 
-    Safe by construction for the callers in this harness: it is only reached for
-    a capture whose fingerprints already match ``pins.json`` (or during an
-    explicit re-pin), so it republishes bytes the pins already vouch for.
+    Safe by construction *inside this function*, not by the caller having remembered
+    to check: the staged capture's own fingerprints are compared with the tracked
+    pin store for this ``(arch, stem)`` and a disagreement raises before a byte is
+    copied. That distinction is what the artifacts' gitignore makes dangerous --
+    an overwrite here is invisible in ``git status``, and Task 7 scores the fork's
+    central claim against exactly these files, so a caller that skipped its drift
+    check could have replaced the reference audio with a regression and left that
+    suite green (a WAV scored against itself is ``snr_db == inf``).
+
+    ``UVR_REPIN=1`` is the one exemption, and it has to live here rather than in
+    the caller: ``tests/test_golden_cpu.py`` publishes *before* it re-pins, so on
+    the deliberate path the capture legitimately disagrees with the pins that are
+    still on disk -- that is the act ``write_pins`` records, delta and all.
     """
+    if not should_repin():
+        arch = record["arch"]
+        pinned = pins_by_arch(read_pins()).get(arch, {})
+        if not pinned:
+            raise RuntimeError(
+                f"refusing to publish {arch} into {settings.BASELINE_DIR}: the pin "
+                f"store at {settings.PINS_FILE} has no entry for it, so nothing "
+                "tracked vouches for these bytes, and Task 7 would score its "
+                "cross-device claim against audio no pin can be checked back "
+                f"against. Say the capture is intended out loud with "
+                f"{settings.REPIN_ENV_VAR}=1 (which also writes the pins).")
+        disagreement = compare_fingerprints(pinned, capture_fingerprints(record))
+        if any(disagreement.values()):
+            raise RuntimeError(
+                f"refusing to publish {arch} into {settings.BASELINE_DIR}: the "
+                f"staged capture is not the bytes the pin store vouches for -- "
+                f"changed={disagreement['changed']} "
+                f"missing={disagreement['missing']} "
+                f"unpinned={disagreement['unpinned']}. These WAVs are gitignored, "
+                "so overwriting them is invisible in git while being exactly what "
+                "the ROCm gate scores against. Restore the pinned bytes (delete "
+                "the disagreeing file and rerun the Task 4 CPU suite), or say the "
+                f"move is intended out loud with {settings.REPIN_ENV_VAR}=1.")
+
     settings.BASELINE_DIR.mkdir(parents=True, exist_ok=True)
     for stem_name, entry in record["stems"].items():
         target = baseline_target(record["arch"], stem_name)
