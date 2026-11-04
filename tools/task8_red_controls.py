@@ -23,7 +23,17 @@ mutates the repository: the planted modules are written into ``tmp_path`` and th
 committed test is reached by monkeypatching the file list (``t8.engine_lint_files``)
 and the timeout bound (``t8.CHILD_TIMEOUT_SECONDS``), the same ``monkeypatch`` /
 ``pytest.raises`` style as ``tools/task7_red_controls.py`` -- which this file
-mirrors in shape and deliberately does not import.
+mirrors in shape and deliberately does not import. The one control that has to
+attack a *constant* rather than a file
+(``test_red_the_pin_fires_when_a_name_list_shrinks``) reads
+``tests/test_engine_purity.py`` and execs a patched copy of it in memory; the
+tracked file is never rewritten, and the unparseable plant
+(``test_red_an_unparseable_file_goes_red_not_a_pass``) lives only in ``tmp_path``,
+never in the engine tree.
+
+The per-child bound these controls run under is the committed one, read live from
+``t8.CHILD_TIMEOUT_SECONDS`` (see the ``CHILD_TIMEOUT`` note below) -- there is no
+second copy of the number here to drift from it.
 
 WHAT THE "BEFORE" COLUMN IS NOW
 -------------------------------
@@ -47,6 +57,7 @@ the filename is the whole guard). Run it explicitly:
 """
 from __future__ import annotations
 
+import ast
 import re
 import subprocess
 import sys
@@ -62,17 +73,43 @@ REPO = Path(__file__).resolve().parents[1]
 BLOCK_MARK = "blocked by test_engine_purity"
 SELF_ASSERT_MARK = "blocker ineffective"
 GUI_ROOT_MARK = "engine references the GUI root"
+PARSE_FAIL_MARK = "cannot lint a file it cannot parse"
+DUP_MARK = "duplicate name crept into"
+PURITY_FILE = REPO / "tests" / "test_engine_purity.py"
 
 # The pre-fix lint, rebuilt here only so the controls can show what the `ast`
 # migration bought. It is NOT in the committed test any more -- that is the point.
 OLD_REGEX = re.compile(r"(?<![.\w])root\.")
 
-CHILD_TIMEOUT = 600  # seconds; the children import torch
+# Item 3 (fix round 2): the controls' children run under the *committed* bound,
+# not under a second copy of it. `CHILD_TIMEOUT = 600` was exactly such a copy --
+# it never forked in value, but it could not follow `t8.CHILD_TIMEOUT_SECONDS` if
+# that ever changed, so the worst case here (27 long-lived children today: one per
+# `ENGINE_IMPORTS` entry, one per `GUI_PACKAGES` entry, plus the plant/armed/premise
+# probes) was set by a number nothing audited. The alias keeps the tie visible and
+# assertable; the live read below is what `run_child` actually uses, because a value
+# captured *at import time* would un-plug the monkeypatch in
+# `test_red_a_child_that_outlasts_the_bound_reads_as_a_timeout` -- that control
+# proves the bound by *narrowing* `t8.CHILD_TIMEOUT_SECONDS`, and a snapshot taken
+# before the patch would leave these children on the old, wider bound. That would
+# be a new hole created by the very fix meant to close one, so it is asserted.
+CHILD_TIMEOUT = t8.CHILD_TIMEOUT_SECONDS
+
+
+def child_timeout() -> float:
+    """The committed per-child bound, read at call time so a patch lands.
+
+    The children import torch, so a run costs real seconds and the bound is
+    headroom for a cold start that still catches a hang -- with exactly one
+    number behind it, the one in `tests/test_engine_purity.py`.
+    """
+    return t8.CHILD_TIMEOUT_SECONDS
 
 
 def run_child(script: str, cwd: Path = REPO) -> subprocess.CompletedProcess:
     return subprocess.run([sys.executable, "-c", script], cwd=cwd,
-                          capture_output=True, text=True, timeout=CHILD_TIMEOUT)
+                          capture_output=True, text=True,
+                          timeout=child_timeout())
 
 
 def child_with_load_path(script_tail: str, tmp: Path) -> str:
@@ -345,6 +382,46 @@ def test_red_sweep_that_sweeps_nothing_goes_red(monkeypatch):
     print('[red] empty sweep -> AssertionError("lint swept nothing")', flush=True)
 
 
+def test_red_an_unparseable_file_goes_red_not_a_pass(tmp_path, monkeypatch):
+    """Item 2: guard 2's `assert not unparseable` has a red run of its own.
+
+    Round 1 added that line on its own initiative, and every other use of
+    `unparseable` in this file asserts the *happy* polarity (`not unparseable`),
+    so deleting the line kept all 15 controls green -- an un-asked-for guard whose
+    proof is missing is how a ratchet quietly loses a tooth. The plant is a file
+    that carries BOTH a real violation and a syntax error: a sweep that skipped
+    unparseable files would either report the hit or report nothing at all, and
+    either would look like coverage. It is written into `tmp_path` and reached by
+    monkeypatching `engine_lint_files`, never into the engine tree.
+    """
+    broken = tmp_path / "demucs" / "plant_unparseable.py"
+    broken.parent.mkdir(parents=True)
+    broken.write_text("def oops(:\n    return root.destroy()\n", encoding="utf-8")
+
+    hits, unparseable = t8.global_root_hits([broken])
+    print(f"[red] planted syntax error -> hits={hits} unparseable={unparseable}",
+          flush=True)
+    assert len(unparseable) == 1, (
+        f"the sweep did not record the broken file as unparseable, so a parse "
+        f"failure is being skipped somewhere: {unparseable}")
+    assert hits == [], (
+        f"a file the parser rejected cannot have yielded a real hit, so this is "
+        f"a predicate change, not the guard: {hits}")
+    assert str(broken) in unparseable[0] and "SyntaxError" in unparseable[0], (
+        "the report does not name the file or the failure, so the red message "
+        f"would not help a human: {unparseable[0]}")
+
+    monkeypatch.setattr(t8, "engine_lint_files", lambda *a, **k: [broken])
+    with pytest.raises(AssertionError, match=PARSE_FAIL_MARK) as fired:
+        t8.test_no_global_tkinter_root_reference()
+    message = str(fired.value)
+    print(f"[red] committed guard 2 said: {message.strip()}", flush=True)
+    assert GUI_ROOT_MARK not in message, (
+        "the parse failure reached the hits assert, which means unparseable files "
+        "are being skipped rather than reported -- the coverage hole is back:\n"
+        + message)
+
+
 def test_red_ast_sweep_actually_sweeps_the_engine_files():
     """The sweep's reach: every engine file is a real path and is parsed.
 
@@ -490,6 +567,110 @@ def test_red_ast_predicate_fires_on_a_locally_bound_root_too(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# Fix round 2, Item 1: the pin -- the only audit that does not read its own input
+# --------------------------------------------------------------------------- #
+
+def rebind_literal(source: str, name: str, value) -> str:
+    """`source` with the top-level literal bound to `name` replaced by `value`.
+
+    The sabotage is rewritten from the *live* list (never a copy of the names
+    typed into this file, which is the forking habit Item 3 exists to break) and
+    located with `ast`, so a re-wrapped or re-ordered list in the test file cannot
+    make the patch silently miss.
+    """
+    target = next((node for node in ast.parse(source).body
+                   if isinstance(node, ast.Assign)
+                   and any(isinstance(t, ast.Name) and t.id == name
+                           for t in node.targets)), None)
+    assert target is not None, (
+        f"{name} is no longer a plain top-level assignment in "
+        f"tests/test_engine_purity.py, so this control's sabotage no longer "
+        f"reaches the list it claims to narrow -- read that file and fix the "
+        f"control instead of letting it pass vacuously")
+    current = ast.literal_eval(target.value)
+    assert type(current) is type(value), (
+        f"{name} is a {type(current).__name__} in the test file but this control "
+        f"patched it with a {type(value).__name__}; the rewrite would not be the "
+        f"same edit a human would make")
+    lines = source.splitlines(keepends=True)
+    first = lines[target.lineno - 1]
+    indent = first[: len(first) - len(first.lstrip())]
+    replacement = f"{indent}{name} = {value!r}\n"
+    return "".join(lines[: target.lineno - 1] + [replacement]
+                   + lines[target.end_lineno:])
+
+
+def patched_purity(name: str, value):
+    """The committed test source, one list rebound, loaded in memory.
+
+    The tracked file is only *read*: the patched copy is compiled and exec'd into
+    a fresh namespace whose `__file__` still points at the real test, so `ROOT`
+    resolves normally and nothing is written to disk.
+    """
+    source = PURITY_FILE.read_text(encoding="utf-8")
+    patched = rebind_literal(source, name, value)
+    assert patched != source, (
+        f"rebinding {name} to {value!r} changed nothing, so the sabotage is a "
+        f"no-op and the pin could not have been tested by it")
+    ns = {"__name__": f"patched_{name.lower()}_purity",
+          "__file__": str(PURITY_FILE)}
+    exec(compile(patched, "patched_test_engine_purity.py", "exec"), ns)
+    return ns
+
+
+def test_red_the_pin_fires_when_a_name_list_shrinks():
+    """Trim one name from each list and the pin goes red *naming that name*.
+
+    The positive case runs first: if the committed pin did not pass against the
+    committed lists, a red from a patched copy would prove nothing. Then each
+    sabotage checks the property that makes the pin worth having -- the dropped
+    name is still in the pin, so the pin is a second source and not
+    `frozenset(GUI_PACKAGES) == frozenset(GUI_PACKAGES)` in disguise.
+    """
+    t8.test_the_two_lists_have_not_shrunk()
+    print("[red] pin on the committed lists -> PASSES (as it must)", flush=True)
+
+    for name, pin_name in (("GUI_PACKAGES", "PINNED_GUI_PACKAGES"),
+                           ("ENGINE_IMPORTS", "PINNED_ENGINE_IMPORTS")):
+        live = getattr(t8, name)
+        dropped = live[-1]
+        trimmed = type(live)(x for x in live if x != dropped)
+        assert len(trimmed) == len(live) - 1, (
+            f"{dropped} is not a single entry of {name}; the sabotage would trim "
+            f"more than it claims")
+        ns = patched_purity(name, trimmed)
+        assert dropped not in ns[name], "the patch did not reach the live module"
+        assert dropped in ns[pin_name], (
+            f"{dropped} is missing from {pin_name} as well, so the pin is derived "
+            f"from {name} rather than copied next to it -- this control would be "
+            f"watching a tautology go red")
+        with pytest.raises(AssertionError) as fired:
+            ns["test_the_two_lists_have_not_shrunk"]()
+        message = str(fired.value)
+        missing_line = next((ln for ln in message.splitlines()
+                             if ln.strip().startswith("MISSING from " + name)), "")
+        assert dropped in missing_line and pin_name in message, (
+            f"the pin failed, but not in the way that helps a human: it must name "
+            f"{dropped!r} as missing and {pin_name} as the thing to edit.\n"
+            f"{message}")
+        print(f"[red] {name} trimmed by one ({dropped}) -> pin AssertionError:\n"
+              f"      {missing_line.strip()}", flush=True)
+
+    # The length half of the pin: a repeated name agrees with the pin as a *set*
+    # and grows the *list*, so only the len() assert can see it.
+    dup_name = "ENGINE_IMPORTS"
+    live = list(t8.ENGINE_IMPORTS)
+    ns = patched_purity(dup_name, live + [live[0]])
+    assert frozenset(ns[dup_name]) == ns["PINNED_ENGINE_IMPORTS"], (
+        "premise broken: the duplicate was supposed to be invisible to set "
+        "equality; if it is not, the len() assert this control proves is dead code")
+    with pytest.raises(AssertionError, match=DUP_MARK) as fired:
+        ns["test_the_two_lists_have_not_shrunk"]()
+    print(f"[red] {dup_name} with a repeated name -> "
+          f"{str(fired.value).splitlines()[0]}", flush=True)
+
+
+# --------------------------------------------------------------------------- #
 # Item 5: the subprocess bound is real, not a decoration
 # --------------------------------------------------------------------------- #
 
@@ -500,8 +681,26 @@ def test_red_a_child_that_outlasts_the_bound_reads_as_a_timeout(monkeypatch):
     `demucs.pretrained`, MIOpen init) hangs the whole suite forever; this control
     proves the bound fires and, crucially, that it fires as a *timeout* rather
     than as a mysterious purity failure.
+
+    Item 3 rides on the same monkeypatch: it is the only place that both narrows
+    `t8.CHILD_TIMEOUT_SECONDS` and needs the controls' *own* children to obey the
+    narrowing, so it is where a fork between the two bounds shows up.
     """
+    assert CHILD_TIMEOUT == t8.CHILD_TIMEOUT_SECONDS, (
+        f"the controls file has forked from the bound it exists to demonstrate "
+        f"(CHILD_TIMEOUT={CHILD_TIMEOUT} vs t8.CHILD_TIMEOUT_SECONDS="
+        f"{t8.CHILD_TIMEOUT_SECONDS}). Read the Item 3 comment above "
+        f"`CHILD_TIMEOUT`: the controls must not carry a second copy of this "
+        f"number.")
     monkeypatch.setattr(t8, "CHILD_TIMEOUT_SECONDS", 0.05)
+    assert child_timeout() == 0.05, (
+        "the controls captured the bound at import time, so this monkeypatch "
+        "changes only the test's child and not these -- the tie Item 3 asks for "
+        "would be decorative")
+    with pytest.raises(subprocess.TimeoutExpired) as sleeping:
+        run_child("import time\nwhile True: time.sleep(0.05)\n")
+    print(f"[red] run_child under the patched bound -> {str(sleeping.value)}",
+          flush=True)
     with pytest.raises(AssertionError, match="TIMEOUT") as fired:
         t8.test_engine_imports_with_tkinter_unavailable()
     message = str(fired.value)

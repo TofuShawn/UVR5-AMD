@@ -1,7 +1,11 @@
 """Task 8: the engine purity ratchet.
 
 `separate.py`, `backends.py` and every `lib_v5/**/*.py`, `demucs/**/*.py` file
-must be importable with the tkinter GUI packages unavailable. Note the scope:
+must be importable with the tkinter GUI packages unavailable -- but read that
+sentence against the split below, because it spans both guards: guard 1 imports
+the **14** modules named in `ENGINE_IMPORTS` and nothing else, and the
+**38-file** "every file" claim belongs to guard 2, which *lints* all of them and
+imports none. Note the scope:
 that is a *tkinter*-freedom claim, not a GUI-freedom one -- PySide6/Qt are
 deliberately not blocked here (Task 13 owns that), so nothing in this file
 proves the engine is GUI-free. Two guards, split deliberately, and each one is
@@ -29,7 +33,11 @@ blind to exactly what the other sees:
 Both "what it cannot see" clauses are load-bearing, not hedging: a ratchet whose
 docstring implies more than it delivers invites the edit that defeats it. The
 red runs behind every claim here are committed as `tools/task8_red_controls.py`
-(run it explicitly; it is not collected by bare `pytest`).
+(run it explicitly; it is not collected by bare `pytest`). A third test,
+`test_the_two_lists_have_not_shrunk`, is the same defense one level up: both
+guards and both controls take `GUI_PACKAGES` and `ENGINE_IMPORTS` as *input*, so
+neither can see one of them shrink, and the pin checks the two lists against
+frozen literals instead.
 """
 import ast, pathlib, subprocess, sys
 
@@ -50,6 +58,9 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 # `tools/task8_red_controls.py::test_red_table_names_every_engine_module`; today's
 # column is 14 GREEN, and the 7-RED column lives in `git show 3e612ea` (the two
 # deletions), which the controls re-create the failure signature of by planting.
+# Membership is pinned by `PINNED_ENGINE_IMPORTS` below: "do not trim" in prose is
+# not enforceable, and 13 of these 14 names can be deleted with both guards
+# passing.
 ENGINE_IMPORTS = ["separate", "backends", "lib_v5.mdxnet", "lib_v5.bs_roformer",
                   "lib_v5.mel_band_roformer", "lib_v5.attend", "lib_v5.results",
                   "lib_v5.apollo_inference", "demucs.apply", "demucs.utils",
@@ -57,7 +68,37 @@ ENGINE_IMPORTS = ["separate", "backends", "lib_v5.mdxnet", "lib_v5.bs_roformer",
                   "demucs.htdemucs"]
 
 
+# The block set: what the child's finder refuses. Pinned by `PINNED_GUI_PACKAGES`
+# for the same reason -- the controls loop over this tuple, so a narrower tuple
+# audits less and still passes.
 GUI_PACKAGES = ("tkinter", "gui_data.tkinterdnd2", "gui_data.sv_ttk", "PIL.ImageTk")
+
+# Fix round 2, Item 1: frozen second copies of both name lists, asserted against
+# them by `test_the_two_lists_have_not_shrunk`. They are *separate literals* on
+# purpose: every other check on these two lists derives its expectation from the
+# list itself (`guard_script` builds BLOCKED from `GUI_PACKAGES`; the controls
+# loop over both), so a trim shrinks the audit with the audit's input. Both
+# halves reproduced on this machine at `71683e9`: `GUI_PACKAGES` narrowed to two
+# entries plus `ENGINE_IMPORTS` narrowed to `["separate"]` leaves this file's two
+# guards PASSED (2 passed, RC=0) and every control green -- the controller's
+# wider subsets measured 5 and 4 passed for the same two edits. Emptying either
+# list *is* caught (the child's `blocker ineffective` self-assert), which is why
+# this is exact set equality and not non-emptiness. Reordering must not trip it;
+# a name arriving or leaving must, in either direction, so the pin is `==` and
+# not `<=`.
+# This is not the plan's forbidden "pin the count to 38": that ruling covers
+# guard 2's *glob*, whose count stays printed-only because a vendored file
+# appearing must not break the suite for the wrong reason. These are hand-named
+# lists, and a name leaving one is exactly the change that must be deliberate.
+PINNED_GUI_PACKAGES = frozenset({"tkinter", "gui_data.tkinterdnd2",
+                                 "gui_data.sv_ttk", "PIL.ImageTk"})
+
+PINNED_ENGINE_IMPORTS = frozenset({
+    "separate", "backends", "lib_v5.mdxnet", "lib_v5.bs_roformer",
+    "lib_v5.mel_band_roformer", "lib_v5.attend", "lib_v5.results",
+    "lib_v5.apollo_inference", "demucs.apply", "demucs.utils", "demucs.repo",
+    "demucs.pretrained", "demucs.states", "demucs.htdemucs"})
+
 
 # Guard 2's whole sweep, as a glob, so it follows the engine as it grows instead
 # of drifting behind a hand-named list. This is the set the plan's constraint
@@ -187,3 +228,57 @@ def test_no_global_tkinter_root_reference():
         "guard 2 cannot lint a file it cannot parse, so a parse failure is a "
         "coverage hole and must not read as a pass:\n" + "\n".join(unparseable))
     assert not hits, "engine references the GUI root:\n" + "\n".join(hits)
+
+
+def pin_drift(list_name, live, pinned, pin_name):
+    """A pin failure text a human can act on: what left, what arrived, what to do.
+
+    A self-referential `frozenset(GUI_PACKAGES) == frozenset(GUI_PACKAGES)` is
+    what this replaces -- it can never fail, so it proves nothing. Here the two
+    sides come from different places in the file, so the message is allowed to
+    catch them disagreeing, and to say what the reader should do next.
+    """
+    now = frozenset(live)
+    missing = sorted(pinned - now)
+    extra = sorted(now - pinned)
+    return (
+        f"{list_name} has drifted from its pinned copy `{pin_name}`.\n"
+        f"  MISSING from {list_name} (dropped -- and every red control that loops "
+        f"over {list_name} lost its coverage of this name with it): {missing}\n"
+        f"  NOT IN the pin (newly added, so nothing here proves it belongs): "
+        f"{extra}\n"
+        f"  pinned = {sorted(pinned)}\n"
+        f"  live   = {sorted(now)}\n"
+        f"  Do one of two things: put the name back, or -- if the change is "
+        f"deliberate -- edit {pin_name} in this same file in the SAME commit and "
+        f"say why in the commit message. Do not delete the pin, do not weaken it "
+        f"to a non-emptiness or subset check, and do not rebuild it from "
+        f"{list_name}: that is the circular self-audit this test exists to "
+        f"remove.")
+
+
+def test_the_two_lists_have_not_shrunk():
+    """The pin (Item 1): both name lists still hold exactly their pinned names.
+
+    Guard 1 and the controls take these two lists as *input*, so neither can
+    report a shrink: narrow `GUI_PACKAGES` and `guard_script` narrows the blocker
+    in step; trim `ENGINE_IMPORTS` and the per-module table prints all-GREEN rows
+    for the shorter list. Both were reproduced at `71683e9` (4 -> 2 and 14 -> 1
+    entries, guards green), which is why the pin lives here: this file is collected
+    by the suite, `tools/task8_red_controls.py` deliberately is not.
+    """
+    assert frozenset(GUI_PACKAGES) == PINNED_GUI_PACKAGES, pin_drift(
+        "GUI_PACKAGES", GUI_PACKAGES, PINNED_GUI_PACKAGES, "PINNED_GUI_PACKAGES")
+    assert len(GUI_PACKAGES) == len(PINNED_GUI_PACKAGES), (
+        "a duplicate name crept into GUI_PACKAGES: the set still agrees with "
+        "PINNED_GUI_PACKAGES but the tuple grew -- duplicates hide from set "
+        "equality and would be emitted twice into the child's BLOCKED list. "
+        "Delete the repeat, or update the pin in the same commit and say why.")
+    assert frozenset(ENGINE_IMPORTS) == PINNED_ENGINE_IMPORTS, pin_drift(
+        "ENGINE_IMPORTS", ENGINE_IMPORTS, PINNED_ENGINE_IMPORTS,
+        "PINNED_ENGINE_IMPORTS")
+    assert len(ENGINE_IMPORTS) == len(PINNED_ENGINE_IMPORTS), (
+        "a duplicate name crept into ENGINE_IMPORTS: the set still agrees with "
+        "PINNED_ENGINE_IMPORTS but the list grew, so guard 1 imports the repeat "
+        "and the per-module table spawns a child per repeat. Delete the repeat, "
+        "or update the pin in the same commit and say why.")
