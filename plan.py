@@ -14,7 +14,9 @@ Decomposition of the 92, in the order the ruling states it: **34** names are
 byte-identical to a `Settings` field, **3** to a `ModelSpec` field
 (`primary_stem`, `process_method`, `secondary_stem`), **7** are params-table keys
 read out of `spec.model_data` (`is_bv_model`, `is_karaoke`, `is_roformer`,
-`mdx_dim_f_set`, `mdx_dim_t_set`, `mdx_n_fft_scale_set`, `vr_model_param`), **4**
+`mdx_dim_f_set`, `mdx_dim_t_set`, `mdx_n_fft_scale_set`, `vr_model_param`) -- the
+first three only under the arch branch `ModelData` reaches them from, so they are
+derived after the branch chain rather than in it, **4**
 are `DEFAULT_DATA`-backed (`chunks`, `is_denoise`, `is_gpu_conversion`,
 `is_mixer_mode` -- `gui_data/constants.py:572`) and **44** are computed by
 `ModelData`'s own body or by the three `root.` decision methods
@@ -231,7 +233,7 @@ class RunPlan:
     is_mdx_ckpt: bool = False               # UVR.py:399/695-696
     mdx_c_configs: typing.Any = None        # UVR.py:402/546-550
     is_target_instrument: bool = False      # UVR.py:472/552-553
-    mixer_path: pathlib.Path | None = None  # UVR.py:419/709 (BASE_PATH/lib_v5/mixer.ckpt)
+    mixer_path: pathlib.Path | None = None  # UVR.py:419 (:243 lib_v5/mixer.ckpt) / :530+:709 (MDX_Net_Models/mixer_val.ckpt)
     DENOISER_MODEL: pathlib.Path | None = None   # UVR.py:379
     DEVERBER_MODEL: pathlib.Path | None = None   # UVR.py:380
     is_denoise_model: bool = False          # UVR.py:383 (gated on the denoise weight)
@@ -342,7 +344,10 @@ def _build(*, settings: settings_module.Settings, cat: catalog.Catalog,
         model_name=spec.name,                             # UVR.py:421
         model_path=model_path,
         model_basename=model_basename,
-        mixer_path=_REPO / "lib_v5" / "mixer.ckpt",       # UVR.py:243/419/709
+        # UVR.py:419 initialises `mixer_path` to MDX_MIXER_PATH -- `BASE_PATH/lib_v5/
+        # mixer.ckpt` (:243), a repo-tree file, which is why it is `_REPO`-anchored --
+        # and the MDX branch overwrites it (see `plan_kwargs["mixer_path"]` below).
+        mixer_path=_REPO / "lib_v5" / "mixer.ckpt",            # UVR.py:243/419
         DENOISER_MODEL=denoiser,                          # UVR.py:379
         DEVERBER_MODEL=deverber,                          # UVR.py:380
         is_normalization=settings.is_normalization,       # UVR.py:385
@@ -389,11 +394,9 @@ def _build(*, settings: settings_module.Settings, cat: catalog.Catalog,
         ensemble_secondary_stem=None,                     # UVR.py:427/477
         model_samplerate=44100,                           # UVR.py:440
         model_capacity=(32, 128),                         # UVR.py:441/500
-        is_roformer=bool(params.get("is_roformer", False)),  # UVR.py:541-542
-        is_karaoke=bool(params.get(IS_KARAOKEE, False)),  # UVR.py:686-687
-        is_bv_model=bool(params.get(IS_BV_MODEL, False)),  # UVR.py:688-689
-        bv_model_rebalance=(params.get(IS_BV_MODEL_REBAL, 0)
-                            if params.get(IS_BV_MODEL, False) else 0),  # UVR.py:690-691
+        # `is_roformer`, `is_karaoke`, `is_bv_model` and `bv_model_rebalance` are the
+        # four params-row reads `ModelData` reaches only from inside a branch, so they
+        # are derived after the arch chain below rather than here.
         # Assigned unconditionally by `ModelData` in one of the three arch branches,
         # with the same coercion whichever branch ran, so they are set once here.
         margin=int(_num("margin", settings.margin)),                    # UVR.py:527
@@ -403,7 +406,14 @@ def _build(*, settings: settings_module.Settings, cat: catalog.Catalog,
         segment=settings.segment,                                       # UVR.py:608
         is_chunk_demucs=settings.is_chunk_demucs,                       # UVR.py:609
         mdxnet_stem_select=settings.mdxnet_stems,                       # UVR.py:392 (near-miss rename)
-        aggression_setting=_num("aggression_setting", settings.aggression_setting) / 100,  # UVR.py:492
+        # `UVR.py:492` is `float(int(<var>) / 100)`: the widget text is truncated to
+        # an int *before* the divide, so the combobox's integer steps are what reach
+        # `separate.py:371`. `Settings` types the field `int` and refuses `'5.7'`
+        # outright, so through a typed instance `int()` changes nothing; restoring it
+        # keeps the truncation half of the expression, instead of letting a value that
+        # arrived by some other route (a legacy `data.pkl` row, a forced attribute)
+        # divide straight through and produce an aggressiveness the GUI cannot express.
+        aggression_setting=int(_num("aggression_setting", settings.aggression_setting)) / 100,  # UVR.py:492
         is_tta=settings.is_tta,                     # UVR.py:493
         is_post_process=settings.is_post_process,   # UVR.py:494
         window_size=int(_num("window_size", settings.window_size)),  # UVR.py:495
@@ -492,6 +502,17 @@ def _build(*, settings: settings_module.Settings, cat: catalog.Catalog,
         plan_kwargs["is_secondary_model_activated"] = (
             settings.mdx_is_secondary_model_activate and not is_secondary_model)  # UVR.py:526
         plan_kwargs["is_mdx_ckpt"] = str(spec.name).endswith(".ckpt")     # UVR.py:695-696
+        # `UVR.py:530` calls `get_mdx_model_path()`, and `:709` -- the last statement
+        # of that method, outside its `for/else`, so it runs for every MDX model --
+        # overwrites `mixer_path` with `MDX_MODELS_DIR/mixer_val.ckpt`.  A different
+        # file in a different tree: `MDX_MODELS_DIR` is `MODELS_DIR/MDX_Net_Models`
+        # (:240) under the *model* root (:238), not `BASE_PATH/lib_v5` (:243/:419).
+        # Upstream builds the path without testing it, so this does too.  Nothing
+        # consumes it today -- `is_mixer_mode` is hard-False here (`:337`) and at
+        # `UVR.py:414`, so `lib_v5/mdxnet.py:123` never constructs `Mixer` -- but the
+        # field is one of the 92 `separate.py:164` copies onto its own object, and the
+        # branch is what makes the value the one an MDX run would hand to it.
+        plan_kwargs["mixer_path"] = (cat.model_root / "MDX_Net_Models" / "mixer_val.ckpt")
         config_yaml = params.get("config_yaml")
         if config_yaml:                                                     # UVR.py:544-550
             plan_kwargs["is_mdx_c"] = True
@@ -515,10 +536,24 @@ def _build(*, settings: settings_module.Settings, cat: catalog.Catalog,
                 else:
                     primary_stem = settings.mdxnet_stems                  # UVR.py:576 (mdxnet_stem_select)
         else:
+            # UVR.py:584 indexes the params row -- `self.model_data["compensate"]` --
+            # when the widget holds AUTO_SELECT, and raises KeyError when the row has
+            # no such key. A missing key must not become a silent value here either:
+            # `separate.py:717` multiplies the source by `plan.compensate`, so the
+            # AUTO_SELECT string reaching that line would raise mid-run, after the
+            # weights are loaded, with a message that blames torch.
+            if settings.compensate == AUTO_SELECT:
+                if "compensate" not in params:
+                    raise PlanError(
+                        f'"{spec.name}" (arch {spec.arch!r}, hash {spec.hash}) has no '
+                        f'"compensate" key in its params row, and Settings.compensate '
+                        f"is {AUTO_SELECT!r}: UVR.py:584 indexes that key and raises "
+                        "when it is absent, so there is nothing to fall back to.")
+                compensate = params["compensate"]
+            else:
+                compensate = _num("compensate", settings.compensate)
             plan_kwargs.update(                                           # UVR.py:584-589
-                compensate=(params.get("compensate", AUTO_SELECT)
-                            if settings.compensate == AUTO_SELECT
-                            else _num("compensate", settings.compensate)),
+                compensate=compensate,
                 mdx_dim_f_set=params.get("mdx_dim_f_set"),
                 mdx_dim_t_set=params.get("mdx_dim_t_set"),
                 mdx_n_fft_scale_set=params.get("mdx_n_fft_scale_set"),
@@ -542,6 +577,33 @@ def _build(*, settings: settings_module.Settings, cat: catalog.Catalog,
         )
         primary_stem = (PRIMARY_STEM if settings.demucs_stems == ALL_STEMS  # UVR.py:737
                         else settings.demucs_stems)
+
+    # -- the params-row reads upstream reaches only from inside one branch ----- #
+    # `is_roformer` is initialised False (`UVR.py:471`) and written only at `:541-542`,
+    # inside the MDX branch; its two readers (`:559`/`:562`) are MDX too.  The karaoke
+    # trio comes from `check_if_karaokee_model` (`:685-691`), which is called from the
+    # VR branch (`:520`) and from the MDX *non*-config branch (`:590`) -- never from the
+    # `config_yaml` path, and never for Demucs.  So a Demucs model, and an mdx_c model,
+    # keep `is_karaoke`/`is_bv_model` False and `bv_model_rebalance` 0 even when their
+    # params row carries the keys.  Reading them unconditionally instead would light up
+    # `is_sec_bv_rebalance` (`:672-673`, below) for a Demucs vocal splitter upstream
+    # leaves at 0, and would make `separate.py:530-532` rebalance stems that never were.
+    if process_method == MDX_ARCH_TYPE:
+        plan_kwargs["is_roformer"] = bool(params.get("is_roformer", False))  # UVR.py:541-542
+    else:
+        plan_kwargs["is_roformer"] = False                                # UVR.py:471
+    is_karaoke_check = (process_method == VR_ARCH_TYPE
+                        or (process_method == MDX_ARCH_TYPE
+                            and not params.get("config_yaml")))        # UVR.py:520 / :544+:590
+    if is_karaoke_check:
+        plan_kwargs["is_karaoke"] = bool(params.get(IS_KARAOKEE, False))   # UVR.py:686-687
+        plan_kwargs["is_bv_model"] = bool(params.get(IS_BV_MODEL, False))  # UVR.py:688-689
+        plan_kwargs["bv_model_rebalance"] = (params.get(IS_BV_MODEL_REBAL, 0)
+                                             if params.get(IS_BV_MODEL, False) else 0)  # :690-691
+    else:
+        plan_kwargs["is_karaoke"] = False                               # UVR.py:457-459
+        plan_kwargs["is_bv_model"] = False
+        plan_kwargs["bv_model_rebalance"] = 0
 
     if is_vocal_split_model and model_path is not None:                    # UVR.py:656-662
         # A splitter is named for what it takes *out* of the vocal track, so its own
@@ -580,8 +642,13 @@ def _build(*, settings: settings_module.Settings, cat: catalog.Catalog,
                        primary_model_primary_stem=stem,
                        is_primary_model_primary_stem_only=plan_kwargs["is_primary_stem_only"],
                        is_primary_model_secondary_stem_only=plan_kwargs["is_secondary_stem_only"])
-        if nested.model_basename == model_basename:                         # UVR.py:680-681
-            return None, None
+        # No basename test here.  Upstream's `secondary_model_data` (`UVR.py:675-681`)
+        # *keeps* the nested model when it names the primary's own weight and clears
+        # only `is_secondary_model_activated` (`:681`), and the 4-stem loop calls the
+        # same helper per stem (`:633-637`) and then recomputes the flag wholesale
+        # (`:640`), so a self-naming slot stays in `secondary_model_4_stem` and still
+        # gets blended.  The gate therefore belongs to the single-slot caller -- see
+        # `activated = ...` below -- not to this helper, which both callers share.
         return nested, scale
 
     activated = bool(plan_kwargs["is_secondary_model_activated"]) and model_path is not None
@@ -608,7 +675,8 @@ def _build(*, settings: settings_module.Settings, cat: catalog.Catalog,
             nested, scale = _secondary_for_stem(stem)
             plan_kwargs["secondary_model"] = nested
             plan_kwargs["secondary_model_scale"] = scale
-            activated = nested is not None                                  # UVR.py:679
+            activated = (nested is not None
+                         and nested.model_basename != model_basename)       # UVR.py:679-681
 
     if process_method == DEMUCS_ARCH_TYPE and not is_secondary_model:      # UVR.py:650
         # `UVR.py:620` zeroes the pre-proc activation once `is_secondary_model` is
@@ -627,7 +695,18 @@ def _build(*, settings: settings_module.Settings, cat: catalog.Catalog,
                     settings.is_demucs_pre_proc_model_inst_mix)            # UVR.py:654
 
     if not sec_effective:                                                  # UVR.py:667
-        vspec = cat.vocal_split_for(splitter_name, is_activated=bool(vsel.get("is_activated", True)))  # :7103-7114
+        # Absent means *not switched on*: upstream's gate is
+        # `set_vocal_splitter_var.get() != NO_MODEL and is_set_vocal_splitter_var.get()`
+        # (`UVR.py:7107`), so the activation flag has to be read as False when the
+        # selection entry does not carry one; defaulting to True would let a caller who
+        # only ever named a splitter get a free second model.  Not a behaviour change in
+        # practice on any input `build()` actually sees: an absent or NO_MODEL name
+        # short-circuits first (`catalog.vocal_split_for` returns None at `:804` on the
+        # `not requested` test, before it looks at `is_activated`), so the default only
+        # decides the case where a name *is* given without a flag -- and that is exactly
+        # the case `:7107` answers with False.
+        vspec = cat.vocal_split_for(splitter_name,
+                                    is_activated=bool(vsel.get("is_activated", False)))  # :7103-7114
         if vspec is not None:
             nested = child(vspec, is_vocal_split_model=True)
             plan_kwargs["vocal_split_model"] = nested
@@ -664,7 +743,9 @@ def build(*, settings: settings_module.Settings, catalog: catalog.Catalog,
     <name>, "voc_inst_secondary_model_scale": <float>, "other_...", "drums_...",
     "bass_..."}, "demucs_pre_proc_model": <name>, "vocal_splitter": {"name": <name>,
     "is_activated": <bool>, "primary_stem_only_label": <str>, "secondary_stem_only_label":
-    <str>}}`.  Absent or `catalog.NO_MODEL` means no model selected (`UVR.py:7075/:7084`).
+    <str>}}`.  Absent or `catalog.NO_MODEL` means no model selected (`UVR.py:7075/:7084`),
+    and an absent `vocal_splitter["is_activated"]` means selected-but-switched-off, which
+    is the same answer (`UVR.py:7107`).
     """
     return _build(settings=settings, cat=catalog, backend=backend, spec=spec,
                   selections=dict(selections or {}), is_secondary_model=False,
