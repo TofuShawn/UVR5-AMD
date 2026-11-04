@@ -86,6 +86,21 @@ Consequences worth naming:
     a UI hands this type the widget *text*, and an instance that kept `'352'` in
     an `int` field would compare unequal to the `352` the same file loads back.
 
+What the coercion refuses (fix round 2)
+---------------------------------------
+`_coerce` is the only place a value changes type, and its docstring carries the
+boundaries it rules on, all three of them tested in `tests/test_settings.py`: a `str`
+field takes text, or the number/`bool` a `tk.StringVar` would have stringified, and
+**raises** on anything that has to be *rendered* -- `Settings(device_set=[])` used to
+hold `'[]'`; an `int` field admits a whole-number float (`352.0` -> `352`, exact and
+lossless) but refuses Python's digit separators (`'1_000'` parses to `1000`, which is
+not the text that was typed); and no numeric field takes `nan`/`inf`, numeric or text,
+because such a value alone breaks `constructed == load(save(constructed))` (nan != nan)
+and `json.dumps` writes it as a bare `NaN`, which is not JSON an ECMA-404 parser
+accepts. `save()` passes `allow_nan=False`, so the writer holds that line too. The
+field-type table `__post_init__` coerces against is handed out as a `MappingProxyType`,
+so no caller can rewrite what every later construction reads.
+
 `device_set` (ruling R-T9-device): one raw string
 -------------------------------------------------
 `Settings.device_set` is the combobox value verbatim. The same widget is filled
@@ -125,11 +140,13 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import math
 import os
 import pickle
 import typing
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 
 from gui_data.constants import ALL_STEMS, CHOOSE_STEM_PAIR, DEFAULT_DATA
 
@@ -148,8 +165,10 @@ _APP_CTOR_FIELDS = ("ensemble_main_stem", "mdxnet_stems")
 
 _TYPES: dict[str, type] = {"bool": bool, "int": int, "float": float, "str": str}
 
-#: Memoised `{field name: type}`; filled on the first `_field_types()` call.
-_FIELD_TYPES: dict[str, type] | None = None
+#: Memoised `{field name: type}`, sealed, filled on the first `_field_types()` call.
+#: A read-only view, because the callers below hand it out to every construction; see
+#: `_field_types`.
+_FIELD_TYPES: typing.Mapping[str, type] | None = None
 
 _TRUE_TOKENS = frozenset({"True", "true", "1"})
 _FALSE_TOKENS = frozenset({"False", "false", "0", ""})
@@ -210,6 +229,21 @@ def _to_bool(field_name: str, value: object) -> bool:
     raise TypeError(f"Settings.{field_name}: {type(value).__name__} is not a stored flag")
 
 
+def _reject_digit_separators(field_name: str, value: object) -> None:
+    """Refuse PEP 515 underscore separators in a numeric field's text.
+
+    `int('1_000')` and `float('1_0.5')` both parse, so without this a number written
+    with separators would silently arrive as a *different number* than the text the user
+    typed. Underscores are a Python source-code affordance: no `tk.StringVar` produces
+    them and no JSON number may contain one, so nothing that can reach this module from
+    a widget or a file loses anything by the refusal. Whitespace stays accepted --
+    `int(' 1024 ')` -- because padded widget text is real. (fix round 2, M2, ruled.)
+    """
+    if isinstance(value, str) and "_" in value:
+        raise ValueError(f"Settings.{field_name}: {value!r} uses a Python digit "
+                         f"separator, which no widget text or JSON number can contain")
+
+
 def _coerce(field_name: str, value: object, typ: type) -> typing.Any:
     """Parse one value into the field's declared type. No other magic.
 
@@ -220,6 +254,41 @@ def _coerce(field_name: str, value: object, typ: type) -> typing.Any:
     bool/int/float/str parsing of its own JSON and its own constructor arguments: it
     never resolves a sentinel, never splits a device string, never validates against
     hardware, and never rewrites a string it was already given.
+
+    What counts as *uncoercible* is decided here, once. The boundary is deliberately
+    narrower than Python's own parsers at the three points where their generosity would
+    have stored a value this format cannot round-trip (all three ruled in fix round 2,
+    each tested in `tests/test_settings.py`):
+
+      * `str` -- a `str` passes through **as the very object given** (identity, not an
+        equal copy: R-T9-types and R-T9-device hold the text verbatim, whitespace
+        included). A `bool`/`int`/`float` is stringified, because that is the one
+        rewrite a `tk.StringVar` performs on its own content -- `DEFAULT_DATA['overlap']`
+        is the float `0.25` and the widget's text is `'0.25'`. Anything else **raises
+        `TypeError`**: rendering a `list`, `dict`, `set`, `tuple`, `bytes` or an
+        arbitrary object produced values like `'[]'` and `'<object object at 0x...>'`,
+        which contradict `load()`'s promise never to keep a corrupt value and are
+        inconsistent with `_data_default`, which already refuses a non-scalar table
+        value for the same reason. Every one of the 50 fields' `DEFAULT_DATA` values is
+        a scalar, so no real legacy path is lost. (A non-finite float handed to a `str`
+        field still becomes its text, `'nan'` -- strict JSON quotes that, and the same
+        characters arriving *as* text are not rejectable without banning widget content,
+        so it is not the hole M2 closes.)
+      * `int` -- text parses (`'352'`, `' 1024 '`); a whole-number `float` is admissible
+        because the map is exact and JSON has one number type, so a file writing `352.0`
+        for an integer setting means 352 (`352.0` -> `352`, `352.5` raises); a `bool` is
+        never an `int`; digit separators raise (see `_reject_digit_separators`); and a
+        non-finite float raises rather than producing `int(nan)`'s `ValueError` or
+        `int(inf)`'s raw `OverflowError`.
+      * `float` -- same rules, plus: **`nan`, `inf` and `-inf` raise**, in either their
+        numeric or their text form (`'nan'`, `'Infinity'`). They are not values this
+        format can store. A non-finite field broke the module's own round trip
+        (`constructed == load(save(constructed))` is False for nan, since nan != nan),
+        and `json.dumps` writes one as a bare `NaN`, which is not ECMA-404 JSON -- an
+        editor, a preset tool, or a harness in another language can refuse the file our
+        `save()` produced. `save()` now passes `allow_nan=False` so the writer refuses
+        too, for the one route `_coerce` cannot police: a forced attribute on a frozen
+        instance.
     """
     if value is None:
         raise ValueError(f"Settings.{field_name}: null is not a value any widget stores")
@@ -228,10 +297,13 @@ def _coerce(field_name: str, value: object, typ: type) -> typing.Any:
     if typ is int:
         if isinstance(value, bool):
             raise ValueError(f"Settings.{field_name}: a bool is not an int")
+        _reject_digit_separators(field_name, value)
+        if isinstance(value, float) and not math.isfinite(value):
+            raise ValueError(f"Settings.{field_name}: {value!r} is not a finite number")
         try:
             # tk.StringVar stored these as text, so "512" is legitimate input.
             parsed = int(value)
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError, OverflowError) as exc:
             raise ValueError(f"Settings.{field_name}: {value!r} is not an int ({exc})") from exc
         if isinstance(value, float) and value != parsed:
             raise ValueError(f"Settings.{field_name}: {value!r} is not a whole number")
@@ -239,13 +311,24 @@ def _coerce(field_name: str, value: object, typ: type) -> typing.Any:
     if typ is float:
         if isinstance(value, bool):
             raise ValueError(f"Settings.{field_name}: a bool is not a float")
+        _reject_digit_separators(field_name, value)
         try:
-            return float(value)
-        except (TypeError, ValueError) as exc:
+            parsed = float(value)
+        except (TypeError, ValueError, OverflowError) as exc:
             raise ValueError(f"Settings.{field_name}: {value!r} is not a float ({exc})") from exc
+        if not math.isfinite(parsed):
+            raise ValueError(f"Settings.{field_name}: {value!r} is not a finite float "
+                             f"(neither this module's round trip nor strict JSON carries "
+                             f"NaN or Infinity)")
+        return parsed
     if typ is str:
         # Numbers arrive as text here: the stored domain of a tk.StringVar is str.
-        return value if isinstance(value, str) else str(value)
+        if isinstance(value, str):
+            return value
+        if isinstance(value, (bool, int, float)):
+            return str(value)
+        raise TypeError(f"Settings.{field_name}: {type(value).__name__} is not text a "
+                        f"widget can hold, and a str field does not render objects")
     raise TypeError(f"Settings.{field_name}: unsupported type {typ!r}")
 
 
@@ -374,12 +457,16 @@ class Settings:
             object it was given for a `str`, so `batch_size='Default'`,
             `overlap='0.25'` and `semitone_shift='0'` keep their text exactly as
             R-T9-types stores them and `device_set` stays verbatim (whitespace and
-            all) per R-T9-device. This coerces types; it never reformats a string;
+            all) per R-T9-device. This coerces types; it never reformats a string, and
+            since fix round 2 (M1) it never *renders* one either: a container or an
+            object in a `str` field raises instead of becoming `'[]'`;
           * a value that cannot be parsed into the declared type **raises**, it does
             not silently become `0`. That includes `Settings(is_tta=-1)`: the legacy
             `-1`-means-CPU encoding is decoded in the import path
             (`_legacy_gpu_conversion`), so a bare one reaching the constructor is a
-            caller error, not a second encoding to guess at.
+            caller error, not a second encoding to guess at. It also includes a
+            non-finite float (fix round 2, M2) -- `nan` in a field would have made
+            `constructed == load(save(constructed))` False all by itself.
 
         `object.__setattr__` because the instance is frozen; writing `self.x = ...`
         here would raise `FrozenInstanceError`.
@@ -394,25 +481,40 @@ class Settings:
                 object.__setattr__(self, f.name, coerced)
 
     def save(self, path: Path | None = None) -> None:
-        """Write the snapshot as JSON, keyed by field name. Creates the directory."""
+        """Write the snapshot as strict JSON, keyed by field name. Creates the directory.
+
+        `allow_nan=False` (fix round 2, M2) is the writer's half of the guarantee that a
+        file this method produces is readable by anything else: Python's default would
+        turn a non-finite float into a bare `NaN`, which `json.loads` reads back and an
+        ECMA-404 parser refuses. `_coerce` already keeps such a value out of every field
+        that arrives through it, so this only fires when one was forced onto a frozen
+        instance behind the type system's back -- and then it raises instead of writing.
+        """
         target = Path(path) if path is not None else config_file()
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(
-            json.dumps(dataclasses.asdict(self), indent=2, ensure_ascii=False) + "\n",
+            json.dumps(dataclasses.asdict(self), indent=2, ensure_ascii=False,
+                       allow_nan=False) + "\n",
             encoding="utf-8",
         )
 
 
-def _field_types() -> dict[str, type]:
-    """`{field name: declared type}`, resolved once and cached.
+def _field_types() -> typing.Mapping[str, type]:
+    """`{field name: declared type}`, resolved once, cached, and handed out sealed.
 
     `__post_init__` calls this for every instance, and the class is closed at import
-    (50 fields, no dynamic annotation), so re-running `get_type_hints` per
-    construction would only slow the suite down.
+    (50 fields, no dynamic annotation), so re-running `get_type_hints` per construction
+    would only slow the suite down.
+
+    The return is a `MappingProxyType`, not the cached dict (fix round 2, M3). Handing
+    out the mutable cache meant one caller doing `settings._field_types()["crop_size"] =
+    str` changed what *every later construction* coerces to -- round 1's defect,
+    reintroduced by a mutation rather than by a bug. A proxy keeps the whole read
+    interface (`[]`, `get`, `len`, iteration, equality with a dict) and refuses the write.
     """
     global _FIELD_TYPES
     if _FIELD_TYPES is None:
-        _FIELD_TYPES = typing.get_type_hints(Settings)
+        _FIELD_TYPES = MappingProxyType(typing.get_type_hints(Settings))
     return _FIELD_TYPES
 
 

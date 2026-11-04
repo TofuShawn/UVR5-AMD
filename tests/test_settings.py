@@ -27,6 +27,13 @@ Fix round 1 changed three of this file's own guards, not the dataclass:
     covered by it automatically;
   * the `ModelData` line range the field list is measured over comes from the AST
     instead of a typed-in `364, 804`.
+
+Fix round 2 adds the coercion-boundary guards for the three banked Minors — a `str`
+field that refuses a container instead of rendering it (M1), a numeric field that
+refuses `nan`/`inf` and a `save()` that refuses to write them (M2), and a field-type
+cache a caller cannot mutate (M3) — plus `strict_json_loads`, the parser this file now
+uses whenever it claims a file is JSON: `json.loads` in its default mode accepts the
+bare `NaN` Python writes, so the lenient call proves nothing.
 """
 from __future__ import annotations
 
@@ -34,6 +41,7 @@ import ast
 import dataclasses
 import importlib.util
 import json
+import math
 import pathlib
 import pickle
 import re
@@ -502,6 +510,12 @@ def test_every_field_survives_save_then_load(appdata):
     s = settings.Settings(**overrides)
     s.save()
     loaded = settings.load()
+    # Fix round 2 (M2): the loop below proves the value survives; this proves the
+    # *bytes* survive -- a file that only Python's lenient parser accepts is not a
+    # round trip, it is a private format. Checked with the strict hook, so a bare NaN
+    # written by a future `save()` fails here instead of being read back by `load()`.
+    assert strict_json_loads((appdata / "UVR-fork" / "settings.json")
+                             .read_text(encoding="utf-8")) == dataclasses.asdict(s)
     for name, value in overrides.items():
         got = getattr(loaded, name)
         assert got == value, name
@@ -525,6 +539,11 @@ def test_every_field_survives_save_then_load(appdata):
         if reloaded != constructed:
             failures.append(f"{name}: constructed != loaded -- {held!r} vs "
                             f"{getattr(reloaded, name)!r}")
+        try:
+            strict_json_loads(one.read_text(encoding="utf-8"))
+        except ValueError as exc:
+            failures.append(f"{name}: save() wrote JSON a conformant parser refuses"
+                            f" -- {exc}")
     assert not failures, "the constructor does not mean its annotations:\n" + "\n".join(failures)
 
     # ...and all fifty entered as text at once is the same snapshot as all fifty
@@ -594,24 +613,34 @@ def test_a_number_entered_in_a_string_field_becomes_the_widgets_text():
 
     `load()` already does this (`_coerce`'s `str` branch, tested at
     `test_load_reparses_its_own_json_types`), so the constructor has to agree with
-    it -- otherwise `constructed != loaded` again, just in the other direction.
+    it -- otherwise `constructed != loaded` again, just in the other direction. Fix
+    round 2 (M1) narrows this to the scalars a `tk.StringVar` is really handed:
+    numbers and `bool`, whose `str()` *is* the widget's text, and nothing that has to
+    be rendered -- a `list` or an object raises, see
+    `test_a_container_or_object_in_a_string_field_raises_instead_of_becoming_text`.
     """
     assert settings.Settings(overlap=0.25).overlap == "0.25"
     assert settings.Settings(mp3_bit_set=192).mp3_bit_set == "192"
     assert settings.Settings(overlap_mdx23=8).overlap_mdx23 == "8"
     assert settings.Settings(device_set=0).device_set == "0"
+    assert settings.Settings(denoise_option=True).denoise_option == "True"
 
 
 @pytest.mark.parametrize("field_name,value", [
     ("crop_size", "abc"),
     ("crop_size", "3.5"),
     ("crop_size", 1.5),                    # a fractional float is not a whole number
+    ("crop_size", float("inf")),           # fix round 2: was an uncaught OverflowError
     ("window_size", ""),
     ("margin", None),
     ("shifts", [2]),
     ("aggression_setting", {}),
     ("post_process_threshold", "wide"),
+    ("post_process_threshold", float("nan")),   # fix round 2: nan != nan breaks load()
+    ("post_process_threshold", "Infinity"),
     ("device_set", None),
+    ("device_set", []),                    # fix round 2 (M1): a container is not text
+    ("mp3_bit_set", {"bits": 320}),
     ("is_tta", -1),                        # the legacy CPU encoding is not a flag here
     ("is_tta", 2),
     ("is_split_mode", "yes"),
@@ -628,6 +657,220 @@ def test_a_value_that_cannot_be_parsed_raises_instead_of_becoming_zero(field_nam
     """
     with pytest.raises((ValueError, TypeError)):
         settings.Settings(**{field_name: value})
+
+
+# --------------------------------------------------------------------------- #
+# Coercion boundaries (fix round 2): M1 containers, M2 non-finite, M3 the cache
+# --------------------------------------------------------------------------- #
+
+def strict_json_loads(text: str):
+    """Parse JSON the way ECMA-404 defines it, i.e. refuse `NaN` and `Infinity`.
+
+    M2's instrument, and the reason the brief's first probe went wrong: Python's
+    `json.loads` accepts the bare `NaN` that Python's own `json.dumps` writes for a
+    non-finite float, so `json.loads(save_output)` reports "valid JSON" for a file any
+    other consumer rejects. Passing a `parse_constant` hook is what makes the parser
+    strict, so every claim in this file that a saved file *is* JSON goes through here.
+    """
+    def refuse(constant: str):
+        raise ValueError(f"not strict JSON: bare {constant} is not an ECMA-404 literal")
+
+    return json.loads(text, parse_constant=refuse)
+
+
+#: `float()` accepts all of these; strict JSON and this module's round trip do not.
+#: Both spellings are covered because the two entry points differ: the constructor and
+#: the legacy pickle hand over numbers, a hand-edited `settings.json` hands over text.
+NON_FINITE = (float("nan"), float("inf"), float("-inf"),
+              "nan", "NaN", "inf", "-inf", "Infinity", "-Infinity", "infinity")
+
+#: Values a `tk.StringVar` cannot hold, so a `str` field must refuse rather than render.
+NOT_TEXT = ([], {}, set(), (), frozenset(), [1, 2], {"bits": 320}, {1, 2}, b"PCM_16")
+
+
+@pytest.mark.parametrize("token", ["NaN", "Infinity", "-Infinity"])
+def test_the_strict_json_helper_is_the_parser_that_actually_fails_on_them(token):
+    """Prove the instrument before trusting it: lenient accepts, strict refuses.
+
+    An assertion that cannot fail is not a guard, and the lenient default is the way
+    this repo nearly concluded that a `NaN` in `settings.json` was conformant JSON.
+    """
+    text = '{"post_process_threshold": %s}' % token
+    assert not math.isfinite(json.loads(text)["post_process_threshold"]), "lenient accepts"
+    with pytest.raises(ValueError, match="not strict JSON"):
+        strict_json_loads(text)
+
+
+@pytest.mark.parametrize("value", NOT_TEXT)
+def test_a_container_or_object_in_a_string_field_raises_instead_of_becoming_text(value):
+    """M1: `_coerce`'s `str` branch was `str(value)`, so `[]` became the text `'[]'`.
+
+    That contradicts `load()`'s own promise ("never keep a corrupt value") and is
+    inconsistent with `_data_default`, which already refuses a non-scalar table value
+    (`test_a_mutable_default_data_value_is_refused_not_adopted`). The rule is the same
+    one in both places: a `str` field holds text, plus the numbers a `tk.StringVar`
+    would have stringified, and nothing that has to be *rendered* to become text.
+    Looping the `str`-typed fields rather than naming one covers a 51st.
+    """
+    str_fields = sorted(name for name, typ in field_types().items() if typ is str)
+    assert len(str_fields) == 18, str_fields
+    for field_name in str_fields:
+        with pytest.raises(TypeError, match="is not text"):
+            settings.Settings(**{field_name: value})
+        with pytest.raises(TypeError, match="is not text"):
+            settings._coerce(field_name, value, str)
+
+
+def test_load_of_a_container_in_a_string_field_raises(appdata):
+    """The controller's reproduction, as a file: an empty array used to load as `'[]'`."""
+    p = appdata / "UVR-fork" / "settings.json"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps({"device_set": [], "crop_size": 256}), encoding="utf-8")
+    with pytest.raises(TypeError, match=r"Settings\.device_set: list is not text"):
+        settings.load(p)
+    # a scalar number still stringifies, which is the case R-T9-types really has
+    p.write_text(json.dumps({"device_set": "0", "overlap": 0.25}), encoding="utf-8")
+    assert settings.load(p).overlap == "0.25"
+
+
+def test_a_nested_container_inside_a_scalar_looking_value_is_still_refused():
+    """`DEFAULT_DATA` holds `input_paths = []`; a field must not adopt that shape.
+
+    The one container form that is *not* an obvious bug is a legacy `data.pkl` storing a
+    list under a name this module reads, so the premise is checked rather than argued:
+    every `DEFAULT_DATA` value behind the 50 fields is a scalar -- the loop below, the
+    same fact `_data_default` relies on -- which is what makes rejecting containers here
+    free for the real import path. `test_device_set_survives_all_four_stored_shapes`
+    and `test_legacy_pickle_import_coerces_the_official_shapes` stay green, and
+    `[[]]` (a container inside a container) is refused like the flat case.
+    """
+    for f in dataclasses.fields(settings.Settings):
+        key = settings.data_key(f.name)
+        if key in DEFAULT_DATA:
+            assert isinstance(DEFAULT_DATA[key], (bool, int, float, str)), key
+    with pytest.raises(TypeError, match="is not text"):
+        settings._coerce("device_set", [[]], str)
+
+
+@pytest.mark.parametrize("field_name", sorted(NUMERIC_NAMES))
+@pytest.mark.parametrize("value", NON_FINITE)
+def test_a_non_finite_number_is_refused_so_the_round_trip_still_holds(field_name, value):
+    """M2's first consequence: `constructed == load(save(constructed))` was False.
+
+    `Settings(post_process_threshold=float('nan'))` stored the nan, and nan != nan, so
+    the equality every one of the 50 fields is held to broke for that field alone --
+    silently, because a `float` annotation makes `nan` look like a legal value. It also
+    wrote a bare `NaN` to disk. Rejecting at the coercion table restores the property;
+    the `int` fields get the same rule (for them `int(inf)` had been raising a bare
+    `OverflowError` from outside the documented error type).
+    """
+    with pytest.raises((ValueError, TypeError)):
+        settings.Settings(**{field_name: value})
+    with pytest.raises((ValueError, TypeError)):
+        settings._coerce(field_name, value, field_types()[field_name])
+    # refusing is not the same as breaking: a finite value still parses into the field
+    finite = 5 if field_types()[field_name] is int else 0.5
+    assert settings._coerce(field_name, finite, field_types()[field_name]) == finite
+
+
+def test_a_whole_number_float_is_admissible_in_an_int_field():
+    """M2's decided boundary, part 1: `352.0` -> `352` stays, because it is exact.
+
+    Ruled admissible: JSON has one number type, so a writer that emits `352.0` for an
+    integer setting means 352 and `int()` loses nothing; rejecting it would turn a
+    valid file into an error without making anything safer. The asymmetry is the whole
+    rule -- an exact, lossless conversion is admitted, a rounding is not (`352.5`,
+    `1.5` raise above), and a bool is never an int.
+    """
+    for value, expected in ((352.0, 352), (1e3, 1000), (float(44100), 44100)):
+        s = settings.Settings(crop_size=value)
+        assert s.crop_size == expected and type(s.crop_size) is int, value
+        assert s == dataclasses.replace(settings.Settings(), crop_size=expected), value
+    assert settings._coerce("crop_size", 352.0, int) == 352
+
+
+@pytest.mark.parametrize("value", ["1_000", "1_0", "+1_0", "3_5_2", "1_0.5"])
+@pytest.mark.parametrize("field_name", ["crop_size", "post_process_threshold"])
+def test_pythons_digit_separators_are_not_admissible_in_a_numeric_field(field_name, value):
+    """M2's decided boundary, part 2: `int('1_000')` parses, and this refuses it.
+
+    Ruled inadmissible: PEP 515 underscores are a Python *source* affordance. No widget
+    produces them, no JSON number may contain one, and quietly reading the text a user
+    typed as a different number is the foot-gun -- the same class of surprise M1
+    rejects for `str`. Whitespace stays accepted (`' 1024 '`, tested above), because a
+    `tk.StringVar` really does hold padded text; only the separator is refused.
+    """
+    with pytest.raises(ValueError, match="digit separator"):
+        settings.Settings(**{field_name: value})
+    with pytest.raises(ValueError, match="digit separator"):
+        settings._coerce(field_name, value, field_types()[field_name])
+    # the rule is on the text, so the equivalent number is still fine
+    assert settings._coerce("crop_size", 1000.0, int) == 1000
+
+
+def test_load_rejects_a_file_holding_pythons_non_standard_numbers(appdata):
+    """M2's second consequence, at the reader: a pre-fix `save()` output is not JSON.
+
+    The text written below is exactly what `json.dumps` emits for a nan field with the
+    default `allow_nan=True` -- `{"post_process_threshold": NaN}` -- which `json.loads`
+    reads back and an ECMA-404 parser refuses. So a Plan 2 preset tool, an editor, or a
+    harness in another language can reject a file this module produced. `load()` now
+    refuses it instead of adopting the nan.
+    """
+    p = appdata / "UVR-fork" / "settings.json"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    written = json.dumps({"post_process_threshold": float("nan"), "crop_size": 352})
+    assert "NaN" in written, written
+    p.write_text(written, encoding="utf-8")
+    text = p.read_text(encoding="utf-8")
+    assert math.isnan(json.loads(text)["post_process_threshold"])     # the lenient view
+    with pytest.raises(ValueError, match="not strict JSON"):
+        strict_json_loads(text)
+    with pytest.raises(ValueError, match="post_process_threshold"):
+        settings.load(p)
+
+
+def test_save_refuses_to_write_a_file_another_parser_would_reject(appdata):
+    """M2 at the writer: `_coerce` guards the entrances, `allow_nan=False` the exit.
+
+    A frozen dataclass can still be forced past `__post_init__` with
+    `object.__setattr__` (the escape `test_settings_is_frozen` proves is available), so
+    "the file on disk is strict JSON" needs the writer to hold the line too. `save()`
+    now raises and writes nothing rather than emitting `NaN`.
+    """
+    s = settings.Settings()
+    object.__setattr__(s, "post_process_threshold", float("nan"))
+    with pytest.raises(ValueError, match="Out of range float values"):
+        s.save()
+    assert not (appdata / "UVR-fork" / "settings.json").exists()
+    # the untouched object still saves, and saves as strict JSON
+    settings.Settings().save()
+    assert strict_json_loads(
+        (appdata / "UVR-fork" / "settings.json").read_text(encoding="utf-8")
+    ) == dataclasses.asdict(settings.Settings())
+
+
+def test_the_field_type_cache_cannot_be_poisoned_by_a_caller():
+    """M3: `_field_types()` handed out the module's own dict, so writes stuck.
+
+    One caller doing `ft["crop_size"] = str` changed the annotation every *later*
+    construction consults, i.e. `Settings(crop_size='352')` starts holding text again
+    for the rest of the process -- the exact defect round 1 fixed, resurrected by a
+    mutation instead of by a bug. `MappingProxyType` seals it without changing the read
+    interface: indexing, `get`, `len`, iteration and equality all still work, so the
+    consumers in this file and in `__post_init__`/`load()` needed no edit.
+    """
+    types = settings._field_types()
+    assert types["crop_size"] is int
+    assert settings._field_types() is types, "the cache should still be cached"
+    with pytest.raises(TypeError):
+        types["crop_size"] = str                                # type: ignore[index]
+    assert settings._field_types()["crop_size"] is int
+    assert types == field_types() == dict(types)
+    assert len(types) == 50 and set(types) == settings_field_names()
+    assert types.get("device_set") is str
+    assert [n for n in types if types[n] is float] == ["post_process_threshold"]
+    assert settings.Settings(crop_size="352").crop_size == 352
 
 
 def test_defaults_round_trip_when_nothing_is_overridden(appdata):
@@ -970,8 +1213,8 @@ def test_legacy_import_then_save_then_load_is_a_full_bridge(tmp_path, monkeypatc
 #: name, never `name.split('.')[0]`"*, because blocking `gui_data` wholesale would
 #: forbid the pure-data `gui_data.constants` that `separate.py:18` legitimately needs.
 ALLOWED_SETTINGS_IMPORTS = frozenset({
-    "__future__", "dataclasses", "json", "os", "pathlib", "pickle", "typing",
-    "gui_data.constants",
+    "__future__", "dataclasses", "json", "math", "os", "pathlib", "pickle", "typing",
+    "types", "gui_data.constants",
 })
 
 #: Names that must never be reachable through the allow-list. Kept as a list to fail
