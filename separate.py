@@ -39,6 +39,7 @@ from onnx2pytorch import ConvertModel
 import gc
 import contextlib
 from backends import resolve as resolve_backend
+from backends import warn_degradation
 
 if TYPE_CHECKING:
     from UVR import ModelData
@@ -225,7 +226,20 @@ class SeperateAttributes:
         self.stem_path_init = os.path.join(self.export_path, f'{self.audio_file_base}_({self.secondary_stem}).wav')
         self.deverb_vocal_opt = model_data.deverb_vocal_opt
         self.is_save_vocal_only = model_data.is_save_vocal_only
+        # backends.resolve() is the single device/provider authority, so it runs
+        # in EVERY mode and self.backend always exists -- including no-GPU mode,
+        # where the block below deliberately does not apply its answer. Note this
+        # is resolve() and NOT resolve(force="cpu"): force="cpu" pins torch only
+        # and still returns DirectML for ONNX by design (see
+        # tests/test_backends.py::test_force_cpu_overrides_torch_but_not_onnx),
+        # which would route GPU work past the user's own "GPU off" switch.
+        self.backend = resolve_backend()
         self.device = cpu
+        # The no-GPU switch (is_gpu_conversion < 0) is the one consumer allowed to
+        # ignore self.backend, and it ignores it on CPU on purpose; the GPU block
+        # below overwrites both of these with the authority's values. Kept as the
+        # initial value rather than re-derived per branch so there is exactly one
+        # place in this file where CPU providers are stated.
         self.run_type = ['CPUExecutionProvider']
         self.device_set = model_data.device_set
         #Roformer
@@ -241,7 +255,6 @@ class SeperateAttributes:
             self.primary_stem, self.secondary_stem = main_model_primary, secondary_stem(main_model_primary)
 
         if self.is_gpu_conversion >= 0:
-            self.backend = resolve_backend()
             if mps_available:
                 self.device, self.is_other_gpu = 'mps', True
             else:
@@ -251,9 +264,33 @@ class SeperateAttributes:
                 # flipping it True here would silently send them to CPU. The
                 # GPU-index suffix from device_set is separate.py's business, not
                 # Backend.torch_device's, which stays the bare device name.
-                if self.backend.torch_device == 'cuda' and cuda_available:
-                    self.device = CUDA_DEVICE if self.device_set == DEFAULT else f'{CUDA_DEVICE}:{self.device_set}'
-                    self.run_type = list(self.backend.ort_providers)
+                #
+                # Providers come straight from the authority whenever GPU mode is
+                # on, even when torch itself resolved to CPU: an AMD box with a
+                # CPU-only torch build still wants DirectML for ONNX. Reading them
+                # only inside the cuda branch was the second source of provider
+                # truth this task exists to remove.
+                self.run_type = list(self.backend.ort_providers)
+                if self.backend.torch_device == 'cuda':
+                    if cuda_available:
+                        self.device = CUDA_DEVICE if self.device_set == DEFAULT else f'{CUDA_DEVICE}:{self.device_set}'
+                    else:
+                        # A hip/cuda build with no working driver, or
+                        # force='cuda'/'rocm' on a box that cannot honour it: the
+                        # safe outcome is CPU, the unsafe part is doing it quietly
+                        # while self.backend.name still reads "rocm"/"cuda" -- the
+                        # "claiming a device we are not using" failure. Emitted
+                        # through the authority's channel because this module's own
+                        # import-time filterwarnings("ignore") would swallow a
+                        # plain warnings.warn.
+                        warn_degradation(
+                            f"backends.resolve() selected {self.backend.name!r} and "
+                            f"asked for the '{self.backend.torch_device}' torch "
+                            f"device, but torch reports no GPU is available, so this "
+                            f"run computes on CPU while claiming a GPU device. The "
+                            f"driver is missing or the backend was forced on "
+                            f"hardware that does not have it."
+                        )
 
         if model_data.process_method == MDX_ARCH_TYPE:
             self.is_mdx_ckpt = model_data.is_mdx_ckpt
