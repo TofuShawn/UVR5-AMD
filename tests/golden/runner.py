@@ -69,7 +69,6 @@ import shutil
 import sys
 import time
 import types
-from fractions import Fraction
 from pathlib import Path
 
 import numpy as np
@@ -98,64 +97,26 @@ class FixtureUnavailable(settings.FixtureMissing):
 # --------------------------------------------------------------------------- #
 # torch >= 2.6 `weights_only` allowlist for the demucs checkpoint
 # --------------------------------------------------------------------------- #
-
-def _numpy_scalar_reconstructor():
-    """The callable numpy uses to rebuild pickled scalars, version-agnostically.
-
-    ``numpy.core`` was renamed to ``numpy._core`` in numpy 2 and touching the
-    old name emits a DeprecationWarning; the *checkpoint* still records the
-    legacy dotted path, so the object is looked up under the new name and
-    registered under the old one.
-    """
-    import warnings
-
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        try:
-            from numpy._core.multiarray import scalar
-        except ImportError:                      # numpy 1.x
-            from numpy.core.multiarray import scalar
-    return scalar
-
-
-def _checkpoint_safe_globals():
-    """Globals ``demucs/states.py:46`` needs in order to unpickle a v3/v4 ``.th``.
-
-    ``torch.load(path, 'cpu')`` there inherits torch's 2.6+ default
-    ``weights_only=True``, and a demucs checkpoint stores the network *class*
-    itself (``{'klass', 'args', 'kwargs', 'state', 'training_args', 'metrics'}``),
-    which weights-only unpickling rejects. Editing ``demucs/**`` is out of
-    scope for this task, so the harness scopes PyTorch's own sanctioned
-    allowlist around the call instead of turning the check off process-wide.
-
-    The list is not guesswork: unpickling the fixture's ``archive/data.pkl``
-    with a tracing ``pickle.Unpickler`` (no code executed) shows it references
-    exactly eight globals, of which ``collections.OrderedDict``,
-    ``_codecs.encode``, ``torch.HalfStorage`` and
-    ``torch._utils._rebuild_tensor_v2`` are already on torch's built-in list.
-    """
-    from demucs.htdemucs import HTDemucs
-
-    return [
-        HTDemucs,
-        Fraction,
-        np.dtype,
-        # ``np.dtype('float64')`` returns a *subclass* instance, and torch's
-        # weights-only BUILD step matches on type(inst), so the concrete dtype
-        # classes the checkpoint builds have to be named as well.
-        np.dtypes.Float64DType,
-        (_numpy_scalar_reconstructor(), "numpy.core.multiarray.scalar"),
-    ]
+# This used to live here. It was the only thing that let a demucs ``.th`` (which
+# stores the network *class*) unpickle under torch >= 2.6, so the suite was green
+# while the shipped CLI -- ``SeperateDemucs.seperate`` via Task 13's GUI-free
+# runner -- crashed on the very same checkpoint. Task 6 moved the allowlist into
+# the engine (``separate.demucs_checkpoint_load``); the harness deliberately no
+# longer carries it, and the demucs capture here passing *is* the proof that the
+# two paths stayed welded together (``tests/test_demucs_checkpoint.py`` pins it
+# from the other side: unguarded load fails, the engine guard makes it pass).
 
 
 @contextlib.contextmanager
 def _inference_context(arch: str):
-    if arch == "demucs":
-        with torch.serialization.safe_globals(_checkpoint_safe_globals()):
-            yield
-    else:
-        # VR checkpoints are plain state dicts; weights_only is left in force.
-        yield
+    """A pass-through since Task 6: the engine owns the demucs allowlist now.
+
+    Kept as a no-op (rather than deleted at the call site) so this module records
+    -- in one place a reader cannot miss -- that the harness is *not* the thing
+    making Demucs loadable any more. A VR checkpoint needs no allowlist at all,
+    so nothing here widens torch's trust for any arch.
+    """
+    yield
 
 
 # --------------------------------------------------------------------------- #

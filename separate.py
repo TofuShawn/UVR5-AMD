@@ -37,6 +37,8 @@ import time
 from onnx import load
 from onnx2pytorch import ConvertModel
 import gc
+import contextlib
+from backends import resolve as resolve_backend
 
 if TYPE_CHECKING:
     from UVR import ModelData
@@ -54,6 +56,73 @@ def clear_gpu_cache():
 
 warnings.filterwarnings("ignore")
 cpu = torch.device('cpu')
+
+# --------------------------------------------------------------------------- #
+# torch >= 2.6 `weights_only` allowlist for the demucs checkpoint (engine path)
+# --------------------------------------------------------------------------- #
+# A demucs ``.th`` stores the network *class* itself, which weights-only
+# unpickling rejects. ``demucs/states.py:46`` (reached through ``_gm`` for the
+# v3/v4 repo models) and the v1/v2 ``torch.load`` calls below all inherit
+# ``weights_only=True`` since torch 2.6, so loading one needs the globals below.
+# This used to live in ``tests/golden/runner.py``, which made the golden suite
+# able to load a checkpoint the shipped CLI could not -- the exact asymmetry the
+# fork exists to close. It lives here now, scoped as a context manager around the
+# load rather than a process-wide ``torch.serialization.add_safe_globals``.
+
+
+def _numpy_scalar_reconstructor():
+    """The callable numpy uses to rebuild pickled scalars, version-agnostically.
+
+    ``numpy.core`` was renamed to ``numpy._core`` in numpy 2 and touching the old
+    name emits a DeprecationWarning; the *checkpoint* still records the legacy
+    dotted path, so the object is looked up under the new name and registered
+    under the old one.
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        try:
+            from numpy._core.multiarray import scalar
+        except ImportError:                      # numpy 1.x
+            from numpy.core.multiarray import scalar
+    return scalar
+
+
+def _checkpoint_safe_globals():
+    """Globals ``demucs/states.py:46`` needs in order to unpickle a v3/v4 ``.th``.
+
+    The list is not guesswork: unpickling the fixture's ``archive/data.pkl`` with
+    a tracing ``pickle.Unpickler`` (no code executed) shows it references exactly
+    eight globals, of which ``collections.OrderedDict``, ``_codecs.encode``,
+    ``torch.HalfStorage`` and ``torch._utils._rebuild_tensor_v2`` are already on
+    torch's built-in list. The remaining five are registered here.
+    """
+    from fractions import Fraction
+    from demucs.htdemucs import HTDemucs
+
+    return [
+        HTDemucs,
+        Fraction,
+        np.dtype,
+        # ``np.dtype('float64')`` returns a *subclass* instance, and torch's
+        # weights-only BUILD step matches on type(inst), so the concrete dtype
+        # classes the checkpoint builds have to be named as well.
+        np.dtypes.Float64DType,
+        (_numpy_scalar_reconstructor(), "numpy.core.multiarray.scalar"),
+    ]
+
+
+@contextlib.contextmanager
+def demucs_checkpoint_load():
+    """Scoped ``weights_only`` allowlist for one demucs checkpoint load.
+
+    Every demucs load site (v1 ``torch.load``, v2 ``load_state_dict``, and the
+    v3/v4 repo path through ``demucs.pretrained.get_model`` -> ``states.py:46``)
+    must run inside this. Kept scoped so a VR/MDX load never inherits a widened
+    allowlist by accident.
+    """
+    with torch.serialization.safe_globals(_checkpoint_safe_globals()):
+        yield
+
 
 class SeperateAttributes:
     def __init__(self, model_data: ModelData, 
@@ -172,16 +241,19 @@ class SeperateAttributes:
             self.primary_stem, self.secondary_stem = main_model_primary, secondary_stem(main_model_primary)
 
         if self.is_gpu_conversion >= 0:
+            self.backend = resolve_backend()
             if mps_available:
                 self.device, self.is_other_gpu = 'mps', True
             else:
-                device_prefix = None
-                if self.device_set != DEFAULT:
-                    device_prefix = CUDA_DEVICE
-
-                if cuda_available:
-                    self.device = CUDA_DEVICE if not device_prefix else f'{device_prefix}:{self.device_set}'
-                    self.run_type = ['CUDAExecutionProvider']
+                # ROCm presents as cuda (backends.resolve), so is_other_gpu stays
+                # False: its torch.device type IS "cuda". The Demucs demote-to-cpu
+                # and the MDX-C ORT fast-path gate below both key off that flag, so
+                # flipping it True here would silently send them to CPU. The
+                # GPU-index suffix from device_set is separate.py's business, not
+                # Backend.torch_device's, which stays the bare device name.
+                if self.backend.torch_device == 'cuda' and cuda_available:
+                    self.device = CUDA_DEVICE if self.device_set == DEFAULT else f'{CUDA_DEVICE}:{self.device_set}'
+                    self.run_type = list(self.backend.ort_providers)
 
         if model_data.process_method == MDX_ARCH_TYPE:
             self.is_mdx_ckpt = model_data.is_mdx_ckpt
@@ -892,25 +964,28 @@ class SeperateDemucs(SeperateAttributes):
         mix = prepare_mix(self.audio_file)
 
         if is_no_cache:
-            if self.demucs_version == DEMUCS_V1:
-                if str(self.model_path).endswith(".gz"):
-                    self.model_path = gzip.open(self.model_path, "rb")
-                klass, args, kwargs, state = torch.load(self.model_path)
-                self.demucs = klass(*args, **kwargs)
-                self.demucs.to(self.device) 
-                self.demucs.load_state_dict(state)
-            elif self.demucs_version == DEMUCS_V2:
-                self.demucs = auto_load_demucs_model_v2(self.demucs_source_list, self.model_path)
-                self.demucs.to(self.device) 
-                self.demucs.load_state_dict(torch.load(self.model_path))
-                self.demucs.eval()
-            else:  
-                self.demucs = HDemucs(sources=self.demucs_source_list)
-                self.demucs = _gm(name=os.path.splitext(os.path.basename(self.model_path))[0], 
-                                  repo=Path(os.path.dirname(self.model_path)))
-                self.demucs = demucs_segments(self.segment, self.demucs)
-                self.demucs.to(self.device)
-                self.demucs.eval()
+            # The demucs checkpoint stores the network class, so every load
+            # branch below needs the engine's scoped weights_only allowlist.
+            with demucs_checkpoint_load():
+                if self.demucs_version == DEMUCS_V1:
+                    if str(self.model_path).endswith(".gz"):
+                        self.model_path = gzip.open(self.model_path, "rb")
+                    klass, args, kwargs, state = torch.load(self.model_path)
+                    self.demucs = klass(*args, **kwargs)
+                    self.demucs.to(self.device)
+                    self.demucs.load_state_dict(state)
+                elif self.demucs_version == DEMUCS_V2:
+                    self.demucs = auto_load_demucs_model_v2(self.demucs_source_list, self.model_path)
+                    self.demucs.to(self.device)
+                    self.demucs.load_state_dict(torch.load(self.model_path))
+                    self.demucs.eval()
+                else:
+                    self.demucs = HDemucs(sources=self.demucs_source_list)
+                    self.demucs = _gm(name=os.path.splitext(os.path.basename(self.model_path))[0],
+                                      repo=Path(os.path.dirname(self.model_path)))
+                    self.demucs = demucs_segments(self.segment, self.demucs)
+                    self.demucs.to(self.device)
+                    self.demucs.eval()
 
             if self.pre_proc_model:
                 if self.primary_stem not in [VOCAL_STEM, INST_STEM]:
