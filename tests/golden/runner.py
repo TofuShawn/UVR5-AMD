@@ -60,6 +60,7 @@ writes exclusively inside ``tests/golden/_artifacts/``.
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import hashlib
 import json
 import os
@@ -68,15 +69,19 @@ import random
 import shutil
 import sys
 import time
-import types
 from pathlib import Path
 
 import numpy as np
 import soundfile as sf
 import torch
 
+import backends
+import catalog
+import plan
 import separate as sep
+import settings as app_settings
 import uvr_paths
+from gui_data.constants import DEMUCS_ARCH_TYPE, VR_ARCH_TYPE
 from tests.golden import settings
 from tests.golden.snr import max_abs_dev, snr_db
 
@@ -235,6 +240,110 @@ def make_process_data(audio_file: Path, export_path: Path) -> dict:
 
 
 # --------------------------------------------------------------------------- #
+# model_data: the engine's first constructor argument, now a real RunPlan
+# --------------------------------------------------------------------------- #
+
+#: The combobox value each arch's run selects -- the same names
+#: ``tests.golden.settings`` writes into ``ui_defaults``, so the ``ModelSpec`` the
+#: catalog resolves is the one the frozen dict describes (``UVR.py:505-509``).
+ARCH_MODEL_NAME = {
+    "vr": settings.VR_MODEL_NAME,
+    "demucs": settings.DEMUCS_MODEL_NAME,
+}
+
+#: `Settings` fields whose pre-coercion UI value lives under a *different*
+#: `DEFAULT_DATA` key than the field name. `data_key()` only knows the
+#: `gpu_conversion`<-`is_gpu_conversion` rename; this one is
+#: `Settings.mdxnet_stems` <- `DEFAULT_DATA['mdx_stems']` (`UVR.py:1673` builds
+#: the var from `ALL_STEMS`, `:392` reads it into `mdxnet_stem_select`), and
+#: `tests/golden/settings.py:251` reads the same table key.
+_UI_KEY_FOR_FIELD = {"mdxnet_stems": "mdx_stems"}
+
+#: `Settings` has no field for a model *name* -- that is catalog knowledge -- so
+#: the harness's per-arch selection reaches the plan through `spec`, not `Settings`.
+#: `chosen_process_method` IS a field, and `DEFAULT_DATA` seeds it with
+#: `MDX_ARCH_TYPE` (the GUI's out-of-the-box tab), so it is set per arch here:
+#: `plan._build` reads it at `:447` exactly as `UVR.py:7122-7124` does.
+_PROCESS_METHOD_FOR_ARCH = {"vr": VR_ARCH_TYPE, "demucs": DEMUCS_ARCH_TYPE}
+
+
+def settings_from_ui(arch: str, device: str) -> app_settings.Settings:
+    """The frozen UI state as `Settings` holds it -- pre-coercion, deliberately.
+
+    `Settings` stores each field in the domain of the tkinter variable behind it
+    (ruling R-T9-types): `overlap` is the *text* ``'0.25'``, `semitone_shift` the
+    text ``'0'``, `mdx_batch_size` the sentinel ``'Default'``. The harness's
+    frozen dict, by contrast, holds `ModelData`'s *post*-coercion attribute
+    values (`float(overlap)` at `UVR.py:393`), which is the whole reason
+    ``tests/test_golden_refactor.py`` builds the plan from these inputs instead
+    of feeding the dict back in: coercing here would test the port against
+    itself.
+
+    Two values cannot be reproduced pre-coercion at all, because the harness only
+    ever expressed them after coercion:
+
+    * ``device`` -- the dict encodes it as the coerced `is_gpu_conversion`
+      (`-1`/`0`, `UVR.py:384`); here it is the checkbox boolean the widget holds,
+      so `gpu_conversion` is ``device != "cpu"`` and `plan.build` re-applies the
+      `:384` encoding.
+    * ``model_status``/``crop_size``/``is_4_stem_ensemble``/``margin_demucs`` --
+      dict keys that are not `RunPlan` fields; see the residue ledger in that test.
+    """
+    ui = settings.ui_defaults(arch)
+    values = {}
+    for field in dataclasses.fields(app_settings.Settings):
+        if field.name == "gpu_conversion":
+            values[field.name] = device != "cpu"          # UVR.py:384's input
+            continue
+        key = _UI_KEY_FOR_FIELD.get(field.name) or app_settings.data_key(field.name)
+        if key in ui:
+            values[field.name] = ui[key]
+    values["chosen_process_method"] = _PROCESS_METHOD_FOR_ARCH[arch]
+    return app_settings.Settings(**values)
+
+
+def make_plan(arch: str, device: str, scratch_dir: Path) -> plan.RunPlan:
+    """One `RunPlan` for this arch/device, built by the real composition path.
+
+    Every input is the real one: a `Settings` from the frozen UI state above, a
+    `catalog.Catalog` over `uvr_paths.MODEL_ROOT` (read-only; its `writable_dir`
+    is the tier-3 params sink, which this harness never writes to because every
+    pinned fixture resolves from a baked table), a `backends.Backend` from
+    `backends.resolve`, and the `ModelSpec` the harness selects. `selections` is
+    empty -- the frozen run picks no secondary, pre-proc or vocal-split model,
+    which is exactly what `settings.make()` encodes with its `None`s, and R-T11-selections
+    says the 26 choices are `build()` arguments rather than `Settings` fields.
+
+    `backend` is passed per R-T11-scope and consumed by none of the 92 fields: the
+    engine resolves its device at run time (`separate.py:236-276`), and
+    `tests/test_plan.py` pins that non-interference. The harness's `device` string
+    reaches the engine through `is_gpu_conversion` (`UVR.py:384`), as before.
+    """
+    arch = arch.lower()
+    if arch not in ARCH_MODEL_NAME:
+        raise ValueError(f"no golden plan for arch {arch!r}")
+    scratch_dir = Path(scratch_dir)
+    scratch_dir.mkdir(parents=True, exist_ok=True)
+    cat = catalog.Catalog(uvr_paths.MODEL_ROOT,
+                          writable_dir=scratch_dir / "catalog-params")
+    return plan.build(settings=settings_from_ui(arch, device),
+                      catalog=cat,
+                      backend=backends.resolve(force="cuda" if device != "cpu" else "cpu"),
+                      spec=cat.resolve(ARCH_MODEL_NAME[arch]),
+                      selections={})
+
+
+def plan_snapshot(job_plan: plan.RunPlan) -> dict:
+    """The plan's 92 fields as a plain dict, for the run report.
+
+    Replaces the dict the harness used to paste into `manifest.json`; the report
+    must describe the object the engine was *actually* handed, or a refactor drift
+    would be invisible in the one artefact a later reader trusts.
+    """
+    return {f.name: getattr(job_plan, f.name) for f in dataclasses.fields(job_plan)}
+
+
+# --------------------------------------------------------------------------- #
 # Separation
 # --------------------------------------------------------------------------- #
 
@@ -252,6 +361,15 @@ def separate(arch: str, device: str, work_dir: Path) -> dict[str, Path]:
     There is no ``job.start()`` and no ``job.output_file_base`` attribute: the
     entry point is ``job.seperate()`` (``separate.py:471,638,873,1100``) and the
     only trustworthy record of what was written is the files in ``export_path``.
+
+    Task 11c moved the engine's first argument off the hand-written
+    ``SimpleNamespace(**settings.make(arch, device))`` and onto a real ``RunPlan``
+    from ``plan.build()`` (``make_plan`` above). ``RunPlan`` carries the same 92
+    attribute names ``separate.py`` reads today, so the switch needed no engine
+    change and is proven field-by-field in ``tests/test_golden_refactor.py`` (Gate 1)
+    and byte-by-byte against the unchanged baselines (Gate 2). ``settings.make()``
+    stays exactly as it was -- it is the description the published pins were made
+    under and the reference side of that comparison.
     """
     arch = arch.lower()
     if arch not in ARCH_CLASS:
@@ -266,8 +384,7 @@ def separate(arch: str, device: str, work_dir: Path) -> dict[str, Path]:
     audio_file = golden_input()
     process_data = make_process_data(audio_file, export_path)
 
-    attrs = settings.make(arch, device)
-    model_data = types.SimpleNamespace(**attrs)
+    model_data = make_plan(arch, device, work_dir)
 
     # Deterministic shift trick (see module docstring) -- pinned per capture.
     random.seed(settings.RANDOM_SEED)
@@ -329,7 +446,14 @@ def capture_baseline(arch: str, device: str, work_dir: Path,
         "device": device,
         "elapsed_seconds": round(elapsed, 3),
         "stems": entries,
-        "model_data_attrs": _jsonable(settings.make(arch, device)),
+        # The report describes the object the engine was *handed*, so it is the
+        # plan, not the dict the plan was checked against. Re-derived rather than
+        # returned from ``separate`` -- ``RunPlan`` is a frozen value object built
+        # from the same Settings/catalog, so this is the same value the run used,
+        # and ``separate``'s signature (a stem map) stays untouched for the
+        # Task 4/7 callers. ``tests/test_golden_refactor.py`` asserts the two agree.
+        "model_data_attrs": _jsonable(plan_snapshot(
+            make_plan(arch, device, work_dir))),
     }
     if publish:
         publish_baseline(record)
