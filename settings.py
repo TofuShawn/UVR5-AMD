@@ -82,7 +82,9 @@ Consequences worth naming:
   * `window_size` and `crop_size` are `tk.StringVar` (`:7356`/`:7359`) yet typed
     `int`, because `int` is what the engine consumes (`:495`/`:497`). This is the
     one place the rule is applied on the consumer's side, and it is why the
-    legacy import coerces rather than copying.
+    legacy import coerces rather than copying -- and why `__post_init__` coerces:
+    a UI hands this type the widget *text*, and an instance that kept `'352'` in
+    an `int` field would compare unequal to the `352` the same file loads back.
 
 `device_set` (ruling R-T9-device): one raw string
 -------------------------------------------------
@@ -146,6 +148,9 @@ _APP_CTOR_FIELDS = ("ensemble_main_stem", "mdxnet_stems")
 
 _TYPES: dict[str, type] = {"bool": bool, "int": int, "float": float, "str": str}
 
+#: Memoised `{field name: type}`; filled on the first `_field_types()` call.
+_FIELD_TYPES: dict[str, type] | None = None
+
 _TRUE_TOKENS = frozenset({"True", "true", "1"})
 _FALSE_TOKENS = frozenset({"False", "false", "0", ""})
 
@@ -208,9 +213,13 @@ def _to_bool(field_name: str, value: object) -> bool:
 def _coerce(field_name: str, value: object, typ: type) -> typing.Any:
     """Parse one value into the field's declared type. No other magic.
 
-    `Settings` performs no coercion beyond bool/int/float/str parsing of its own
-    JSON: it never resolves a sentinel, never splits a device string, never
-    validates against hardware.
+    This is the single coercion table: `load()`, `import_legacy_data_pickle()`,
+    `_data_default()`/`_widget_default()` and `Settings.__post_init__()` all route
+    through it, so a value that reaches an `int` field as text parses the same way
+    wherever it came from. `Settings` performs no coercion beyond
+    bool/int/float/str parsing of its own JSON and its own constructor arguments: it
+    never resolves a sentinel, never splits a device string, never validates against
+    hardware, and never rewrites a string it was already given.
     """
     if value is None:
         raise ValueError(f"Settings.{field_name}: null is not a value any widget stores")
@@ -285,6 +294,11 @@ class Settings:
     then `wav_type_set`, so the block diffs against the derivation script's
     output line for line; positional construction is therefore discouraged in
     favour of keywords.
+
+    The declared types are enforced, not advertised: `__post_init__` re-parses
+    every field through `_coerce`, so `Settings(crop_size='352')` holds the `int`
+    `352` and equals what `load()` returns for the same file, while the `str`
+    fields keep their text verbatim. See that method for the three constraints.
     """
 
     aggression_setting: int = _data_default("aggression_setting", "int", "aggression_setting")
@@ -343,6 +357,42 @@ class Settings:
     # table value is 'PCM_16'.
     wav_type_set: str = _data_default("wav_type_set", "str", "wav_type_set")
 
+    def __post_init__(self) -> None:
+        """Re-parse every field into its declared type, in place (fix round 1).
+
+        Without this, the annotations are decoration: Plan 2's UI builds `Settings`
+        from `StringVar` text, so `Settings(crop_size='352')` held the *str* `'352'`
+        in a field annotated `int`, while `load()` returned the *int* `352` for the
+        same logical value -- and `constructed == loaded` was False. A frozen
+        dataclass with declared types should not be constructible holding an off-type
+        value at all, so the bare constructor is made safe rather than a
+        `from_widget_values()` factory added beside the unsafe one (ruled).
+
+        Three constraints, all rulings, none invented here:
+          * it routes through the existing `_coerce`, so there is one coercion table;
+          * `str` fields pass through **unchanged** -- `_coerce` returns the very
+            object it was given for a `str`, so `batch_size='Default'`,
+            `overlap='0.25'` and `semitone_shift='0'` keep their text exactly as
+            R-T9-types stores them and `device_set` stays verbatim (whitespace and
+            all) per R-T9-device. This coerces types; it never reformats a string;
+          * a value that cannot be parsed into the declared type **raises**, it does
+            not silently become `0`. That includes `Settings(is_tta=-1)`: the legacy
+            `-1`-means-CPU encoding is decoded in the import path
+            (`_legacy_gpu_conversion`), so a bare one reaching the constructor is a
+            caller error, not a second encoding to guess at.
+
+        `object.__setattr__` because the instance is frozen; writing `self.x = ...`
+        here would raise `FrozenInstanceError`.
+        """
+        types = _field_types()
+        for f in dataclasses.fields(self):
+            value = getattr(self, f.name)
+            coerced = _coerce(f.name, value, types[f.name])
+            # Only write when the parse produced a different object, so a `str`
+            # field keeps its identity and nothing is rewritten that already fits.
+            if coerced is not value:
+                object.__setattr__(self, f.name, coerced)
+
     def save(self, path: Path | None = None) -> None:
         """Write the snapshot as JSON, keyed by field name. Creates the directory."""
         target = Path(path) if path is not None else config_file()
@@ -354,7 +404,16 @@ class Settings:
 
 
 def _field_types() -> dict[str, type]:
-    return typing.get_type_hints(Settings)
+    """`{field name: declared type}`, resolved once and cached.
+
+    `__post_init__` calls this for every instance, and the class is closed at import
+    (50 fields, no dynamic annotation), so re-running `get_type_hints` per
+    construction would only slow the suite down.
+    """
+    global _FIELD_TYPES
+    if _FIELD_TYPES is None:
+        _FIELD_TYPES = typing.get_type_hints(Settings)
+    return _FIELD_TYPES
 
 
 def load(path: Path | None = None) -> Settings:
