@@ -96,7 +96,7 @@ RESIDUE_EXPLAINED = {
         "`plan.py:216` lists it among the names R-T11-scope keeps out of the 92."),
     "is_4_stem_ensemble": (
         "both archs. Arrives through the *other* constructor argument, not through "
-        "the model object: `separate.py:154` "
+        "the model object: `separate.py:150` "
         "`self.is_4_stem_ensemble = process_data['is_4_stem_ensemble']`, and the "
         "harness sets it in `runner.make_process_data`. R-T11-scope keeps "
         "process_data out of the plan. (The brief cited `:155`; measured `:154` -- "
@@ -115,7 +115,7 @@ RESIDUE_EXPLAINED = {
         "demucs only. `UVR.py:604` sets `self.margin_demucs` from `margin_demucs_var` "
         "inside the Demucs branch, while `UVR.py:527` sets `self.margin` from "
         "`margin_var` inside the MDX branch. `separate.py` reads exactly ONE margin "
-        "off the model object -- `model_data.margin` at `:316`, MDX-only -- so the "
+        "off the model object -- `plan.margin` at `:312`, MDX-only -- so the "
         "Demucs-branch attribute is dead weight: no read of `model_data.margin_demucs` "
         "exists anywhere. See `test_margin_demucs_never_reaches_the_engine`."),
 }
@@ -137,7 +137,7 @@ DIVERGENCE_EXPLAINED = {
         "while `plan._model_file` returns a path *only if the file exists* "
         "(`UVR.py:296`), so the plan says `None`. Inert either way: both sides agree "
         "`is_deverb_vocals is False` (`UVR.py:381` gates the flag on the weight "
-        "existing) and `separate.py:530` reaches `vr_denoiser(model_path="
+        "existing) and `separate.py:526` reaches `vr_denoiser(model_path="
         "self.DEVERBER_MODEL)` only under that flag (`:515`). `DENOISER_MODEL`, which "
         "*is* on disk, agrees as a path."),
     "model_basename": (
@@ -148,7 +148,7 @@ DIVERGENCE_EXPLAINED = {
         "resolves, and what `settings.make` itself puts in `model_path`. But "
         "`settings.make:355` computes the basename from `require_model('demucs')`, "
         "the ``.th`` weight, giving `'955717e8-8726e21a'` where `UVR.py:616` gives "
-        "'htdemucs'. Audio-inert on this harness's three uses: `separate.py:360` "
+        "'htdemucs'. Audio-inert on this harness's three uses: `separate.py:356` "
         "hands it to `cached_source_callback` (which always answers "
         "`(None, None)`), `:435` counts it inside `list_all_models` (`[]` -> 0 "
         "either way), and `:583`/`:994` compare it against `primary_model_name` "
@@ -179,7 +179,7 @@ PATH_LIKE_KEYS = {"DENOISER_MODEL", "mixer_path", "model_path"}
 #: which `test_unreached_fields_are_exactly_the_paths_this_scenario_never_takes`
 #: checks against the AST-derived per-arch requirement set.
 MDX_AND_DENOISE_UNREACHED = [
-    # -- MDX block only: `separate.py:296-316`, inside
+    # -- MDX block only: `separate.py:292-312`, inside
     #    `if model_data.process_method == MDX_ARCH_TYPE`.  Upstream assigns
     #    `margin`/`chunks`/`compensate`/`mdx_*` only there (`UVR.py:525-529`), which
     #    is why the dict carries no such key for vr or demucs at all.
@@ -191,13 +191,13 @@ MDX_AND_DENOISE_UNREACHED = [
     "is_denoise", "is_denoise_model",
 ]
 VR_BRANCH_UNREACHED = [
-    # -- VR branch (`separate.py:281-295`) plus `SeperateVR`; a demucs-shaped dict
+    # -- VR branch (`separate.py:277-291`) plus `SeperateVR`; a demucs-shaped dict
     #    has no reason to carry them, and `plan.py` defaults them for other archs.
     "aggression_setting", "batch_size", "is_high_end_process", "is_post_process",
     "is_tta", "post_process_threshold", "vr_model_param", "window_size",
 ]
 DEMUCS_BRANCH_UNREACHED = [
-    # -- Demucs block (`separate.py:320-330`), same reasoning for a vr-shaped dict.
+    # -- Demucs block (`separate.py:316-326`), same reasoning for a vr-shaped dict.
     "demucs_source_list", "demucs_source_map", "demucs_stem_count", "demucs_stems",
     "demucs_version", "is_chunk_demucs", "is_split_mode", "segment", "shifts",
 ]
@@ -382,12 +382,12 @@ def test_residue_claims_are_verified_against_the_engine_source():
     assert SEPARATE_PY.count("crop_size") == 0
     assert SEPARATE_PY.count("model_status") == 0
     # ...and exactly one margin, on the MDX-only line.
-    assert list(reads["margin"]) == [316], reads["margin"]
+    assert list(reads["margin"]) == [312], reads["margin"]
     assert "self.is_4_stem_ensemble = process_data['is_4_stem_ensemble']" in SEPARATE_PY
     line = 1 + SEPARATE_PY.split(
         "self.is_4_stem_ensemble = process_data['is_4_stem_ensemble']")[0].count("\n")
-    assert line == 154, (
-        f"is_4_stem_ensemble now moves off separate.py:154 (found :{line}); the "
+    assert line == 150, (
+        f"is_4_stem_ensemble now moves off separate.py:150 (found :{line}); the "
         f"citation in RESIDUE_EXPLAINED and the brief need updating with it.")
 
 
@@ -397,7 +397,7 @@ def test_margin_demucs_never_reaches_the_engine():
 
     `UVR.py:527` sets `self.margin` from `margin_var` in the **MDX** branch and
     `UVR.py:604` sets `self.margin_demucs` from `margin_demucs_var` in the
-    **Demucs** branch; `separate.py` reads `model_data.margin` once (`:316`, inside
+    **Demucs** branch; `separate.py` reads `plan.margin` once (`:312`, inside
     the MDX block) and never reads `margin_demucs`. So a Demucs run's margin value
     cannot affect the engine at all -- and, since the two `DEFAULT_DATA` entries are
     both `44100` (`constants.py:601`/`:624`), even the MDX path could not tell.
@@ -461,7 +461,7 @@ def test_settings_from_ui_holds_the_widget_domain_not_the_attribute_domain(tmp_p
     assert attrs["batch_size"] == 1                      # UVR.py:496
     assert built.batch_size == 1
     # `mdx_batch_size` is not a dict key at all: the frozen run never enters the
-    # MDX block that reads it (`separate.py:301`), so `UVR.py:391`'s
+    # MDX block that reads it (`separate.py:297`), so `UVR.py:391`'s
     # sentinel-to-1 coercion is only observable on the plan side.
     assert built.mdx_batch_size == 1
     # UVR.py:492 divides the widget's integer by 100, so the stored domain (5) and

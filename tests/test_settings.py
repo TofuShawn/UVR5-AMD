@@ -2,14 +2,16 @@
 
 The field list, the type buckets and the default values asserted here are not
 recalled from the plan's prose:
-`test_field_list_matches_the_measured_model_data_reads` re-derives the list from
-`UVR.py`'s `ModelData` body at test time, and
+`test_field_list_matches_the_measured_model_data_reads` measures the list against
+the 49 `*_var` names `UVR.py`'s `ModelData` read off the tk root -- re-derived from
+the class body until Task 11d deleted it, pinned as literals since (see
+`MODEL_DATA_VAR_READS`), and
 `test_defaults_are_the_resolved_default_data_values` reads them out of
 `gui_data.constants.DEFAULT_DATA`. Those two guards are why no invented default
 (`window_size=128`, `crop_size=320`, `gpu_conversion=True`, `batch_size=1`,
 `device_index="0"` — all five were in an earlier sketch of this step, all five
-wrong) can come back, and why a 51st field cannot appear without `ModelData`
-growing a read to justify it.
+wrong) can come back, and why a 51st field cannot appear without the pinned read
+list growing to justify it.
 
 Rulings this file encodes, from the plan's Task 9:
   R-T9-params — no `vr_model_params`/`mdx_model_params`/`*_MAPPER` here (Task 10).
@@ -25,8 +27,9 @@ Fix round 1 changed three of this file's own guards, not the dataclass:
   * the constructor-coercion property (`constructed == load(save(constructed))`) is
     asserted inside the existing `dataclasses.fields` loop, so a 51st field is
     covered by it automatically;
-  * the `ModelData` line range the field list is measured over comes from the AST
-    instead of a typed-in `364, 804`.
+  * the `ModelData` line range the field list is measured over came from the AST
+    instead of a typed-in `364, 804` -- Task 11d removed the class, and with it the
+    derivation; the names it produced are pinned in `MODEL_DATA_VAR_READS`.
 
 Fix round 2 adds the coercion-boundary guards for the three banked Minors — a `str`
 field that refuses a container instead of rendering it (M1), a numeric field that
@@ -63,41 +66,6 @@ from gui_data.constants import (
 REPO = pathlib.Path(__file__).resolve().parents[1]
 
 
-def model_data_class_node() -> ast.ClassDef:
-    """The `class ModelData` node of `UVR.py`, found by parsing, not by line number."""
-    tree = ast.parse((REPO / "UVR.py").read_text(encoding="utf-8"))
-    nodes = [node for node in tree.body
-             if isinstance(node, ast.ClassDef) and node.name == "ModelData"]
-    assert len(nodes) == 1, (
-        f"expected exactly one top-level `class ModelData` in UVR.py, found {len(nodes)}"
-        " -- the field list is measured over that class, so this guard has lost its"
-        " subject (Task 11 removes the class; delete this derivation with it)"
-    )
-    return nodes[0]
-
-
-def model_data_body_bounds() -> tuple[int, int]:
-    """0-based, end-exclusive `(start, end)` line indices of the `ModelData` body.
-
-    Fix round 1 (folded Minor): these were the hand-typed `364, 804` -- the plan
-    prose's `UVR.py:365-804` -- and nothing ever checked that the slice bracketed the
-    class. Parsing is the same move `tests/test_engine_purity.py` makes for its own
-    sweep, and it removes the brittleness as well as the blindness: `lineno` and
-    `end_lineno` follow the class when anything above it moves, so Task 11 editing
-    `UVR.py` cannot turn this guard red for a reason unrelated to `Settings`.
-    """
-    node = model_data_class_node()
-    return node.lineno - 1, node.end_lineno
-
-
-#: Measured at collection time; `node.lineno - 1` lands on the `class ModelData():`
-#: header line, exactly where the old hand-typed `364` did. For the record, the
-#: parser puts the body's last statement at 801, so the old `804` reached three
-#: lines past the class -- two blank lines and a commented-out `#print` -- which is
-#: why narrowing it here loses no `root.` read (see
-#: `test_the_derivation_slice_brackets_model_data_and_nothing_else`).
-MODEL_DATA_START, MODEL_DATA_END = model_data_body_bounds()
-
 # Real DEFAULT_DATA keys that are deliberately NOT settings (R-T9-paths), plus
 # the name the plan's own Step 4 sketch invented (R-T9-device).
 RUN_INPUT_KEYS = (
@@ -109,29 +77,57 @@ RUN_INPUT_KEYS = (
 
 
 # --------------------------------------------------------------------------- #
-# The measured field list (re-derived from UVR.py, never copied from the plan)
+# The measured field list (pinned as literals since Task 11d deleted ModelData)
 # --------------------------------------------------------------------------- #
 
-def measured_model_data_reads() -> tuple[list[str], list[str], list[str]]:
-    """Return (`*_var` names, plain-data names, `*_MAPPER` names) inside ModelData.
+#: Task 11d deleted `class ModelData` from `UVR.py`, so the AST walk that used to
+#: re-read these names from the class body at test time has no subject any more --
+#: which is what its own failure message told whoever came next to do about it. The
+#: measurement is frozen here instead: 49 `root.<name>_var` reads, 3 plain reads and 4
+#: mappers, taken by that walk from `UVR.py:365-804` at 33c2187, the commit before the
+#: class went away. Same posture change as `PINNED_PLAN_READS` in tests/test_plan.py.
+#: The guard these feed is the only remaining proof that `Settings` has the right 50
+#: fields, so the lists stay; what is lost is re-derivability, and that is what the
+#: 49/3/4 counts below are for. If a count moves, the fix belongs in `settings.py`,
+#: not in these literals.
+MODEL_DATA_VAR_READS = [
+    "aggression_setting_var", "batch_size_var", "chosen_process_method_var", "compensate_var",
+    "crop_size_var", "demucs_is_secondary_model_activate_var", "demucs_stems_var", "denoise_option_var",
+    "deverb_vocal_opt_var", "device_set_var", "ensemble_main_stem_var", "is_chunk_demucs_var",
+    "is_demucs_combine_stems_var", "is_demucs_pre_proc_model_activate_var", "is_demucs_pre_proc_model_inst_mix_var", "is_deverb_vocals_var",
+    "is_gpu_conversion_var", "is_high_end_process_var", "is_invert_spec_var", "is_match_frequency_pitch_var",
+    "is_mdx23_combine_stems_var", "is_mdx_c_seg_def_var", "is_normalization_var", "is_post_process_var",
+    "is_primary_stem_only_Demucs_var", "is_primary_stem_only_var", "is_save_inst_set_vocal_splitter_var", "is_secondary_stem_only_Demucs_var",
+    "is_secondary_stem_only_var", "is_split_mode_var", "is_tta_var", "is_use_directml_var",
+    "margin_demucs_var", "margin_var", "mdx_batch_size_var", "mdx_is_secondary_model_activate_var",
+    "mdx_segment_size_var", "mdxnet_stems_var", "mp3_bit_set_var", "overlap_mdx23_var",
+    "overlap_mdx_var", "overlap_var", "post_process_threshold_var", "save_format_var",
+    "segment_var", "semitone_shift_var", "shifts_var", "vr_is_secondary_model_activate_var",
+    "window_size_var",
+]
+MODEL_DATA_PLAIN_READS = ["mdx_model_params", "vr_model_params", "wav_type_set"]
+MODEL_DATA_MAPPER_READS = ["demucs_name_select_MAPPER", "mdx_hash_MAPPER",
+                           "mdx_name_select_MAPPER", "vr_hash_MAPPER"]
 
-    Same regex and same assertions as the plan's Step 3 script; the *range* is now
-    the AST-derived `ModelData` body rather than a typed-in pair of line numbers (see
-    `model_data_body_bounds`). If a count here moves, `ModelData` moved, and the
-    derivation must be fixed -- not the assertion, and not by adding a field to
-    `Settings`.
+
+def measured_model_data_reads() -> tuple[list[str], list[str], list[str]]:
+    """(`*_var` names, plain-data names, `*_MAPPER` names), as `ModelData` read them.
+
+    The classification the AST walk used to do survives as assertions, so the three
+    buckets still have to be suffix-correct and mutually exclusive: names read as
+    *calls* (`root.pop_up_vr_param(...)`, `root.process_determine_secondary_model(...)`
+    and seven more) were never fields and are not listed here.
     """
-    src = (REPO / "UVR.py").read_text(encoding="utf-8").splitlines()
-    body = "\n".join(src[MODEL_DATA_START:MODEL_DATA_END])
-    names = sorted(set(re.findall(r"(?<![.\w])root\.([A-Za-z_][A-Za-z0-9_]*)", body)))
-    var = [n for n in names if n.endswith("_var")]
-    mapper = [n for n in names if n.endswith("_MAPPER")]
-    other = [n for n in names if n not in var and n not in mapper]
-    called = {n for n in re.findall(r"(?<![.\w])root\.([A-Za-z_][A-Za-z0-9_]*)\(", body)}
-    plain = [n for n in other if n not in called]
-    assert len(names) == len(var) + len(mapper) + len(other), "classification lost a name"
+    var, plain, mapper = (list(MODEL_DATA_VAR_READS), list(MODEL_DATA_PLAIN_READS),
+                          list(MODEL_DATA_MAPPER_READS))
     assert len(var) == 49, f"expected the 49 measured _var reads, got {len(var)}"
     assert len(plain) == 3, f"expected 3 plain attributes, got {plain}"
+    assert len(mapper) == 4, f"expected 4 mappers, got {mapper}"
+    assert all(v.endswith("_var") for v in var), var
+    assert all(m.endswith("_MAPPER") for m in mapper), mapper
+    assert not any(n.endswith(("_var", "_MAPPER")) for n in plain), plain
+    names = var + plain + mapper
+    assert len(names) == len(set(names)), "a name sits in two buckets"
     return var, plain, mapper
 
 
@@ -139,36 +135,6 @@ def settings_field_names() -> set[str]:
     return {f.name for f in dataclasses.fields(settings.Settings)}
 
 
-def test_the_derivation_slice_brackets_model_data_and_nothing_else():
-    """Fix round 1 (folded Minor): the measured range is checked, not assumed.
-
-    The old `MODEL_DATA_START, MODEL_DATA_END = 364, 804` was never validated, so a
-    slice that shifted but still happened to contain 49 `_var` reads could have passed
-    while measuring the wrong region. Now the bounds come from the class node, and
-    this test asserts the region is exactly `ModelData`: it starts on the header,
-    ends on the body's last statement, and the next top-level statement is a
-    *different* class with nothing but blank lines and a comment in between.
-    """
-    source = (REPO / "UVR.py").read_text(encoding="utf-8")
-    lines = source.splitlines()
-    tree = ast.parse(source)
-    node = model_data_class_node()
-
-    assert (MODEL_DATA_START, MODEL_DATA_END) == (node.lineno - 1, node.end_lineno)
-    assert lines[MODEL_DATA_START].strip() == "class ModelData():", lines[MODEL_DATA_START]
-    assert lines[MODEL_DATA_END - 1].strip(), "the body's last line must not be blank"
-
-    following = [n for n in tree.body
-                 if isinstance(n, (ast.ClassDef, ast.FunctionDef))
-                 and n.lineno > MODEL_DATA_END]
-    assert following, "nothing follows ModelData, so the end bound is unproven"
-    assert following[0].name == "Ensembler", f"next class is {following[0].name}"
-    gap = lines[MODEL_DATA_END:following[0].lineno - 1]
-    assert all((not line.strip()) or line.lstrip().startswith("#") for line in gap), gap
-    assert "root." not in "\n".join(gap), "code that reads the tk root is outside the slice"
-
-    body = "\n".join(lines[MODEL_DATA_START:MODEL_DATA_END])
-    assert body.count("root.") >= 49, body.count("root.")
 
 
 def test_field_list_matches_the_measured_model_data_reads():

@@ -1,5 +1,4 @@
 from __future__ import annotations
-from typing import TYPE_CHECKING
 from demucs.apply import apply_model, demucs_segments
 from demucs.hdemucs import HDemucs
 from demucs.model_v2 import auto_load_demucs_model_v2
@@ -40,9 +39,6 @@ import gc
 import contextlib
 from backends import resolve as resolve_backend
 from backends import warn_degradation
-
-if TYPE_CHECKING:
-    from UVR import ModelData
 
 mps_available = torch.backends.mps.is_available() if is_macos else False
 cuda_available = torch.cuda.is_available()
@@ -1393,7 +1389,7 @@ class SeperateVR(SeperateAttributes):
             
         return wav
 
-def process_secondary_model(secondary_model: ModelData, 
+def process_secondary_model(secondary_model: "RunPlan", 
                             process_data, 
                             main_model_primary_stem_4_stem=None, 
                             is_source_load=False, 
@@ -1423,7 +1419,7 @@ def process_secondary_model(secondary_model: ModelData,
     else:
         return secondary_sources
     
-def process_chain_model(secondary_model: ModelData, 
+def process_chain_model(secondary_model: "RunPlan", 
                         process_data, 
                         vocal_stem_path, 
                         master_vocal_source, 
