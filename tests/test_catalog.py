@@ -22,7 +22,11 @@ import pytest
 
 import catalog
 import uvr_paths
-from gui_data.constants import (BASS_STEM, DEMUCS_ARCH_TYPE, DRUM_STEM, INST_STEM,
+from gui_data.constants import (BASS_STEM, DEMUCS_2_SOURCE, DEMUCS_2_SOURCE_MAPPER,
+                                DEMUCS_4_SOURCE, DEMUCS_4_SOURCE_MAPPER,
+                                DEMUCS_ARCH_TYPE, DEMUCS_UVR_MODEL, DEMUCS_V1,
+                                DEMUCS_V2, DEMUCS_V3, DEMUCS_V4,
+                                DEMUCS_VERSION_MAPPER, DRUM_STEM, INST_STEM,
                                 MDX_ARCH_TYPE, NO_MODEL, OTHER_STEM, VR_ARCH_TYPE,
                                 VOCAL_STEM)
 
@@ -128,18 +132,54 @@ def test_hash_falls_back_to_whole_file_below_10mb(tmp_path):
     assert catalog.hash_of(p) == hashlib.md5(blob).hexdigest()
 
 
-def test_hash_of_agrees_with_the_golden_harness_helper():
-    """`catalog.hash_of` vs `tests/golden/settings.py:_vr_model_hash`, real fixture.
+def test_hash_of_digest_is_the_key_the_pinned_tables_already_use():
+    """Finding #6, half (a): the hash stays leashed to *data*, not to itself.
 
-    The brief's rule is one implementation, not two: the golden helper already
-    ports `UVR.py:793-799` correctly, so the two digests must be equal on the
-    weight the golden suite actually runs. Migrating the harness onto `catalog`
-    is Task 11's job; this test is the leash that keeps them equal until then.
+    Task 10 kept two implementations of `UVR.py:793-799` and pinned their
+    equality on one fixture. With `tests/golden/settings.py:_vr_model_hash`
+    deleted there is no second implementation to compare against, so the leash
+    moves to the data that only a correct digest can reach: the real 126 MB VR
+    weight's entry in both `model_data.json` tables (the installed root and the
+    repo's version-controlled `models/`). Change the window or the algorithm and
+    these two lookups raise `KeyError` -- exactly the silent failure mode
+    `test_tail_window_survives_the_10000_kib_vs_10_mibibyte_distinction` warns about.
     """
-    from tests.golden.settings import _vr_model_hash
-
     weight = uvr_paths.MODELS["vr"]
-    assert catalog.hash_of(weight) == _vr_model_hash(weight)
+    digest = catalog.hash_of(weight)
+    installed = _json(MODEL_ROOT / VR_TABLE)
+    shipped = _json(REPO_MODELS / VR_TABLE)
+    assert digest in installed, f"{weight.name} hashes to {digest}, not a key in {MODEL_ROOT / VR_TABLE}"
+    assert digest in shipped, f"{weight.name} hashes to {digest}, not a key in {REPO_MODELS / VR_TABLE}"
+    assert installed[digest] == shipped[digest], \
+        "both model_data.json tables must key this weight identically"
+    assert set(installed[digest]) >= {"vr_model_param", "primary_stem"}
+
+
+def test_golden_harness_no_longer_duplicates_the_hash_helper():
+    """Finding #6, half (b): one implementation, and the copy is *gone*.
+
+    `assert not hasattr(...)` catches a re-added function; the AST scan catches a
+    copy under a different private name, which the hasattr check alone would wave
+    through. The import check is the other half of "one calls the other".
+    """
+    from tests.golden import settings as golden_settings
+
+    assert not hasattr(golden_settings, "_vr_model_hash")
+
+    tree = ast.parse(Path(golden_settings.__file__).read_text(encoding="utf-8"))
+    imported = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module.split(".")[0])
+    assert "catalog" in imported, "the harness must call catalog.hash_of, not re-derive it"
+    assert golden_settings.catalog.hash_of is catalog.hash_of
+    md5_helpers = [n.name for n in ast.walk(tree)
+                   if isinstance(n, ast.FunctionDef) and "hash" in n.name
+                   and any(isinstance(x, ast.Attribute) and x.attr == "md5"
+                           for x in ast.walk(n))]
+    assert md5_helpers == [], f"a second md5 implementation is back: {md5_helpers}"
 
 
 def test_tail_window_survives_the_10000_kib_vs_10_mibibyte_distinction():
@@ -796,6 +836,132 @@ def test_demucs_spec_carries_no_fabricated_params_table(tmp_path):
     assert spec.needs_user_params is False
     assert spec.provenance.tier is catalog.Tier.BAKED_TABLE
     assert spec.primary_stem is None  # UVR.py:737 derives stems from the user's choice
+    # Finding #7: the whole dict is the four upstream fields -- nothing fabricated,
+    # and the old renamed `stem_count` is gone.
+    assert set(spec.model_data) == {"demucs_version", "demucs_source_list",
+                                    "demucs_source_map", "demucs_stem_count"}
+    assert "stem_count" not in spec.model_data
+
+
+def _demucs_synth_spec(tmp_path, tag: str, display: str, file_name: str) -> catalog.ModelSpec:
+    """Resolve `display` in a synthetic root holding one demucs weight.
+
+    Synthetic on purpose: this machine has exactly one real Demucs weight
+    (`955717e8-8726e21a.th`), and the names table lists v1/v2 models whose files
+    were never installed, so the version rule can only be exercised against
+    invented names. The weight is a few bytes -- demucs is `params_required=False`,
+    so nothing reads the digest as a table key.
+    """
+    root = tmp_path / f"root-{tag}"
+    weight = root / "Demucs_Models" / file_name
+    weight.parent.mkdir(parents=True, exist_ok=True)
+    weight.write_bytes(f"synthetic-demucs-{tag}".encode())
+    _write_json(root / DEMUCS_NAMES, {file_name: display})
+    c = catalog.Catalog(root, tmp_path / f"writable-{tag}", fallback_root=None)
+    return c.resolve(display, arch="demucs")
+
+
+def test_demucs_version_follows_the_tag_not_a_bare_v_number(tmp_path):
+    """Finding #7, required test 2: upstream's default-then-overwrite shape.
+
+    `UVR.py:725` starts at v4 and `:727-729` overwrites it only when the name
+    contains the *tag* (`'v1 | '` with the pipe and trailing space,
+    `gui_data/constants.py:52-62`), not the bare `'v1'`. A catalog that skipped
+    the loop or matched the bare version would answer the wrong thing here.
+    """
+    for version, tag in DEMUCS_VERSION_MAPPER.items():
+        spec = _demucs_synth_spec(tmp_path, f"tag-{version}", f"{tag}Synthetic Model",
+                                  f"synth-{version}.th")
+        assert spec.model_data["demucs_version"] == version
+        assert spec.arch == "demucs"
+
+    # no tag at all -> the v4 default survives
+    plain = _demucs_synth_spec(tmp_path, "untagged", "Synthetic Untagged Model",
+                               "synth-untagged.th")
+    assert plain.model_data["demucs_version"] == DEMUCS_V4
+
+    # a bare version number must NOT match the tag: this is the substring test
+    bare = _demucs_synth_spec(tmp_path, "bare", "Synthetic Model v1", "synth-bare.th")
+    assert bare.model_data["demucs_version"] == DEMUCS_V4
+
+
+def test_demucs_source_shape_follows_the_uvr_model_branch(tmp_path):
+    """Finding #7, required test 1's second shape: 2 stems iff the name carries
+    `DEMUCS_UVR_MODEL` (`UVR.py:731-734`), and the fields are mutually consistent.
+
+    The 2-stem half is synthetic (no `UVR_Model` weight is installed here); the
+    4-stem half is asserted against the real weight in
+    `test_demucs_spec_carries_all_four_fields_for_the_real_weight`.
+    """
+    spec = _demucs_synth_spec(tmp_path, "twostem", f"{DEMUCS_V3} | {DEMUCS_UVR_MODEL}_synth",
+                              "synth-uvr-model.th")
+    md = spec.model_data
+    assert md["demucs_version"] == DEMUCS_V3
+    assert md["demucs_source_list"] == list(DEMUCS_2_SOURCE)
+    assert md["demucs_source_map"] == dict(DEMUCS_2_SOURCE_MAPPER)
+    assert md["demucs_stem_count"] == 2
+    assert len(md["demucs_source_list"]) == md["demucs_stem_count"]
+    assert md["demucs_source_map"][VOCAL_STEM] == md["demucs_stem_count"] - 1
+    assert md["demucs_source_map"][INST_STEM] == 0
+    assert "stem_count" not in md
+
+    four = _demucs_synth_spec(tmp_path, "fourstem", "v4 | Synthetic Htdemucs",
+                              "synth-four.th")
+    md4 = four.model_data
+    assert md4["demucs_source_list"] == list(DEMUCS_4_SOURCE)
+    assert md4["demucs_source_map"] == dict(DEMUCS_4_SOURCE_MAPPER)
+    assert md4["demucs_stem_count"] == 4
+    assert len(md4["demucs_source_list"]) == md4["demucs_stem_count"]
+    assert md4["demucs_source_map"][VOCAL_STEM] == md4["demucs_stem_count"] - 1
+    assert {md4["demucs_source_map"][s] for s in (BASS_STEM, DRUM_STEM, OTHER_STEM,
+                                                  VOCAL_STEM)} == {0, 1, 2, 3}
+
+
+def test_demucs_spec_carries_all_four_fields_for_the_real_weight(tmp_path):
+    """Finding #7, required test 1: the one real Demucs weight answers all four.
+
+    `955717e8-8726e21a.th` is the v3/v4-repo file `uvr_paths` names for `demucs`.
+    Resolved by its *file* name it carries no tag, so `demucs_version` comes from
+    upstream's v4 default -- the same answer the GUI's display name
+    `'v4 | htdemucs'` produces through the tag loop, which is why the golden
+    harness's demucs fixture and the catalog agree on the version.
+    """
+    c = _catalog(tmp_path)
+    spec = c.resolve("955717e8-8726e21a.th", arch="demucs")
+    md = spec.model_data
+    assert set(md) == {"demucs_version", "demucs_source_list", "demucs_source_map",
+                       "demucs_stem_count"}
+    assert md["demucs_version"] == DEMUCS_V4
+    assert md["demucs_stem_count"] == 4
+    assert md["demucs_source_list"] == list(DEMUCS_4_SOURCE)
+    assert md["demucs_source_map"] == dict(DEMUCS_4_SOURCE_MAPPER)
+    assert len(md["demucs_source_list"]) == md["demucs_stem_count"]
+    assert md["demucs_source_map"][VOCAL_STEM] == md["demucs_stem_count"] - 1
+    assert "stem_count" not in md
+
+
+def test_separate_cpu_fallback_predicate_is_v1_and_v2_only(tmp_path):
+    """Finding #7, required test 3: `separate.py:333`'s condition, on the record.
+
+    That line is `cpu if self.is_other_gpu and not self.demucs_version in
+    [DEMUCS_V3, DEMUCS_V4] else self.device` -- the CPU fallback for demucs v1/v2
+    on a non-CUDA GPU, this fork's documented degraded ROCm path. It only works if
+    the catalog's field says what its name suggests, so pin the predicate itself.
+    """
+    def cpu_fallback(version: str) -> bool:
+        return version not in [DEMUCS_V3, DEMUCS_V4]
+
+    assert cpu_fallback(DEMUCS_V1) is True
+    assert cpu_fallback(DEMUCS_V2) is True
+    assert cpu_fallback(DEMUCS_V3) is False
+    assert cpu_fallback(DEMUCS_V4) is False
+
+    # and the field the predicate reads is the one the catalog produced: a
+    # synthetic v1 name really does route to the CPU branch, a v4 name does not.
+    v1 = _demucs_synth_spec(tmp_path, "cpu-v1", "v1 | Synthetic Tasnet", "synth-cpu-v1.th")
+    assert cpu_fallback(v1.model_data["demucs_version"]) is True
+    v4 = _catalog(tmp_path).resolve("955717e8-8726e21a.th", arch="demucs")
+    assert cpu_fallback(v4.model_data["demucs_version"]) is False
 
 
 # --------------------------------------------------------------------------- #

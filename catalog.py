@@ -71,7 +71,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import uvr_paths
-from gui_data.constants import (DEMUCS_ARCH_TYPE, DEMUCS_UVR_MODEL, MDX_ARCH_TYPE,
+from gui_data.constants import (DEMUCS_2_SOURCE, DEMUCS_2_SOURCE_MAPPER,
+                                DEMUCS_4_SOURCE, DEMUCS_4_SOURCE_MAPPER,
+                                DEMUCS_ARCH_TYPE, DEMUCS_UVR_MODEL,
+                                DEMUCS_V4, DEMUCS_VERSION_MAPPER, MDX_ARCH_TYPE,
                                 NO_MODEL, VR_ARCH_TYPE, secondary_stem)
 
 __all__ = ["TAIL_WINDOW_BYTES", "Tier", "RootRole", "Provenance", "ModelSpec",
@@ -300,9 +303,9 @@ def hash_of(weights_path: Path) -> str:
     Deliberately *not* verbatim: upstream's fallback is a bare `except:` whose
     whole-file branch re-opens the file with an unclosed `open(...)` (and Apollo
     duplicates the same block at `:1087-1092`). Here the window seek is narrowed to
-    `OSError`/`ValueError` and both branches go through one `with`. This is the same
-    digest `tests/golden/settings.py:_vr_model_hash` produces; that copy moves here
-    when Task 11 retires `ModelData`.
+    `OSError`/`ValueError` and both branches go through one `with`. Since Task 11a
+    this is also the *only* implementation: `tests/golden/settings.py` dropped its
+    private copy and calls this function.
     """
     path = Path(weights_path)
     try:
@@ -313,6 +316,42 @@ def hash_of(weights_path: Path) -> str:
         # the file is smaller than the window (or unreadable as a seekable stream):
         # upstream's whole-file branch, without the leaked handle
         return hashlib.md5(path.read_bytes()).hexdigest()
+
+
+def _demucs_model_data(name: str) -> dict:
+    """The demucs arch fields `separate.py` reads — `UVR.py:723-734`.
+
+    Upstream's `ModelData.get_demucs_model_data` derives four attributes and this
+    returns the same four under the *same key names*, because the re-pointing slice
+    hands `model_data` to `separate.py:327-331`, which reads
+    `demucs_version` / `demucs_source_list` / `demucs_source_map` /
+    `demucs_stem_count` by name — and `separate.py:333` uses `demucs_version` as the
+    CPU fallback for v1/v2 on a non-CUDA GPU. No default is applied at read time:
+    a spec that cannot answer `demucs_version` must not quietly keep v1/v2 on the GPU.
+
+    The rule is upstream's, in upstream's order: default to `DEMUCS_V4`, then let the
+    `DEMUCS_VERSION_MAPPER` *tag* (`'v1 | '`, not the bare `'v1'`) overwrite it when
+    the display name carries one, then branch on `DEMUCS_UVR_MODEL` for the 2-stem
+    shape and use the 4-stem shape otherwise. No 6-stem handling belongs here —
+    upstream applies `DEMUCS_6_SOURCE_MAPPER` later, at `separate.py:1058-1060`, from
+    the audio shape rather than the model name.
+
+    The list/dict are copies, not the `gui_data.constants` globals: `baked_table`'s
+    deepcopy rule (`ModelSpec` mutations must not rewrite shared state) applies with
+    the same force to two module-level tables every spec would otherwise share.
+    """
+    version = DEMUCS_V4
+    for key, tag in DEMUCS_VERSION_MAPPER.items():
+        if tag in name:
+            version = key
+    two_stem = DEMUCS_UVR_MODEL in name
+    return {
+        "demucs_version": version,
+        "demucs_source_list": list(DEMUCS_2_SOURCE if two_stem else DEMUCS_4_SOURCE),
+        "demucs_source_map": dict(DEMUCS_2_SOURCE_MAPPER if two_stem
+                                  else DEMUCS_4_SOURCE_MAPPER),
+        "demucs_stem_count": 2 if two_stem else 4,
+    }
 
 
 def _load_json(path: Path) -> dict:
@@ -601,7 +640,7 @@ class Catalog:
             if table_hit is not None:
                 answer_role, answer_root, source = table_hit[1], table_hit[2], table_hit[3]
             tier = Tier.BAKED_TABLE if table_hit else Tier.NOT_APPLICABLE
-            model_data = {"stem_count": 2 if DEMUCS_UVR_MODEL in name else 4}
+            model_data = _demucs_model_data(name)
 
         primary = (model_data or {}).get("primary_stem")
         try:

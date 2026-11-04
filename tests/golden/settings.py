@@ -20,7 +20,6 @@ and must never be treated as, official-UVR reference output.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -44,6 +43,7 @@ from gui_data.constants import (
 )
 from lib_v5.vr_network.model_param_init import ModelParameters
 
+import catalog
 import uvr_paths
 
 # --------------------------------------------------------------------------- #
@@ -132,30 +132,19 @@ def ui_defaults(arch: str) -> dict:
 # Derivation helpers (each mirrors a UVR.py ModelData line)
 # --------------------------------------------------------------------------- #
 
-def _vr_model_hash(weights_path: Path) -> str:
-    """Tail-10 MB md5, exactly ``UVR.py:779 get_model_hash``.
-
-    The hash is how the *weight itself* (not this file) declares its network
-    parameters, so resolving through it is what keeps the harness honest.
-    """
-    with open(weights_path, "rb") as f:
-        try:
-            f.seek(-10000 * 1024, 2)
-        except OSError:
-            f.seek(0)
-            return hashlib.md5(f.read()).hexdigest()
-        return hashlib.md5(f.read()).hexdigest()
-
-
 def _vr_hash_entry() -> tuple[dict, Path]:
     """Look the fixture up in the model root's ``VR_Models/model_data/model_data.json``.
 
     Same two-step the GUI performs (``UVR.py:505-509``): prefer a per-hash
     ``{hash}.json`` in the hash dir, else the aggregate hash mapper. Raises
     rather than inventing parameters for an unrecognised weight.
+
+    The digest comes from ``catalog.hash_of`` -- the one implementation in the
+    repo (Task 11a retires this module's private copy, which duplicated
+    ``UVR.py:793-799`` with a different fallback branch).
     """
     weights = require_model("vr")
-    digest = _vr_model_hash(weights)
+    digest = catalog.hash_of(weights)
     hash_dir = uvr_paths.MODEL_ROOT / "VR_Models" / "model_data"
     per_hash = hash_dir / f"{digest}.json"
     if per_hash.is_file():
