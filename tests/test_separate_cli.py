@@ -1,6 +1,6 @@
 """Task 13: the GUI-free CLI, tested as the fork's headline claim.
 
-Six contracts, listed in the order of cost rather than importance: test 4 is the
+Seven contracts, listed in the order of cost rather than importance: test 4 is the
 one that matters most, and it is last in its section because it is the slowest.
 
 1. **Tier 3 is a hard error that tells you what to do.** A weight whose params no
@@ -28,12 +28,17 @@ one that matters most, and it is last in its section because it is the slowest.
 6. **No network in this file's own import graph.** AST allow-list plus the
    `urlopen`-raises fixture from `tests/test_model_refresh.py`, so even a test that
    forgot to inject a fake fails loudly instead of fetching.
+
+Plus the README guard (test 7): three of the README's statements are project policy,
+and the speed-number policy in particular must be machine-checked, because a rule
+that lives only in prose is violated by the next editor.
 """
 from __future__ import annotations
 
 import ast
 import io
 import os
+import re
 import subprocess
 import sys
 import types
@@ -50,6 +55,7 @@ from tests.test_engine_purity import (CHILD_TIMEOUT_SECONDS, ENGINE_IMPORTS,
 
 REPO = Path(__file__).resolve().parents[1]
 CLI = REPO / "separate_cli.py"
+README = REPO / "README.md"
 
 
 # --------------------------------------------------------------------------- #
@@ -448,3 +454,56 @@ def test_refresh_without_confirmation_refuses_before_any_fetch(tmp_path):
     assert "refusing to touch the network" in printed, (
         f"the CLI paraphrased model_refresh's refusal instead of printing it:\n{printed}")
     assert not list(writable.rglob("*.json")), "a refused refresh wrote table files"
+
+
+# --------------------------------------------------------------------------- #
+# 7. the README, as policy and not as prose
+# --------------------------------------------------------------------------- #
+
+#: A bare point-estimate headline for the healthy-CPU ratio: `5.90x`, `5.9×`,
+#: `5.90 ×` -- and only bare. The same digits inside a range (`5.24-5.90x`) are the
+#: sanctioned form, so the guard looks for a range marker on the same line.
+BARE_HEADLINE = re.compile(r"(?<![\d.])5[.,]9\s*0?\s*[x×]")
+RANGE_MARKER = re.compile(r"\d\s*[-–~]\s*\d|\bto\b|\brange\b|\bn\s*=", re.IGNORECASE)
+
+
+def test_readme_states_the_three_policy_rules():
+    """Project policy, each one a substring a contributor would otherwise not find."""
+    assert README.is_file(), "the README that stops this fork misleading its users is missing"
+    text = README.read_text(encoding="utf-8")
+    lowered = text.lower()
+    for needle, why in (
+            ("-backend rocm", "the pytest restriction and how to make the venv"),
+            ("bootstrap.ps1", "the one-command venv creator this fork ships instead of a binary"),
+            ("no auto-update", "Task 12's user-visible half"),
+            ("read-only", "the weights dir is never written"),
+            ("<hash>.json", "the tier-3 self-service path a CLI user has"),
+            ("separate_cli.py", "the CLI itself -- the thing the README exists to document")):
+        assert needle in lowered or needle in text, (
+            f"README.md is missing {needle!r} -- {why}")
+
+
+def test_readme_speed_claim_is_a_range_with_its_n_and_never_a_bare_5_90x():
+    """The published-number policy, machine-checked.
+
+    `tools/task7_timing.py` is the only sanctioned source, and its own docstring
+    says why: the GPU warm times are stable to ~2%, the healthy-CPU ratio is not
+    stable across sessions (vr spans 5.24-5.90x), and the CPU divisor is external
+    history the repository cannot re-measure. A bare `5.90x` headline restates one
+    session as a property of the box -- a mistake already made twice in this
+    project -- so the rule is a regex and not a comment.
+    """
+    text = README.read_text(encoding="utf-8")
+    bare = [line.strip() for line in text.splitlines()
+            if BARE_HEADLINE.search(line) and not RANGE_MARKER.search(line)]
+    assert not bare, (
+        "README.md carries a bare 5.90x-style healthy-CPU headline. The ruling is a "
+        f"range with its n, sourced from tools/task7_timing.py: {bare}")
+    assert "5.90" not in text or "5.24" in text, (
+        "the point estimate may appear only inside its range, and the range's low "
+        "bound (5.24x) is what proves it is a range")
+    assert "task7_timing" in text, (
+        "every speed number in the README must name the committed driver that "
+        "re-derives it; none may cite a report or a log")
+    assert re.search(r"\bn\s*=\s*\d", text), (
+        "the healthy-CPU ratio must carry its sample count")

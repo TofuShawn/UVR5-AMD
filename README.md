@@ -1,3 +1,96 @@
+# UVR5 AMD/ROCm fork — read this before your first run
+
+This branch (`fork/amd-rocm-pyside`) runs UVR's engine on an AMD GPU through torch's ROCm
+build, without the tkinter GUI. Three things here are policy, not preference.
+
+## 1. `pytest` is supported only on a `-Backend rocm` venv
+
+One golden pin store (`tests/golden/pins.json`) asserts `torch`/`torch_hip` against the live
+environment, so a venv built `-Backend cuda` or `-Backend cpu` fails the suite **by design**,
+even on byte-identical audio. That red is not something you broke.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1 -Backend rocm
+.venv\Scripts\python.exe -m pytest -q                    # ~150 s on this box
+```
+
+## 2. A GUI-free run cannot open the model-params dialog: an unknown model is a hard error
+
+Upstream resolves params from the per-model `<hash>.json`, then a baked table, then **asks a
+human through a popup**. A CLI has no popup, so the third case exits non-zero naming the hash
+and the exact file it wanted — that message is the only self-service path there is:
+
+```
+$ .venv/Scripts/python.exe separate_cli.py --arch vr --model mystery-model -a song.flac -o out
+[cli] "mystery-model" (arch vr) is not in the catalog: hash 3f2a…c1; no per-model JSON at
+      C:\Users\you\AppData\Roaming\UVR-fork\model_data\VR_Models\model_data\3f2a…c1.json …
+      Tier 3 needs user-supplied params — a CLI cannot open the params dialog, so write that
+      file (Catalog.write_params) or pass the params explicitly.                              (exit 3)
+```
+
+Write that JSON — `Catalog.write_params("vr", "<hash>", params)` or by hand — and the same
+command resolves. Weights dirs (`F:/Software/Ultimate Vocal Remover/models`, and the repo's
+tracked `models/` tree) are **read-only**: new per-model JSON goes to the writable catalog dir
+`%APPDATA%\UVR-fork\model_data`, which the catalog reads *before* the baked tables.
+
+## 3. Speed claims carry their conditions
+
+Conditions: **Radeon RX 7900 XTX (gfx1100)**, Windows, `torch 2.9.1+rocm7.2.1`,
+`torch.version.hip 7.2.53211-158bd99533`, the golden 30 s crop through
+`tests.golden.runner.separate()` with the frozen `pins.json` settings (`Default` device,
+VR `1_HP-UVR`), **warm** — a process's first GPU run is excluded, MIOpen's cold kernel search
+being ~20× slower (36.84 s → 1.65 s). Re-derive any figure below with the committed driver:
+
+```
+UVR_MODEL_ROOT="F:/Software/Ultimate Vocal Remover/models" .venv/Scripts/python.exe tools/task7_timing.py
+```
+
+* Headline: **absolute warm GPU times**, stable to ~2% — **VR 1.67–1.88 s**, **htdemucs 2.74 s**
+  for the 30 s crop (n=4 GPU runs per session; the warm figure is the best of the 3 after cold).
+* The healthy-CPU ratio appears **only as a range with its n**: **5.24–5.90×** (VR, n=3
+  published sessions) and **4.03–4.05×** (htdemucs, n=2). Its divisor (9.845 s / 11.108 s) was
+  measured on `torch 2.15.0+cpu` elsewhere and this repository cannot re-measure it, so quoting
+  the top of that range as a single number is a policy violation — a test asserts its absence.
+* Same-wheel CPU ratios (VR ~4.3–4.7×, htdemucs ~18–20×) are printed by the driver and are
+  reproducible here, but are **not** headlined: this ROCm wheel's CPU path runs ~5× slower than
+  a healthy build's, so that demucs figure measures a CPU regression, not a GPU result.
+
+## No auto-update; tables refresh only by explicit command
+
+Nothing phones home on any code path, and the official update package would overwrite a forked
+install anyway. The four baked tables upstream fetches on startup refresh only when asked:
+
+```
+.venv/Scripts/python.exe separate_cli.py --refresh-model-tables --confirm
+```
+
+Without `--confirm` it refuses, exits non-zero and touches no network (`model_refresh.py`'s own
+rule, which the CLI delegates to). The shipped repo tables are staler than a live install's
+(MDX 61 vs 86 entries; name mapper 20 vs 46, the missing 26 being the Roformer/MDX23C class), so
+a refresh is what makes newer names resolvable.
+
+## Running separations without the GUI
+
+```
+.venv/Scripts/python.exe separate_cli.py --list-models vr
+.venv/Scripts/python.exe separate_cli.py -a song.flac -o out --arch vr --model 1_HP-UVR
+.venv/Scripts/python.exe separate_cli.py -a song.flac -o out --model NAME --device rocm --dry-run
+```
+
+`--device` is `backends.resolve()`'s argument, never a silent downgrade: the run prints the
+backend it chose (`name=rocm torch_device=cuda …`) and says out loud when the requested device
+cannot be opened. Exit codes: 0 ok, 1 engine failure, 2 usage, 3 unknown model params, 4 blocked
+arch, 5 missing weight, 6 unknown name, 7 plan refused, 8 refresh refused, 9 input missing.
+**Blocked:** `mdx_c`, `onnx` and `roformer` are refused rather than simulated — no weights of
+those classes exist on this machine (configs only), so this fork publishes no result for them.
+Internals (the `Settings`/`Catalog`/`RunPlan` split, the purity ratchet) live in module
+docstrings and commit messages, deliberately not here.
+
+The upstream v5.6 document follows, kept intact; everything in it about installers, update
+packages and Nvidia/OpenCL setup describes the **official** application, not this fork.
+
+---
+
 # Ultimate Vocal Remover GUI v5.6
 <img src="https://raw.githubusercontent.com/Anjok07/ultimatevocalremovergui/master/gui_data/img/UVR_v5.6.png?raw=true" />
 
