@@ -84,6 +84,31 @@ def _params(stem: str = "Vocals") -> dict:
     return {"vr_model_param": "4band_44100", "primary_stem": stem}
 
 
+# The precedence fixtures below put one relative table path in all three roots.
+_ROOT_ROLES = ("writable_dir", "model_root", "fallback_root")
+_PRECEDENCE_WEIGHT = b"task10-precedence-weight"
+
+
+def _three_roots(tmp_path: Path, tag: str) -> dict[str, Path]:
+    """Three disjoint scratch roots, keyed by the `RootRole` names they stand for."""
+    roots = {role: tmp_path / f"{tag}-{role}" for role in _ROOT_ROLES}
+    for path in roots.values():
+        path.mkdir(parents=True, exist_ok=True)
+    return roots
+
+
+def _same_weight(root: Path, rel: str) -> str:
+    """Write one small weight and return its digest — identical bytes everywhere.
+
+    Every root's table keys on this digest, so a wrong answer in the precedence
+    tests can only come from the wrong *root* answering, never from a hash mismatch.
+    """
+    path = root / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(_PRECEDENCE_WEIGHT)
+    return catalog.hash_of(path)
+
+
 # --------------------------------------------------------------------------- #
 # 1. hash compatibility — the one test that must not be flexible
 # --------------------------------------------------------------------------- #
@@ -206,11 +231,188 @@ def test_resolve_finds_the_vr_fixture(tmp_path):
     assert spec.needs_user_params is False
 
 
-def test_resolve_reports_root_and_tier_for_every_source(tmp_path):
-    c = _catalog(tmp_path)
-    spec = c.resolve("1_HP-UVR")
-    assert spec.weights_path.exists()
-    assert spec.process_method == VR_ARCH_TYPE
+def test_baked_table_precedence_writable_then_model_root_then_fallback(tmp_path):
+    """Finding #1: `model_root` SHADOWS `fallback_root` on a baked params table.
+
+    This replaces `test_resolve_reports_root_and_tier_for_every_source`, which
+    asserted `weights_path.exists()` and `process_method` -- neither of which any
+    order of `_roots()` can falsify, so deleting provenance entirely kept it green.
+
+    Here the same relative table path sits in all three roots with three DIFFERENT
+    contents, and each content carries a filler key of its own, so "first file
+    wins", "merge the roots" and "fallback wins" are three different answers. The
+    weight bytes are identical in every root, so one digest keys every table and
+    only precedence -- never the hash -- can change what `resolve()` returns.
+    """
+    name = "Precedence-VR"
+    weight_rel = f"VR_Models/{name}.pth"
+    roots = _three_roots(tmp_path, "vr")
+    digest = _same_weight(roots["model_root"], weight_rel)
+    _same_weight(roots["fallback_root"], weight_rel)
+
+    stems = {"writable_dir": "Instrumental", "model_root": "Vocals",
+             "fallback_root": "Bass"}
+    contents = {role: {digest: _params(stem), f"filler-only-in-{role}": _params("Other")}
+                for role, stem in stems.items()}
+    for role, table in contents.items():
+        _write_json(roots[role] / VR_TABLE, table)
+
+    def answer(model_root: Path, writable: Path, fallback_root: Path):
+        c = catalog.Catalog(model_root, writable, fallback_root=fallback_root)
+        return c, c.resolve(name)
+
+    def expect(role: str, root: Path, c, spec):
+        assert spec.provenance.tier is catalog.Tier.BAKED_TABLE
+        assert spec.model_data == contents[role][digest], \
+            f"{role}'s table content must answer, not a merge of the roots"
+        assert spec.provenance.root_role is getattr(catalog.RootRole, role.upper()), \
+            f"_roots() reordered: {role} no longer answers"
+        assert spec.provenance.root == root
+        assert spec.provenance.source == root / VR_TABLE
+        assert set(c.baked_table("vr", "params")) == set(contents[role]), \
+            "the roots are shadowed, never merged -- a merge carries the other fillers"
+
+    # (i) all three roots hold the table: the refresh location wins. This is the
+    # shape Task 12 actually produces.
+    c, spec = answer(roots["model_root"], roots["writable_dir"], roots["fallback_root"])
+    expect("writable_dir", roots["writable_dir"], c, spec)
+    assert spec.weights_path == roots["model_root"] / weight_rel, \
+        "writable_dir holds params, never weights"
+
+    # (ii) no refresh yet, so the two weights roots compete: model_root wins.
+    c, spec = answer(roots["model_root"], tmp_path / "vr-writable-fresh",
+                     roots["fallback_root"])
+    expect("model_root", roots["model_root"], c, spec)
+
+    # (iii) model_root ships no table at all: the answer falls through to
+    # fallback_root -- the pair with (ii) is what a reorder cannot survive.
+    bare = tmp_path / "vr-model-bare"
+    bare.mkdir()
+    c, spec = answer(bare, tmp_path / "vr-writable-fresh2", roots["fallback_root"])
+    expect("fallback_root", roots["fallback_root"], c, spec)
+
+
+def test_names_table_precedence_mdx_answers_by_its_own_table(tmp_path):
+    """Finding #1, second available shape: MDX's names table is shadowed too.
+
+    `("mdx", "names")` is pinned on the mapping it hands the weight lookup -- which
+    file the name becomes and where that file was found -- because for MDX the
+    names table is what decides the weight, and `provenance` then reports the
+    params table that supplied `model_data`. `ARCHS` gives vr no names table and
+    demucs no params table, so this and the test above are the two shapes.
+    """
+    display = "Precedence-MDX"
+    picked = {"writable_dir": "writable-pick.ckpt", "model_root": "modelroot-pick.ckpt",
+              "fallback_root": "fallbackroot-pick.ckpt"}
+    stems = {"writable_dir": "Instrumental", "model_root": "Vocals",
+             "fallback_root": "Bass"}
+    roots = _three_roots(tmp_path, "mdx")
+    # writable_dir is not a weights root, so the file its table names lives in
+    # model_root: a writable answer must move the *mapping*, not the lookup order.
+    digest = _same_weight(roots["model_root"], f"MDX_Net_Models/{picked['writable_dir']}")
+    _same_weight(roots["model_root"], f"MDX_Net_Models/{picked['model_root']}")
+    _same_weight(roots["fallback_root"], f"MDX_Net_Models/{picked['fallback_root']}")
+
+    names = {role: {picked[role]: display,
+                    f"filler-only-in-{role}.ckpt": f"Filler Only In {role}"}
+             for role in _ROOT_ROLES}
+    params = {role: {digest: _params(stem), f"filler-only-in-{role}": _params("Other")}
+              for role, stem in stems.items()}
+    for role in _ROOT_ROLES:
+        _write_json(roots[role] / MDX_NAMES, names[role])
+        _write_json(roots[role] / MDX_TABLE, params[role])
+
+    def answer(model_root: Path, writable: Path, fallback_root: Path):
+        c = catalog.Catalog(model_root, writable, fallback_root=fallback_root)
+        return c, c.resolve(display, arch="mdx")
+
+    def expect(role: str, table_root: Path, weights_root: Path, c, spec):
+        assert spec.weights_path == weights_root / "MDX_Net_Models" / picked[role], \
+            f"the {role} names table did not answer: it maps a different file"
+        assert set(c.baked_table("mdx", "names")) == set(names[role]), \
+            "names tables are shadowed, never merged"
+        assert c.known_names("mdx") == sorted(names[role])
+        assert spec.provenance.tier is catalog.Tier.BAKED_TABLE
+        assert spec.provenance.root_role is getattr(catalog.RootRole, role.upper())
+        assert spec.provenance.source == table_root / MDX_TABLE
+        assert spec.model_data == params[role][digest]
+
+    c, spec = answer(roots["model_root"], roots["writable_dir"], roots["fallback_root"])
+    expect("writable_dir", roots["writable_dir"], roots["model_root"], c, spec)
+
+    c, spec = answer(roots["model_root"], tmp_path / "mdx-writable-fresh",
+                     roots["fallback_root"])
+    expect("model_root", roots["model_root"], roots["model_root"], c, spec)
+
+    bare = tmp_path / "mdx-model-bare"
+    bare.mkdir()
+    c, spec = answer(bare, tmp_path / "mdx-writable-fresh2", roots["fallback_root"])
+    expect("fallback_root", roots["fallback_root"], roots["fallback_root"], c, spec)
+
+
+def test_names_table_precedence_demucs_reports_the_table_that_answered(tmp_path):
+    """The names-table half of the same pin, on the one arch whose `provenance`
+    *is* the names table: demucs takes its params from the engine (`ARCHS`), so
+    `resolve()` reports root_role and source of `model_name_mapper.json` itself.
+    """
+    display = "Precedence-Demucs"
+    picked = {"writable_dir": "dwritable.th", "model_root": "dmodel.th",
+              "fallback_root": "dfallback.th"}
+    roots = _three_roots(tmp_path, "demucs")
+    _same_weight(roots["model_root"], f"Demucs_Models/{picked['writable_dir']}")
+    _same_weight(roots["model_root"], f"Demucs_Models/{picked['model_root']}")
+    _same_weight(roots["fallback_root"], f"Demucs_Models/{picked['fallback_root']}")
+    names = {role: {picked[role]: display,
+                    f"filler-only-in-{role}.th": f"Filler Only In {role}"}
+             for role in _ROOT_ROLES}
+    for role in _ROOT_ROLES:
+        _write_json(roots[role] / DEMUCS_NAMES, names[role])
+
+    def answer(model_root: Path, writable: Path, fallback_root: Path):
+        c = catalog.Catalog(model_root, writable, fallback_root=fallback_root)
+        return c, c.resolve(display, arch="demucs")
+
+    def expect(role: str, root: Path, weights_root: Path, c, spec):
+        assert spec.provenance.tier is catalog.Tier.BAKED_TABLE
+        assert spec.provenance.root_role is getattr(catalog.RootRole, role.upper())
+        assert spec.provenance.root == root
+        assert spec.provenance.source == root / DEMUCS_NAMES, \
+            f"{role}'s names table must be the source named in provenance"
+        assert spec.weights_path == weights_root / "Demucs_Models" / picked[role]
+        assert set(c.baked_table("demucs", "names")) == set(names[role])
+
+    c, spec = answer(roots["model_root"], roots["writable_dir"], roots["fallback_root"])
+    expect("writable_dir", roots["writable_dir"], roots["model_root"], c, spec)
+
+    c, spec = answer(roots["model_root"], tmp_path / "demucs-writable-fresh",
+                     roots["fallback_root"])
+    expect("model_root", roots["model_root"], roots["model_root"], c, spec)
+
+    bare = tmp_path / "demucs-model-bare"
+    bare.mkdir()
+    c, spec = answer(bare, tmp_path / "demucs-writable-fresh2", roots["fallback_root"])
+    expect("fallback_root", roots["fallback_root"], roots["fallback_root"], c, spec)
+
+
+def test_roots_are_ordered_writable_model_fallback_with_weights_skipping_writable(tmp_path):
+    """R-T10-precedence stated as data: the list `_find()` walks, in order.
+
+    The behavioural tests above prove the order *bites*; this one names it, so a
+    reorder fails twice rather than quietly landing in a branch nobody exercises.
+    """
+    roots = _three_roots(tmp_path, "order")
+    c = catalog.Catalog(roots["model_root"], roots["writable_dir"],
+                        fallback_root=roots["fallback_root"])
+    assert c._roots() == [(catalog.RootRole.WRITABLE_DIR, roots["writable_dir"]),
+                          (catalog.RootRole.MODEL_ROOT, roots["model_root"]),
+                          (catalog.RootRole.FALLBACK_ROOT, roots["fallback_root"])]
+    assert c._roots(weights=True) == [(catalog.RootRole.MODEL_ROOT, roots["model_root"]),
+                                      (catalog.RootRole.FALLBACK_ROOT,
+                                       roots["fallback_root"])]
+    no_fallback = catalog.Catalog(roots["model_root"], roots["writable_dir"],
+                                  fallback_root=None)
+    assert [role for role, _ in no_fallback._roots()] == [catalog.RootRole.WRITABLE_DIR,
+                                                          catalog.RootRole.MODEL_ROOT]
 
 
 def test_provenance_distinguishes_the_four_answering_sources(tmp_path):
@@ -273,8 +475,59 @@ def test_tier2_entry_counts_are_read_from_the_files(tmp_path):
         assert len(c.baked_table(arch, kind)) == expected[(root, rel)]
 
     # and the disagreement the brief measured is real, in this machine's files:
-    assert len(_json(MODEL_ROOT / MDX_TABLE)) > len(_json(REPO_MODELS / MDX_TABLE))
-    assert len(_json(MODEL_ROOT / MDX_NAMES)) > len(_json(REPO_MODELS / MDX_NAMES))
+    def _size_diff_message(installed_rel: str, label: str) -> str:
+        return (
+            f"expected {installed_rel} to hold more entries in the installed root "
+            f"({MODEL_ROOT}) than in the repo tree ({REPO_MODELS / installed_rel}) — "
+            f"the plan's 'the repo tree's copies are a stale subset'. If it is empty, "
+            f"the installed root is not newer than the clone: check UVR_MODEL_ROOT "
+            f"(currently {os.environ.get('UVR_MODEL_ROOT', '<unset>')}, which resolves "
+            f"to MODEL_ROOT above) and re-run with it pointing at the installed "
+            f"weights dir; {label} is otherwise measuring a machine that has nothing "
+            f"to compare.")
+
+    assert len(_json(MODEL_ROOT / MDX_TABLE)) > len(_json(REPO_MODELS / MDX_TABLE)), \
+        _size_diff_message(MDX_TABLE, "the MDX params table")
+    assert len(_json(MODEL_ROOT / MDX_NAMES)) > len(_json(REPO_MODELS / MDX_NAMES)), \
+        _size_diff_message(MDX_NAMES, "the MDX names table")
+
+
+def test_uninstalled_names_is_declared_minus_present_in_both_directions(tmp_path):
+    """Finding #5: `uninstalled_names` had zero references outside `catalog.py`.
+
+    Non-vacuous in both directions: the same catalog answers the missing name while
+    the weight is absent and `[]` once it is dropped in, so the first assert cannot
+    come from a listing that is simply always empty (a table that declared nothing,
+    or a `names()` that saw nothing) and the second cannot come from a method that
+    always reports everything.
+    """
+    root = tmp_path / "unin"
+    declared = {"present-model.ckpt": "Present Model", "absent-model.ckpt": "Absent Model"}
+    _write_json(root / MDX_NAMES, declared)
+    (root / "MDX_Net_Models" / "present-model.ckpt").write_bytes(b"p")
+
+    c = catalog.Catalog(root, tmp_path / "appdata", fallback_root=None)
+    assert c.known_names("mdx") == sorted(declared), "the table declares both"
+    assert c.names("mdx") == ["present-model.ckpt"], "the tree holds one weight"
+    assert c.uninstalled_names("mdx") == ["absent-model.ckpt"]
+
+    (root / "MDX_Net_Models" / "absent-model.ckpt").write_bytes(b"a")
+    assert c.names("mdx") == sorted(declared), "the second weight is now on disk"
+    assert c.uninstalled_names("mdx") == [], \
+        "installed is not 'declared' here: a present weight must drop out"
+
+
+def test_uninstalled_names_is_nonempty_on_a_fresh_clone(tmp_path):
+    """The shipped tables name models a clone cannot run — no count involved."""
+    repo = catalog.Catalog(REPO_MODELS, tmp_path / "appdata", fallback_root=None)
+    missing = repo.uninstalled_names("mdx")
+    assert missing, (
+        f"every name in {REPO_MODELS / MDX_NAMES} was found as a weight under "
+        f"{REPO_MODELS / 'MDX_Net_Models'}; this machine holds a full MDX set, so "
+        f"the 'a fresh clone cannot run these' premise of the test is gone here — "
+        f"run it where the installed weights are not all in the repo tree")
+    assert set(missing) <= set(repo.known_names("mdx")), "declared, by definition"
+    assert not set(missing) & set(repo.names("mdx")), "and absent from the tree"
 
 
 def test_repo_tree_resolves_fewer_models_and_says_so(tmp_path):
@@ -701,23 +954,6 @@ def test_writable_baked_table_overrides_the_weights_root_table(tmp_path):
 # 8. the demucs pre-proc arch pin (fix round 1, finding #4)
 # --------------------------------------------------------------------------- #
 
-def _pre_proc_accepts_primary_stem() -> bool:
-    return "primary_stem" in inspect.signature(
-        catalog.Catalog.demucs_pre_proc_for).parameters
-
-
-def _pre_proc(c: catalog.Catalog, name: str, primary_stem: str | None):
-    """Call `demucs_pre_proc_for` through whichever signature `catalog.py` has right now.
-
-    Lets one test document both sides of the fix: with the pin a VR name in the pre-proc
-    slot silently becomes None; without it the name decides the architecture, which is
-    what upstream does (`UVR.py:7094-7096` passes no process method/arch at all).
-    """
-    if _pre_proc_accepts_primary_stem():
-        return c.demucs_pre_proc_for(name, primary_stem=primary_stem)
-    return c.demucs_pre_proc_for(name)
-
-
 def test_demucs_pre_proc_for_does_not_pin_the_arch(tmp_path):
     """Finding #4: the pre-proc slot is stem-filtered, not arch-restricted.
 
@@ -727,21 +963,16 @@ def test_demucs_pre_proc_for_does_not_pin_the_arch(tmp_path):
     `arch="demucs"` the lookup only searches `Demucs_Models/…`, raises
     `MissingWeightError`, and the `except CatalogError: return None` swallows it: the
     fork loses the pre-process model whenever `primary_stem` is set.
+
+    Only the post-fix behaviour is asserted here; the "before" picture is re-created
+    by `tools/task10_red_controls.py`, which replays the pin against the shipped
+    class instead of leaving a dead branch in a live test.
     """
     c = _catalog(tmp_path)
     assert c.resolve("1_HP-UVR").arch == "vr"
 
     spec = c.demucs_pre_proc_for("1_HP-UVR")
     assert spec is not None and spec.arch == "vr"
-
-    with_stem = _pre_proc(c, "1_HP-UVR", "Vocals")
-    if _pre_proc_accepts_primary_stem():
-        # RED demonstration, still the shipped behaviour at this point: the pin applied
-        # because a *stem* was passed, and the failure swallowed into None.
-        assert with_stem is None, \
-            "the arch pin no longer bites, so update this test's branch"
-    else:
-        assert with_stem is not None and with_stem.arch == "vr"
 
 
 def test_demucs_pre_proc_for_has_no_primary_stem_parameter():
@@ -765,7 +996,7 @@ def test_a_real_demucs_pre_proc_name_still_resolves_without_the_pin(tmp_path):
     """
     c = _catalog(tmp_path)
     assert c.demucs_pre_proc_for(NO_MODEL) is None
-    pre = _pre_proc(c, "955717e8-8726e21a.th", "Vocals")
+    pre = c.demucs_pre_proc_for("955717e8-8726e21a.th")
     assert pre is not None and pre.arch == "demucs"
     assert pre.process_method == DEMUCS_ARCH_TYPE
     assert c.demucs_pre_proc_for("955717e8-8726e21a.th", is_activated=False) is None

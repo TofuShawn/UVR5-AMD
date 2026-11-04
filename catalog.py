@@ -75,7 +75,7 @@ from gui_data.constants import (DEMUCS_ARCH_TYPE, DEMUCS_UVR_MODEL, MDX_ARCH_TYP
                                 NO_MODEL, VR_ARCH_TYPE, secondary_stem)
 
 __all__ = ["TAIL_WINDOW_BYTES", "Tier", "RootRole", "Provenance", "ModelSpec",
-           "Catalog", "CatalogError", "BlockedArchError", "UnknownArchError",
+           "ArchSpec", "Catalog", "CatalogError", "BlockedArchError", "UnknownArchError",
            "UnknownModelNameError", "MissingWeightError", "NoBakedTableError",
            "WritableLocationError", "UnknownModelParamsError", "hash_of",
            "secondary_slot_for", "BLOCKED_ARCHS", "SUPPORTED_ARCHS", "ARCHS"]
@@ -555,6 +555,12 @@ class Catalog:
         refresh (Task 12) written into `writable_dir` wins. Tier 3 does not block:
         `model_data is None`, `needs_user_params=True`, and with `required=True` the
         typed `UnknownModelParamsError`.
+
+        The order is `writable_dir` -> `model_root` -> `fallback_root` and the search
+        stops at the first file that exists, so `model_root` *shadows* `fallback_root`
+        and the roots are never merged (R-T10-precedence): a root that ships its own
+        table is not topped up by the older root below it, which is why an empty table
+        in `model_root` is an answer rather than a miss.
         """
         if arch is not None:
             spec = self._arch(arch)
