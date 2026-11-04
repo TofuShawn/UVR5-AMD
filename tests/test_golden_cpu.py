@@ -3,7 +3,7 @@
 A capture that merely "ran" proves almost nothing, so five kinds of assertion
 live here:
 
-1. *Completeness* -- the frozen settings supply every ``model_data.<attr>`` that
+1. *Completeness* -- the frozen settings supply every ``plan.<attr>`` that
    ``separate.py`` actually reads for the arch being run. Derived from the
    source with AST, not from a hand-maintained list, so Task 11 cannot add a
    read without this test failing first.
@@ -48,29 +48,31 @@ APPLY = settings.APPLY
 REPO = pathlib.Path(uvr_paths.REPO)
 
 #: ``separate.py`` dispatches on these constants; they name the arch blocks
-#: whose ``model_data.*`` reads are conditional.
+#: whose ``plan.*`` reads are conditional.
 ARCH_CONSTANT_TO_KEY = {"VR_ARCH_TYPE": "vr", "DEMUCS_ARCH_TYPE": "demucs",
                         "MDX_ARCH_TYPE": "mdx"}
 
 
 # --------------------------------------------------------------------------- #
-# AST derivation of the ModelData contract
+# AST derivation of the RunPlan contract
 # --------------------------------------------------------------------------- #
 
+#: The base is `plan` since Task 11d renamed `separate.py`'s single constructor
+#: parameter; the helper name predates that rename.
 def _model_data_attrs(node) -> set[str]:
     return {
         child.attr
         for child in ast.walk(node)
         if isinstance(child, ast.Attribute)
         and isinstance(child.value, ast.Name)
-        and child.value.id == "model_data"
+        and child.value.id == "plan"
     }
 
 
 def _seperate_attributes_contract() -> tuple[set[str], dict[str, set[str]]]:
     """(attrs read on every path, {arch_key: attrs read only on that arch}).
 
-    Split by *statement*, not by name: ``model_data.primary_stem`` is read both
+    Split by *statement*, not by name: ``plan.primary_stem`` is read both
     unconditionally (``separate.py:120``) and again inside the MDX/Demucs
     blocks, and a name-set subtraction would wrongly drop it from the base.
     """
@@ -87,7 +89,7 @@ def _seperate_attributes_contract() -> tuple[set[str], dict[str, set[str]]]:
         if (isinstance(stmt, ast.If) and isinstance(test, ast.Compare)
                 and isinstance(test.left, ast.Attribute)
                 and isinstance(test.left.value, ast.Name)
-                and test.left.value.id == "model_data"
+                and test.left.value.id == "plan"
                 and test.left.attr == "process_method"
                 and isinstance(test.comparators[0], ast.Name)):
             return ARCH_CONSTANT_TO_KEY.get(test.comparators[0].id)
@@ -142,7 +144,7 @@ def test_frozen_settings_supply_every_attr_the_engine_reads(arch):
     provided = set(settings.make(arch, "cpu"))
     missing = sorted(required - provided)
     assert not missing, (
-        f"separate.py reads model_data.{missing} on the {arch} path but "
+        f"separate.py reads plan.{missing} on the {arch} path but "
         "tests/golden/settings.py does not supply it"
     )
 

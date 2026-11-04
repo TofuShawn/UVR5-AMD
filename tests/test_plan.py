@@ -2,13 +2,11 @@
 
 The one test that matters most here is `test_runplan_covers_every_attribute_separate_reads`.
 It is the objective gate for Task 11c: it re-derives the read set from
-`separate.py`'s AST *at test time* -- no pasted list of 92 names, because a pasted
-list would only prove that this file was written down correctly once -- and asserts
-both that the set is a subset of `RunPlan`'s fields and that its size is exactly 92.
-Without it, 11c could rename a read in the MDX path and nothing on this machine
-would notice: the SNR gate covers `vr` and `demucs` only (`pins.json["archs_blocked"]`
-= `mdx_c`, `roformer`, `onnx`; `test_golden_rocm.py:137` records that `mdx` has no
-CPU baseline).
+`separate.py`'s AST *at test time* and asserts it against `RunPlan`'s fields *and* --
+since 11d -- against a hand-written literal of the 92 names.  Without it, a rename of
+one read in the MDX path would go unnoticed on this machine: the SNR gate covers `vr`
+and `demucs` only (`pins.json["archs_blocked"]` = `mdx_c`, `roformer`, `onnx`;
+`test_golden_rocm.py:137` records that `mdx` has no CPU baseline).
 
 The rest of the file guards the two things that a name-by-name port can still get
 wrong.  *Values*: 34 fields are "the same name in `Settings`", but `ModelData`
@@ -18,8 +16,22 @@ choices are `build()` arguments (R-T11-selections), and the per-arch group is pi
 by `process_method`, not read once globally (`UVR.py:7052-7057`).
 
 `crop_size` is asserted *absent*.  It is a `Settings` field and it appears in the
-plan document's Step-1 sketch, but `separate.py` never reads it off the model
-object, so R-T11-scope keeps it out of the 92 -- see the brief's ruling section.
+plan document's Step-1 sketch, but `separate.py` never reads it off the plan object,
+so R-T11-scope keeps it out of the 92 -- see the brief's ruling section.
+
+## 11d changed the posture on pinning the 92
+
+11b's brief said "do not hardcode the 92 names", and that was right *for deriving
+the count*: a pasted list would only have proved that the file was written down
+correctly once, and the live sweep is what found the 4 two-read lines.  11d renames
+the base those reads hang off (`model_data` -> `plan`), so the sweep now has a second
+job: catching an edit that re-points a read to the wrong object, or drops one.  A
+sweep compared only to `RunPlan`'s fields cannot do that, because the fields and the
+reads are both 92 and both move together.  So `PINNED_PLAN_READS` is a hand-written
+literal of the 92 names, asserted by *exact equality in both directions* -- the
+`pin_drift` pattern from `tests/test_engine_purity.py`, whose whole reason to exist
+is that a subset-only check lets a dropped read pass silently.  The live sweep and
+the literal are independent sources; disagreement between them is the finding.
 """
 import ast
 import dataclasses
@@ -38,7 +50,14 @@ MODEL_ROOT = uvr_paths.MODEL_ROOT          # the *installed* root when UVR_MODEL
 VR_WEIGHT = "1_HP-UVR"
 DEMUCS_WEIGHT = "955717e8-8726e21a.th"
 MDX_WEIGHT = "UVR-MDX-NET-Inst_HQ_3"
-MODEL_BASE = {"model_data", "mdx_net_model_data", "demucs_model_data"}
+#: The base names whose attribute reads count as plan reads.  Since 11d the single
+#: constructor parameter is `plan` and `separate.py` reads the plan *only* through
+#: it -- the three old bases (`model_data`, `mdx_net_model_data`,
+#: `demucs_model_data`) are gone from the file, so this is a one-element set and
+#: `grep -c model_data separate.py` is 0.  A set rather than a bare string on
+#: purpose: the sweep resolves nested attributes off any base listed here, so a
+#: second plan-bearing parameter is added to this set, not to the walker.
+PLAN_BASE = {"plan"}
 
 CPU = backends.Backend(name="cpu", torch_device="cpu",
                        ort_providers=["CPUExecutionProvider"])
@@ -61,14 +80,59 @@ def _build(tmp_path, name, *, cat=None, s=None, selections=None,
 # 1. the coverage gate
 # --------------------------------------------------------------------------- #
 
-def model_reads(source_text: str) -> dict[str, list[int]]:
-    """`{attr: [linenos]}` for every attribute read off a model object.
+#: The 92 attribute names `separate.py` reads off its single `plan` parameter,
+#: written out by hand.  This literal and the AST sweep in `model_reads` are
+#: independent sources -- the sweep walks the file, this list is what 11d measured
+#: it to be -- so the equality below is a finding rather than a tautology.
+#:
+#: If a name here disappears the file stopped reading it, which is how a plan field
+#: becomes dead weight; if a name appears that is not here, someone added a read
+#: without growing `RunPlan` (or re-pointed one at the wrong object).  Either way
+#: the fix is in the same commit as the change, with a stated reason -- do not
+#: weaken this to a subset check, which is exactly what lets a dropped read pass.
+PINNED_PLAN_READS = frozenset({
+    "DENOISER_MODEL", "DEVERBER_MODEL", "aggression_setting", "batch_size",
+    "bv_model_rebalance", "chunks", "compensate", "demucs_source_list",
+    "demucs_source_map", "demucs_stem_count", "demucs_stems", "demucs_version",
+    "deverb_vocal_opt", "device_set", "ensemble_primary_stem", "ensemble_secondary_stem",
+    "is_bv_model", "is_chunk_demucs", "is_demucs_combine_stems", "is_demucs_pre_proc_model_inst_mix",
+    "is_denoise", "is_denoise_model", "is_deverb_vocals", "is_ensemble_mode",
+    "is_gpu_conversion", "is_high_end_process", "is_inst_only_voc_splitter", "is_invert_spec",
+    "is_karaoke", "is_match_frequency_pitch", "is_mdx_c", "is_mdx_c_seg_def",
+    "is_mdx_ckpt", "is_mdx_combine_stems", "is_mixer_mode", "is_multi_stem_ensemble",
+    "is_normalization", "is_pitch_change", "is_post_process", "is_pre_proc_model",
+    "is_primary_model_primary_stem_only", "is_primary_model_secondary_stem_only", "is_primary_stem_only", "is_roformer",
+    "is_save_inst_vocal_splitter", "is_save_vocal_only", "is_sec_bv_rebalance", "is_secondary_model",
+    "is_secondary_model_activated", "is_secondary_stem_only", "is_split_mode", "is_target_instrument",
+    "is_tta", "is_vocal_split_model", "is_vr_51_model", "margin",
+    "mdx_batch_size", "mdx_c_configs", "mdx_dim_f_set", "mdx_dim_t_set",
+    "mdx_n_fft_scale_set", "mdx_segment_size", "mdxnet_stem_select", "mixer_path",
+    "model_basename", "model_capacity", "model_name", "model_path",
+    "model_samplerate", "mp3_bit_set", "overlap", "overlap_mdx",
+    "overlap_mdx23", "post_process_threshold", "pre_proc_model", "primary_model_primary_stem",
+    "primary_stem", "primary_stem_native", "process_method", "save_format",
+    "secondary_model", "secondary_model_4_stem", "secondary_model_4_stem_scale", "secondary_model_scale",
+    "secondary_stem", "segment", "semitone_shift", "shifts",
+    "vocal_split_model", "vr_model_param", "wav_type_set", "window_size",
+})
 
-    The base is resolved through nested `Attribute` nodes, so `model_data.foo.bar`
-    and `model_data.foo()[0]` both count as a read of `foo`; a name that merely
-    *ends* like a model object (`self.model_data`) does not, because its outermost
-    base is `self`.  Keyed by attribute, not by line: `separate.py:184` and `:185`
-    each read two of them, and a line-keyed dict silently loses 4 of the 92.
+#: `separate.py` may never import these three.  The design's direction is
+#: `app -> engine` and `app -> settings`, with composition only in the controller;
+#: `plan`/`settings`/`catalog` are the controller's inputs, and an engine that
+#: reaches back for them re-couples the layer 11 exists to decouple.  The temptation
+#: is concrete: `plan: RunPlan` is a nicer annotation than `plan: "RunPlan"`, and
+#: writing it costs one `import plan` at the top of the file.
+FORBIDDEN_SEPARATE_IMPORTS = frozenset({"plan", "settings", "catalog"})
+
+
+def model_reads(source_text: str) -> dict[str, list[int]]:
+    """`{attr: [linenos]}` for every attribute read off the plan object.
+
+    The base is resolved through nested `Attribute` nodes, so `plan.foo.bar` and
+    `plan.foo()[0]` both count as a read of `foo`; a name that merely *ends* like a
+    plan object (`self.plan`) does not, because its outermost base is `self`.  Keyed
+    by attribute, not by line: four lines in `separate.py` read two attributes each,
+    and a line-keyed dict silently loses 4 of the 92.
     """
     found: dict[str, list[int]] = {}
     for node in ast.walk(ast.parse(source_text)):
@@ -77,24 +141,58 @@ def model_reads(source_text: str) -> dict[str, list[int]]:
         base = node.value
         while isinstance(base, ast.Attribute):
             base = base.value
-        if isinstance(base, ast.Name) and base.id in MODEL_BASE:
+        if isinstance(base, ast.Name) and base.id in PLAN_BASE:
             found.setdefault(node.attr, []).append(node.lineno)
     return found
+
+
+def plan_read_drift(live) -> str:
+    """A pin failure a human can act on: what left, what arrived, what to do.
+
+    Same shape as `pin_drift` in `tests/test_engine_purity.py`, for the same reason:
+    the two sides have to be able to disagree, and the message has to say which one
+    moved.  A one-directional (`pinned <= live`) check would let a dropped read
+    through -- the exact failure this pin exists to prevent.
+    """
+    now = frozenset(live)
+    missing = sorted(PINNED_PLAN_READS - now)
+    extra = sorted(now - PINNED_PLAN_READS)
+    return (
+        f"separate.py's `plan.` reads have drifted from PINNED_PLAN_READS.\n"
+        f"  MISSING (the file no longer reads it -- so RunPlan now carries a field "
+        f"nothing consumes, and the 92 is no longer the 92): {missing}\n"
+        f"  NOT IN the pin (the file reads a name the pin never saw -- a new field "
+        f"is needed, or a read was re-pointed/renamed by mistake): {extra}\n"
+        f"  pinned = {sorted(PINNED_PLAN_READS)}\n"
+        f"  live   = {sorted(now)}\n"
+        f"  Do one of two things: put the read back, or -- if the change is "
+        f"deliberate -- edit PINNED_PLAN_READS *and* plan.RunPlan's fields in the "
+        f"SAME commit and say why, including the count in "
+        f"test_runplan_field_count_matches_the_ruling. Do not delete the pin, do "
+        f"not weaken it to a subset check, and do not rebuild it from the sweep: "
+        f"that is the circular self-audit this test exists to remove.")
 
 
 def test_runplan_covers_every_attribute_separate_reads():
     reads = set(model_reads((ROOT / "separate.py").read_text(encoding="utf-8")))
     fields = {f.name for f in dataclasses.fields(plan.RunPlan)}
+    # First, because the pin names the offending attribute; the field-side asserts
+    # below say what is missing from RunPlan, which is the less useful headline.
+    assert frozenset(reads) == PINNED_PLAN_READS, plan_read_drift(reads)
+    assert len(PINNED_PLAN_READS) == 92, (
+        f"PINNED_PLAN_READS has {len(PINNED_PLAN_READS)} names, not 92. The literal "
+        "and the count in test_runplan_field_count_matches_the_ruling are the same "
+        "ruling stated twice; fix both or neither.")
     missing = sorted(reads - fields)
     assert not missing, (
         f"separate.py reads {len(missing)} attribute(s) no RunPlan field carries: "
-        f"{missing} -- Task 11c cannot re-point `model_data.` to `plan.` while the "
-        "name is missing, and adding it here needs the same name, not a tidier one.")
+        f"{missing} -- the plan cannot be built from the catalog while the name is "
+        "missing, and adding it here needs the same name, not a tidier one.")
     assert len(reads) == 92, (
-        f"the model-object read set is {len(reads)}, not 92. The count is part of "
+        f"the plan-object read set is {len(reads)}, not 92. The count is part of "
         "ruling R-T11-shape: if a read genuinely appeared, RunPlan grows to match it "
         "and this number, the brief and the ruling change in the SAME commit with a "
-        "stated reason; if one disappeared, 11c is further off than this slice left it.")
+        "stated reason; if one disappeared, the engine is further off than 11d left it.")
     extra = sorted(fields - reads)
     assert not extra, (
         f"RunPlan carries {len(extra)} field(s) separate.py never reads: {extra}. "
@@ -106,11 +204,64 @@ def test_coverage_check_is_not_decorative_on_a_renamed_read():
     """The gate bites on the *read* side too, not only the field side."""
     text = (ROOT / "separate.py").read_text(encoding="utf-8")
     before = set(model_reads(text))
-    renamed = set(model_reads(text.replace("model_data.is_mdx_c_seg_def",
-                                           "model_data.is_mdx_c_seg_def_RENAMED", 1)))
+    renamed = set(model_reads(text.replace("plan.is_mdx_c_seg_def",
+                                           "plan.is_mdx_c_seg_def_RENAMED", 1)))
     assert "is_mdx_c_seg_def_RENAMED" in renamed - before
     assert {f.name for f in dataclasses.fields(plan.RunPlan)} >= before
     assert not {f.name for f in dataclasses.fields(plan.RunPlan)} >= renamed
+
+
+def test_the_plan_read_pin_bites_in_both_directions():
+    """PINNED_PLAN_READS can fail on its own, with the sabotage done in memory.
+
+    `test_coverage_check_is_not_decorative_on_a_renamed_read` proves the *field*
+    side; this proves the pin side, which is the half 11d added.  Both directions
+    are exercised because a pin that only reports extras is a subset check wearing
+    a frozenset.
+    """
+    text = (ROOT / "separate.py").read_text(encoding="utf-8")
+    live = frozenset(model_reads(text))
+    assert live == PINNED_PLAN_READS, plan_read_drift(live)
+
+    # EXTRA side -- a read re-pointed at a name nothing here has ever claimed.
+    renamed = frozenset(model_reads(
+        text.replace("plan.window_size", "plan.window_size_RENAMED")))
+    assert renamed - PINNED_PLAN_READS == frozenset({"window_size_RENAMED"}), (
+        "the mutation did not produce an extra name, so this control proves nothing")
+    assert "window_size_RENAMED" in plan_read_drift(renamed)
+    assert "NOT IN the pin" in plan_read_drift(renamed)
+
+    # MISSING side -- a read simply taken away (re-pointed at `self`, which the
+    # sweep deliberately does not follow).
+    dropped = frozenset(model_reads(
+        text.replace("plan.window_size", "self.window_size")))
+    assert PINNED_PLAN_READS - dropped == frozenset({"window_size"}), (
+        "the mutation did not remove a pinned name, so this control proves nothing")
+    assert "MISSING" in plan_read_drift(dropped)
+    assert "window_size" in plan_read_drift(dropped)
+
+
+def test_separate_py_does_not_import_plan_settings_or_catalog():
+    """The dependency direction stays `app -> engine`, never engine -> plan.
+
+    11d renames the parameter to `plan`, which makes `import plan` look free: the
+    annotation would read `plan: RunPlan` and stop being a string.  It is not free
+    -- that import is the engine reaching for the controller's input -- so this
+    test exists to make the temptation cost a red build instead of a review comment.
+    """
+    tree = ast.parse((ROOT / "separate.py").read_text(encoding="utf-8"))
+    roots = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            roots.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            roots.add(node.module.split(".")[0])
+    hit = sorted(roots & FORBIDDEN_SEPARATE_IMPORTS)
+    assert not hit, (
+        f"separate.py imports {hit}. plan/settings/catalog are composed by the "
+        "controller and handed to the engine as already-built objects; importing "
+        "them here inverts the direction Task 11 exists to establish. Keep the "
+        'annotation the string "RunPlan".')
 
 
 # --------------------------------------------------------------------------- #

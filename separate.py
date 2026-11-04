@@ -126,7 +126,7 @@ def demucs_checkpoint_load():
 
 
 class SeperateAttributes:
-    def __init__(self, model_data: ModelData, 
+    def __init__(self, plan: "RunPlan", 
                  process_data: dict, 
                  main_model_primary_stem_4_stem=None, 
                  main_process_method=None, 
@@ -155,47 +155,47 @@ class SeperateAttributes:
         self.list_all_models = process_data['list_all_models']
         self.process_iteration = process_data['process_iteration']
         self.is_return_dual = is_return_dual
-        self.is_pitch_change = model_data.is_pitch_change
-        self.semitone_shift = model_data.semitone_shift
-        self.is_match_frequency_pitch = model_data.is_match_frequency_pitch
-        self.overlap = model_data.overlap
-        self.overlap_mdx = model_data.overlap_mdx
-        self.overlap_mdx23 = model_data.overlap_mdx23
-        self.is_mdx_combine_stems = model_data.is_mdx_combine_stems
-        self.is_mdx_c = model_data.is_mdx_c
-        self.mdx_c_configs = model_data.mdx_c_configs
-        self.mdxnet_stem_select = model_data.mdxnet_stem_select
-        self.mixer_path = model_data.mixer_path
-        self.model_samplerate = model_data.model_samplerate
-        self.model_capacity = model_data.model_capacity
-        self.is_vr_51_model = model_data.is_vr_51_model
-        self.is_pre_proc_model = model_data.is_pre_proc_model
-        self.is_secondary_model_activated = model_data.is_secondary_model_activated if not self.is_pre_proc_model else False
-        self.is_secondary_model = model_data.is_secondary_model if not self.is_pre_proc_model else True
-        self.process_method = model_data.process_method
-        self.model_path = model_data.model_path
-        self.model_name = model_data.model_name
-        self.model_basename = model_data.model_basename
-        self.wav_type_set = model_data.wav_type_set
-        self.mp3_bit_set = model_data.mp3_bit_set
-        self.save_format = model_data.save_format
-        self.is_gpu_conversion = model_data.is_gpu_conversion
-        self.is_normalization = model_data.is_normalization
-        self.is_primary_stem_only = model_data.is_primary_stem_only if not self.is_secondary_model else model_data.is_primary_model_primary_stem_only
-        self.is_secondary_stem_only = model_data.is_secondary_stem_only if not self.is_secondary_model else model_data.is_primary_model_secondary_stem_only      
-        self.is_ensemble_mode = model_data.is_ensemble_mode
-        self.secondary_model = model_data.secondary_model #
-        self.primary_model_primary_stem = model_data.primary_model_primary_stem
-        self.primary_stem_native = model_data.primary_stem_native
-        self.primary_stem = model_data.primary_stem #
+        self.is_pitch_change = plan.is_pitch_change
+        self.semitone_shift = plan.semitone_shift
+        self.is_match_frequency_pitch = plan.is_match_frequency_pitch
+        self.overlap = plan.overlap
+        self.overlap_mdx = plan.overlap_mdx
+        self.overlap_mdx23 = plan.overlap_mdx23
+        self.is_mdx_combine_stems = plan.is_mdx_combine_stems
+        self.is_mdx_c = plan.is_mdx_c
+        self.mdx_c_configs = plan.mdx_c_configs
+        self.mdxnet_stem_select = plan.mdxnet_stem_select
+        self.mixer_path = plan.mixer_path
+        self.model_samplerate = plan.model_samplerate
+        self.model_capacity = plan.model_capacity
+        self.is_vr_51_model = plan.is_vr_51_model
+        self.is_pre_proc_model = plan.is_pre_proc_model
+        self.is_secondary_model_activated = plan.is_secondary_model_activated if not self.is_pre_proc_model else False
+        self.is_secondary_model = plan.is_secondary_model if not self.is_pre_proc_model else True
+        self.process_method = plan.process_method
+        self.model_path = plan.model_path
+        self.model_name = plan.model_name
+        self.model_basename = plan.model_basename
+        self.wav_type_set = plan.wav_type_set
+        self.mp3_bit_set = plan.mp3_bit_set
+        self.save_format = plan.save_format
+        self.is_gpu_conversion = plan.is_gpu_conversion
+        self.is_normalization = plan.is_normalization
+        self.is_primary_stem_only = plan.is_primary_stem_only if not self.is_secondary_model else plan.is_primary_model_primary_stem_only
+        self.is_secondary_stem_only = plan.is_secondary_stem_only if not self.is_secondary_model else plan.is_primary_model_secondary_stem_only      
+        self.is_ensemble_mode = plan.is_ensemble_mode
+        self.secondary_model = plan.secondary_model #
+        self.primary_model_primary_stem = plan.primary_model_primary_stem
+        self.primary_stem_native = plan.primary_stem_native
+        self.primary_stem = plan.primary_stem #
         print(self.primary_stem)
-        self.secondary_stem = model_data.secondary_stem #
-        self.is_invert_spec = model_data.is_invert_spec #
-        self.is_deverb_vocals = model_data.is_deverb_vocals
-        self.is_target_instrument = model_data.is_target_instrument
-        self.is_mixer_mode = model_data.is_mixer_mode #
-        self.secondary_model_scale = model_data.secondary_model_scale #
-        self.is_demucs_pre_proc_model_inst_mix = model_data.is_demucs_pre_proc_model_inst_mix #
+        self.secondary_stem = plan.secondary_stem #
+        self.is_invert_spec = plan.is_invert_spec #
+        self.is_deverb_vocals = plan.is_deverb_vocals
+        self.is_target_instrument = plan.is_target_instrument
+        self.is_mixer_mode = plan.is_mixer_mode #
+        self.secondary_model_scale = plan.secondary_model_scale #
+        self.is_demucs_pre_proc_model_inst_mix = plan.is_demucs_pre_proc_model_inst_mix #
         self.primary_source_map = {}
         self.secondary_source_map = {}
         self.primary_source = None
@@ -204,28 +204,28 @@ class SeperateAttributes:
         self.secondary_source_secondary = None
         self.main_model_primary_stem_4_stem = main_model_primary_stem_4_stem
         self.main_model_primary = main_model_primary
-        self.ensemble_primary_stem = model_data.ensemble_primary_stem
-        self.is_multi_stem_ensemble = model_data.is_multi_stem_ensemble
+        self.ensemble_primary_stem = plan.ensemble_primary_stem
+        self.is_multi_stem_ensemble = plan.is_multi_stem_ensemble
         self.is_other_gpu = False
         self.is_deverb = True
-        self.DENOISER_MODEL = model_data.DENOISER_MODEL
-        self.DEVERBER_MODEL = model_data.DEVERBER_MODEL
+        self.DENOISER_MODEL = plan.DENOISER_MODEL
+        self.DEVERBER_MODEL = plan.DEVERBER_MODEL
         self.is_source_swap = False
-        self.vocal_split_model = model_data.vocal_split_model
-        self.is_vocal_split_model = model_data.is_vocal_split_model
+        self.vocal_split_model = plan.vocal_split_model
+        self.is_vocal_split_model = plan.is_vocal_split_model
         self.master_vocal_path = None
         self.set_master_inst_source = None
         self.master_inst_source = master_inst_source
         self.master_vocal_source = master_vocal_source
-        self.is_save_inst_vocal_splitter = isinstance(master_inst_source, np.ndarray) and model_data.is_save_inst_vocal_splitter
-        self.is_inst_only_voc_splitter = model_data.is_inst_only_voc_splitter
-        self.is_karaoke = model_data.is_karaoke
-        self.is_bv_model = model_data.is_bv_model
-        self.is_bv_model_rebalenced = model_data.bv_model_rebalance and self.is_vocal_split_model
-        self.is_sec_bv_rebalance = model_data.is_sec_bv_rebalance
+        self.is_save_inst_vocal_splitter = isinstance(master_inst_source, np.ndarray) and plan.is_save_inst_vocal_splitter
+        self.is_inst_only_voc_splitter = plan.is_inst_only_voc_splitter
+        self.is_karaoke = plan.is_karaoke
+        self.is_bv_model = plan.is_bv_model
+        self.is_bv_model_rebalenced = plan.bv_model_rebalance and self.is_vocal_split_model
+        self.is_sec_bv_rebalance = plan.is_sec_bv_rebalance
         self.stem_path_init = os.path.join(self.export_path, f'{self.audio_file_base}_({self.secondary_stem}).wav')
-        self.deverb_vocal_opt = model_data.deverb_vocal_opt
-        self.is_save_vocal_only = model_data.is_save_vocal_only
+        self.deverb_vocal_opt = plan.deverb_vocal_opt
+        self.is_save_vocal_only = plan.is_save_vocal_only
         # backends.resolve() is the single device/provider authority, so it runs
         # in EVERY mode and self.backend always exists -- including no-GPU mode,
         # where the block below deliberately does not apply its answer. Note this
@@ -241,10 +241,10 @@ class SeperateAttributes:
         # initial value rather than re-derived per branch so there is exactly one
         # place in this file where CPU providers are stated.
         self.run_type = ['CPUExecutionProvider']
-        self.device_set = model_data.device_set
+        self.device_set = plan.device_set
         #Roformer
-        self.roformer_config = model_data.mdx_c_configs
-        self.is_roformer = model_data.is_roformer
+        self.roformer_config = plan.mdx_c_configs
+        self.is_roformer = plan.is_roformer
         self.overwrite_protect_stamp = round(time.time())
 
         if self.is_inst_only_voc_splitter or self.is_sec_bv_rebalance:
@@ -292,48 +292,48 @@ class SeperateAttributes:
                             f"hardware that does not have it."
                         )
 
-        if model_data.process_method == MDX_ARCH_TYPE:
-            self.is_mdx_ckpt = model_data.is_mdx_ckpt
+        if plan.process_method == MDX_ARCH_TYPE:
+            self.is_mdx_ckpt = plan.is_mdx_ckpt
             self.primary_model_name, self.primary_sources = self.cached_source_callback(MDX_ARCH_TYPE, model_name=self.model_basename)
-            self.is_denoise = model_data.is_denoise#
-            self.is_denoise_model = model_data.is_denoise_model#
-            self.is_mdx_c_seg_def = model_data.is_mdx_c_seg_def#
-            self.mdx_batch_size = model_data.mdx_batch_size
-            self.compensate = model_data.compensate
-            self.mdx_segment_size = model_data.mdx_segment_size
+            self.is_denoise = plan.is_denoise#
+            self.is_denoise_model = plan.is_denoise_model#
+            self.is_mdx_c_seg_def = plan.is_mdx_c_seg_def#
+            self.mdx_batch_size = plan.mdx_batch_size
+            self.compensate = plan.compensate
+            self.mdx_segment_size = plan.mdx_segment_size
             
             if self.is_mdx_c:
                 if not self.is_4_stem_ensemble:
                     if not self.is_target_instrument:
-                        self.primary_stem = model_data.ensemble_primary_stem if process_data['is_ensemble_master'] else model_data.primary_stem
-                        self.secondary_stem = model_data.ensemble_secondary_stem if process_data['is_ensemble_master'] else model_data.secondary_stem
+                        self.primary_stem = plan.ensemble_primary_stem if process_data['is_ensemble_master'] else plan.primary_stem
+                        self.secondary_stem = plan.ensemble_secondary_stem if process_data['is_ensemble_master'] else plan.secondary_stem
             else:
-                self.dim_f, self.dim_t = model_data.mdx_dim_f_set, 2**model_data.mdx_dim_t_set
+                self.dim_f, self.dim_t = plan.mdx_dim_f_set, 2**plan.mdx_dim_t_set
                 
             self.check_label_secondary_stem_runs()
-            self.n_fft = model_data.mdx_n_fft_scale_set
-            self.chunks = model_data.chunks
-            self.margin = model_data.margin
+            self.n_fft = plan.mdx_n_fft_scale_set
+            self.chunks = plan.chunks
+            self.margin = plan.margin
             self.adjust = 1
             self.dim_c = 4
             self.hop = 1024
 
-        if model_data.process_method == DEMUCS_ARCH_TYPE:
-            self.demucs_stems = model_data.demucs_stems if not main_process_method in [MDX_ARCH_TYPE, VR_ARCH_TYPE] else None
-            self.secondary_model_4_stem = model_data.secondary_model_4_stem
-            self.secondary_model_4_stem_scale = model_data.secondary_model_4_stem_scale
-            self.is_chunk_demucs = model_data.is_chunk_demucs
-            self.segment = model_data.segment
-            self.demucs_version = model_data.demucs_version
-            self.demucs_source_list = model_data.demucs_source_list
-            self.demucs_source_map = model_data.demucs_source_map
-            self.is_demucs_combine_stems = model_data.is_demucs_combine_stems
-            self.demucs_stem_count = model_data.demucs_stem_count
-            self.pre_proc_model = model_data.pre_proc_model
+        if plan.process_method == DEMUCS_ARCH_TYPE:
+            self.demucs_stems = plan.demucs_stems if not main_process_method in [MDX_ARCH_TYPE, VR_ARCH_TYPE] else None
+            self.secondary_model_4_stem = plan.secondary_model_4_stem
+            self.secondary_model_4_stem_scale = plan.secondary_model_4_stem_scale
+            self.is_chunk_demucs = plan.is_chunk_demucs
+            self.segment = plan.segment
+            self.demucs_version = plan.demucs_version
+            self.demucs_source_list = plan.demucs_source_list
+            self.demucs_source_map = plan.demucs_source_map
+            self.is_demucs_combine_stems = plan.is_demucs_combine_stems
+            self.demucs_stem_count = plan.demucs_stem_count
+            self.pre_proc_model = plan.pre_proc_model
             self.device = cpu if self.is_other_gpu and not self.demucs_version in [DEMUCS_V3, DEMUCS_V4] else self.device
 
-            self.primary_stem = model_data.ensemble_primary_stem if process_data['is_ensemble_master'] else model_data.primary_stem
-            self.secondary_stem = model_data.ensemble_secondary_stem if process_data['is_ensemble_master'] else model_data.secondary_stem
+            self.primary_stem = plan.ensemble_primary_stem if process_data['is_ensemble_master'] else plan.primary_stem
+            self.secondary_stem = plan.ensemble_secondary_stem if process_data['is_ensemble_master'] else plan.secondary_stem
 
             if (self.is_multi_stem_ensemble or self.is_4_stem_ensemble) and not self.is_secondary_model:
                 self.is_return_dual = False
@@ -348,31 +348,31 @@ class SeperateAttributes:
                     self.secondary_stem = main_model_primary
 
             if self.is_secondary_model and not process_data['is_ensemble_master']:
-                if not self.demucs_stem_count == 2 and model_data.primary_model_primary_stem == INST_STEM:
+                if not self.demucs_stem_count == 2 and plan.primary_model_primary_stem == INST_STEM:
                     self.primary_stem = VOCAL_STEM
                     self.secondary_stem = INST_STEM
                 else:
-                    self.primary_stem = model_data.primary_model_primary_stem
+                    self.primary_stem = plan.primary_model_primary_stem
                     self.secondary_stem = secondary_stem(self.primary_stem)
 
-            self.shifts = model_data.shifts
-            self.is_split_mode = model_data.is_split_mode if not self.demucs_version == DEMUCS_V4 else True
+            self.shifts = plan.shifts
+            self.is_split_mode = plan.is_split_mode if not self.demucs_version == DEMUCS_V4 else True
             self.primary_model_name, self.primary_sources = self.cached_source_callback(DEMUCS_ARCH_TYPE, model_name=self.model_basename)
 
-        if model_data.process_method == VR_ARCH_TYPE:
+        if plan.process_method == VR_ARCH_TYPE:
             self.check_label_secondary_stem_runs()
             self.primary_model_name, self.primary_sources = self.cached_source_callback(VR_ARCH_TYPE, model_name=self.model_basename)
-            self.mp = model_data.vr_model_param
-            self.high_end_process = model_data.is_high_end_process
-            self.is_tta = model_data.is_tta
-            self.is_post_process = model_data.is_post_process
-            self.is_gpu_conversion = model_data.is_gpu_conversion
-            self.batch_size = model_data.batch_size
-            self.window_size = model_data.window_size
+            self.mp = plan.vr_model_param
+            self.high_end_process = plan.is_high_end_process
+            self.is_tta = plan.is_tta
+            self.is_post_process = plan.is_post_process
+            self.is_gpu_conversion = plan.is_gpu_conversion
+            self.batch_size = plan.batch_size
+            self.window_size = plan.window_size
             self.input_high_end_h = None
             self.input_high_end = None
-            self.post_process_threshold = model_data.post_process_threshold
-            self.aggressiveness = {'value': model_data.aggression_setting, 
+            self.post_process_threshold = plan.post_process_threshold
+            self.aggressiveness = {'value': plan.aggression_setting, 
                                    'split_bin': self.mp.param['band'][1]['crop_stop'], 
                                    'aggr_correction': self.mp.param.get('aggr_correction')}
             
