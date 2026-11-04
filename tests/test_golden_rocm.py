@@ -17,10 +17,41 @@ The references are ``tests/golden/_artifacts/baseline/{arch}_{stem}.wav``,
 published by Task 4's CPU suite from the *same venv, same torch*
 (``2.9.1+rocm7.2.1``) under ``device="cpu"`` -- Task 5 re-pinned them for exactly
 that reason (``pins.json`` ``provenance.reason``). So the only variable this file
-moves is the device. ``settings.make(arch, "cuda")`` sets
-``is_gpu_conversion = 0``, which is the GUI's GPU checkbox; the engine then takes
-its device from ``backends.resolve()`` + ``torch.cuda``, so a green row here is a
-real GPU run, not a relabelled CPU one.
+moves is the device. ``settings.make(arch, "cuda")`` sets ``is_gpu_conversion =
+0``, which is the GUI's GPU checkbox, and the engine takes its device from
+``backends.resolve()`` + ``torch.cuda``.
+
+THE TWO GUARDS THAT MAKE "A GREEN ROW IS A REAL GPU RUN" A CHECKED FACT
+----------------------------------------------------------------------
+The switch above is a *request*, not an outcome: ``separate.py`` initialises
+``self.device = cpu`` and overwrites it only inside
+``if self.backend.torch_device == 'cuda' and cuda_available``. If that condition
+ever fails, the engine warns and computes on CPU; the candidate is then
+byte-identical to the CPU baseline, ``snr_db`` returns ``inf``, ``inf >= 40``
+passes, and the stems still match by name. That is CPU scored against CPU while
+the suite reads green, which is the one failure mode this file exists to prevent,
+so every run here is wrapped twice:
+
+1. **in-run warning inspection** -- ``separate()`` is called inside
+   ``warnings.catch_warnings(record=True)``, and any warning carrying the
+   engine's ``"computes on CPU"`` marker makes the test red. It has to be
+   recorded *per run*: ``backends.warn_degradation`` de-dupes per message
+   through the module-level ``_warned`` set, so inspecting that set afterwards
+   says "this process degraded once", never "this run degraded" -- and a second
+   CPU-fallback run in a long-lived process never warns again.
+2. **allocator-window comparison** -- ``torch.cuda.memory_allocated()`` is read
+   *before* ``reset_peak_memory_stats()``, and the run must push
+   ``max_memory_allocated()`` strictly above that inherited value. ``peak > 0``
+   is not a guard: resetting the peak seeds it with the live usage an earlier
+   arch still holds (this suite leaves ~76 MiB of it, measured), so ``peak > 0``
+   asks only "has this process ever touched the device". Comparing against
+   ``before`` asks "did *this* run allocate", which is the question. Both
+   guards are needed: the warning one is de-duped away after the first hit, the
+   allocator one is not.
+
+What neither guard can see is *placement* -- ``runner.separate()`` returns only
+``{stem: Path}``, so no consumer can assert ``SeperateAttributes.device``. That
+is Task 11's harness fix, not a loosening of these.
 
 THE GATE
 --------
@@ -37,17 +68,24 @@ MEASUREMENT TRAPS THIS FILE AVOIDS (both observed in task-5-report.md)
 1. ``torch.cuda.max_memory_allocated()`` is a process-wide high-water mark that
    is never reset; in Task 5 that put a 3577 MiB figure -- which was not any one
    arch's peak -- on the demucs row. The counter is reset immediately before each
-   arch's run here, so a printed peak covers that arch's window. The one leak in
-   that reasoning is documented at the call site: device tensors an earlier arch
-   still holds are counted *forward* into the next arch's number, so both archs
-   were re-measured alone (`-k <arch>`, fresh process) for task-7-report.md.
+   arch's run here, so a printed peak covers that arch's window. The leak in that
+   reasoning is now part of the assertion instead of a comment: live device
+   tensors an earlier arch still holds are counted *forward* into the next
+   arch's window (~76 MiB from demucs into vr in suite order), so the guard
+   compares the peak against that inherited ``before`` value and the print
+   shows both. Numbers quoted *as* per-arch peaks are still re-measured alone
+   (`-k <arch>`, fresh process) for task-7-report.md: 1081 MiB vr / 617 MiB
+   demucs, versus 1157 MiB for vr in-suite.
 2. MIOpen's cold kernel search makes the *first* separation after an install
    roughly 20x slower than every later one (36.84 s -> 1.65 s). Nothing in this
    file is a speed claim; Step 3's timings are warm and counted, and they live in
    the task report rather than in the suite (the plan's position: speed is
    measured, never asserted).
 
-SCOPE: the archs in ``pins.json["archs_covered"]`` and nothing more. mdx_c,
+SCOPE: the archs in ``pins.json["archs_covered"]`` and nothing more -- two archs,
+six stems (``demucs/{Bass,Drums,Other,Vocals}`` + ``vr/{Instrumental,Vocals}``),
+and the stem set is asserted per arch rather than assumed, so a stem the engine
+stops writing narrows the gate loudly instead of silently. mdx_c,
 roformer and onnx are recorded in ``pins.json["archs_blocked"]`` with a reason
 each (no weights on this machine; ``onnx`` runs on DirectML and is covered by
 Task 6's provider assertion). Reaching them would mean simulating archs, which
@@ -57,6 +95,7 @@ no pin store, no ``baseline/``, no ``F:/.../models``.
 from __future__ import annotations
 
 import json
+import warnings
 
 import numpy as np
 import pytest
@@ -80,6 +119,42 @@ PINS = settings.PINS_FILE
 # `ref.exists()` while measuring nothing about ROCm.
 APPLY = sorted(json.loads(PINS.read_text(encoding="utf-8"))["archs_covered"])
 
+#: The engine's own words for "I did not get the device I was asked for"
+#: (``separate.py`` -> ``backends.warn_degradation``). Matched on a fragment, not
+#: the whole sentence, because the sentence names the backend and the torch
+#: device -- neither is this file's text to pin.
+DEGRADATION_MARK = "computes on CPU"
+
+#: Substrings of the runtime notices that say *which* attention kernel served the
+#: math (``torch.nn.MultiheadAttention`` dispatches through the SDPA backends).
+ATTENTION_MARKS = ("Attention", "attention")
+
+
+def _sdpa_config() -> str:
+    """The scaled-dot-product-attention backend switches, as torch reports them.
+
+    Recorded and printed, never asserted. Task 5 established that this wheel has
+    no flash/cuDNN SDPA kernels, so the flag list alone does not say what ran;
+    the runtime notice printed next to it (``_attention_notices``) is the
+    observation of the backend that actually served the dB values in the table.
+    Moving either into ``pins.json["identity"]`` is a pin change and is not this
+    task's to make.
+    """
+    flags = torch.backends.cuda
+    return " ".join(
+        f"{name}={'on' if getattr(flags, name + '_sdp_enabled')() else 'off'}"
+        for name in ("flash", "mem_efficient", "cudnn", "math"))
+
+
+def _attention_notices(caught: list[warnings.WarningMessage]) -> list[str]:
+    """Deduplicated attention-backend notices emitted *during this run*."""
+    seen: list[str] = []
+    for w in caught:
+        text = str(w.message).splitlines()[0].strip()
+        if any(mark in text for mark in ATTENTION_MARKS) and text not in seen:
+            seen.append(text)
+    return seen
+
 
 @pytest.fixture(autouse=True)
 def _rocm_is_in_the_room():
@@ -88,8 +163,11 @@ def _rocm_is_in_the_room():
     ``separate(arch, "cuda")`` asks for the GPU; if torch or the backend says
     there is none, the engine quietly lands on CPU (``separate.py``'s
     ``warn_degradation`` path). Scoring that output against the pinned CPU
-    baselines would give inf dB and a green suite proving nothing. Failing loudly
-    here is what keeps a green row in this file worth reading.
+    baselines would give inf dB and a green suite proving nothing. This fixture
+    is the *process-level* half of the answer -- it stops the file running when no
+    device is in the room; the per-run guards in ``test_rocm_matches_cpu`` are the
+    half that checks each run actually got there, because a healthy torch does not
+    guarantee a healthy engine.
 
     Per the Task 7 ruling there is ONE pin store and the golden suite requires the
     ``bootstrap.ps1 -Backend rocm`` venv, so a cuda/cpu venv is meant to be red
@@ -141,25 +219,82 @@ def test_the_gpu_presents_as_cuda_and_is_the_chosen_device():
 
 @pytest.mark.parametrize("arch", APPLY)
 def test_rocm_matches_cpu(arch, tmp_path):
-    # Trap 1: the peak-memory counter is process-wide and never reset on its own,
-    # so zero it immediately before this arch's only GPU run and the printed peak
-    # below is this arch's. Caveat kept honest: a tensor an earlier run leaked and
-    # still held would be counted inside the *later* arch's window, so a peak that
-    # looks inherited is re-measured with `-k <arch>` in a fresh process (both
-    # archs were checked that way for task-7-report.md).
-    torch.cuda.reset_peak_memory_stats()
-    torch.cuda.empty_cache()
+    # Guards, in the order the failure mode needs them. One window does both
+    # measurements, and it is on purpose: torch's allocator counters are global,
+    # so the reset and the peak read are only attributable to the run between
+    # them -- and the warning recorder has to be open over that same run to
+    # answer "did THIS run degrade" rather than "did this process ever warn".
+    #
+    # `before` is read *before* reset_peak_memory_stats(), because that call does
+    # not zero the high-water mark -- it seeds it with the memory this process is
+    # holding right now -- and empty_cache() only returns cached blocks, never
+    # live tensors. In suite order demucs leaves ~76 MiB of device tensors alive
+    # (measured), so an unconditional `peak > 0` would be answered by the
+    # previous arch and stay true through a run that never touched the GPU.
+    # Comparing the peak with `before` asks the question that matters: did *this*
+    # run allocate.
+    with warnings.catch_warnings(record=True) as caught:
+        # Warnings are recorded inside the run, not read back afterwards:
+        # backends.warn_degradation de-dupes per message through a module-level
+        # set, so a post-hoc look at that set is stale the second time the engine
+        # degrades in the same process, and `separate.py`'s import-time
+        # filterwarnings("ignore") is exactly what warn_degradation exists to
+        # punch through. simplefilter("always") does not clear that pre-existing
+        # ignore-all entry, it puts "always" in front of it.
+        before_bytes = torch.cuda.memory_allocated()
+        torch.cuda.reset_peak_memory_stats()
+        torch.cuda.empty_cache()
+        warnings.simplefilter("always")
+        rocm = separate(arch, "cuda", tmp_path)
+        peak_bytes = torch.cuda.max_memory_allocated()
 
-    rocm = separate(arch, "cuda", tmp_path)
-    peak_mib = torch.cuda.max_memory_allocated() / 2**20
-    assert peak_mib > 0, (
-        f"{arch}/cuda allocated no GPU memory at all: the run did not reach the "
-        "device, so scoring it against the CPU baseline would be vacuous."
+    degraded = [str(w.message) for w in caught if DEGRADATION_MARK in str(w.message)]
+    assert not degraded, (
+        f"{arch}/cuda never reached the device: the engine reported {degraded[0]!r}. "
+        "Its CPU output scored against the CPU baselines would be inf dB and green "
+        "while proving nothing about ROCm (see THE TWO GUARDS in this file's "
+        "docstring)."
+    )
+
+    # peak_bytes was read inside the window above, not here: reading it after the
+    # recorder closes would let anything allocated between the two count as this
+    # run's GPU work.
+    assert peak_bytes > before_bytes, (
+        f"{arch}/cuda allocated no device memory beyond the "
+        f"{before_bytes / 2**20:.2f} MiB this process already held when the peak was "
+        f"reset (peak {peak_bytes / 2**20:.2f} MiB): this run did not reach the "
+        "device, so scoring it against the CPU baselines would be vacuous."
     )
 
     pins = json.loads(PINS.read_text(encoding="utf-8"))
-    print(f"\n[task7] {arch}/cuda peak GPU memory allocated: {peak_mib:.0f} MiB "
-          f"(gate: SNR >= {pins['gate']['threshold_db']}dB)")
+    # Coverage cannot narrow: the loop below walks the run's own stems, so a stem
+    # the engine stops writing would simply drop out of the gate. The harness
+    # calls this bucket `missing` (runner.compare_fingerprints); assert it here.
+    pinned_stems = set(pins["pins"][arch])
+    assert set(rocm) == pinned_stems, (
+        f"{arch}/cuda wrote {sorted(rocm)} against the pinned {sorted(pinned_stems)}: "
+        f"missing={sorted(pinned_stems - set(rocm))} "
+        f"unpinned={sorted(set(rocm) - pinned_stems)}. The gate counts "
+        f"{len(pinned_stems)} stems for this arch, and it is not allowed to be "
+        "measured on fewer."
+    )
+
+    # Both numbers print, because only one of them is the arch's own: the peak is
+    # inflated by whatever the earlier arch leaked into this window (vr reads
+    # 1157 MiB in-suite against 1081 MiB isolated), so a reader copying the
+    # printed figure has to be able to see the inheritance in the same line.
+    print(f"\n[task7] {arch}/cuda peak GPU memory allocated: {peak_bytes / 2**20:.0f} "
+          f"MiB (inherited before this run: {before_bytes / 2**20:.0f} MiB -- the "
+          "per-arch peak is that peak *with* the inheritance, isolated numbers are "
+          "in task-7-report.md; gate: SNR >= "
+          f"{pins['gate']['threshold_db']}dB, {len(pinned_stems)} stems)")
+    # Recorded, never pinned: which attention path produced these numbers. The
+    # flags are torch's switches; the notices are what the run actually said.
+    print(f"[task7] {arch}/cuda attention: sdpa[{_sdpa_config()}] "
+          f"hip={getattr(torch.version, 'hip', None)} "
+          f"gpu={torch.cuda.get_device_name(0)}")
+    for notice in _attention_notices(caught):
+        print(f"[task7] {arch}/cuda attention notice: {notice}")
 
     for stem, path in rocm.items():
         ref = ART / "baseline" / f"{arch}_{stem}.wav"
