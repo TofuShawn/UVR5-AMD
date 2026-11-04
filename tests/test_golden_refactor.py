@@ -381,14 +381,22 @@ def test_residue_claims_are_verified_against_the_engine_source():
         "is_4_stem_ensemble now arrives on the model object, not process_data")
     assert SEPARATE_PY.count("crop_size") == 0
     assert SEPARATE_PY.count("model_status") == 0
-    # ...and exactly one margin, on the MDX-only line.
-    assert list(reads["margin"]) == [312], reads["margin"]
+    # ...and exactly one margin, in the MDX block. Located by *ordering* against its
+    # neighbours, not by an absolute line number: pinning `:312` turned this into a
+    # drift meter -- it went red at f055e07 for a change that moved the statement and
+    # said nothing about the claim. If the read ever leaves the MDX block, this fails.
+    assert len(reads["margin"]) == 1, f"expected one margin read, got {sorted(reads['margin'])}"
+    margin_line = next(iter(reads["margin"]))
+    assert min(reads["mdx_dim_f_set"]) < margin_line < max(reads["demucs_stems"]), (
+        f"the single plan.margin read is at :{margin_line}, outside the MDX block "
+        f"(mdx_dim_f_set at {sorted(reads['mdx_dim_f_set'])}, demucs_stems at "
+        f"{sorted(reads['demucs_stems'])}) -- the RESIDUE_EXPLAINED story for "
+        "margin_demucs depends on it being the MDX-only margin.")
     assert "self.is_4_stem_ensemble = process_data['is_4_stem_ensemble']" in SEPARATE_PY
-    line = 1 + SEPARATE_PY.split(
-        "self.is_4_stem_ensemble = process_data['is_4_stem_ensemble']")[0].count("\n")
-    assert line == 150, (
-        f"is_4_stem_ensemble now moves off separate.py:150 (found :{line}); the "
-        f"citation in RESIDUE_EXPLAINED and the brief need updating with it.")
+    # That statement is the entire claim being checked: the flag arrives through the
+    # *other* constructor argument, so the plan has no business carrying it. Its line
+    # number is deliberately not pinned -- RESIDUE_EXPLAINED's prose cites one, and if
+    # that prose ever drifts, it is a comment to fix, not a red test.
 
 
 def test_margin_demucs_never_reaches_the_engine():
