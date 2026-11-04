@@ -15,7 +15,8 @@ Entry points
 * `Catalog(model_root, writable_dir, fallback_root=REPO/models)`
   with `.resolve(name, arch=None, *, required=False) -> ModelSpec`,
   `.names(arch)`, `.known_names(arch)`, `.baked_table(arch, kind)`,
-  `.write_params(arch, model_hash, params)`, `.hash_of(path)`,
+  `.write_params(arch, model_hash, params)`, `.write_table(arch, kind, table)`,
+  `.hash_of(path)`,
   `.secondary_for(spec, requested)`, `.demucs_pre_proc_for(name)`,
   `.vocal_split_for(name)`.
 * `secondary_slot_for(process_method, primary_stem) -> str | None`
@@ -49,7 +50,9 @@ The three decisions this task was allowed to make
    same name serves the old hash forever. That key is deliberately not ported
    forward: `Catalog.hash_of` memoises on `(resolved path, st_size, st_mtime_ns)`
    and the memo dies with the `Catalog` instance. Reason: a stale hash silently
-   re-points every `model_data/<hash>.json` lookup.
+   re-points every `model_data/<hash>.json` lookup. The tier-2 table memo
+   (`_table_memo`) is keyed the same way — see `baked_table` — because a refresh
+   written into `writable_dir` otherwise stays invisible to the process that wrote it.
 
 Blocked architectures (`mdx_c`, `onnx`, `roformer`) refuse rather than simulate —
 `is_blocked(arch)` returns the reason and `names()`/`resolve()` raise
@@ -60,6 +63,7 @@ back an empty dict that reads like "the table is empty".
 """
 from __future__ import annotations
 
+import copy
 import enum
 import hashlib
 import json
@@ -347,7 +351,7 @@ class Catalog:
     fallback_root: Path | None = REPO_MODELS
 
     _hash_memo: dict[tuple[str, int, int], str] = field(default_factory=dict, repr=False)
-    _table_memo: dict[tuple[str, str, str], dict] = field(default_factory=dict, repr=False)
+    _table_memo: dict[tuple[str, int, int], dict] = field(default_factory=dict, repr=False)
 
     def __post_init__(self) -> None:
         self.model_root = Path(self.model_root)
@@ -419,6 +423,15 @@ class Catalog:
         Raises `NoBakedTableError` when the arch has no such table — Apollo's params
         table does not exist (`UVR.py:253` is defined, `:1714` is commented out), and
         an empty dict here would read as "the table is empty" instead.
+
+        The memo is keyed `(resolved path, st_size, st_mtime_ns)` of the file that
+        answered, exactly like `hash_of`, so a refresh written into `writable_dir`
+        (which changes *which* path answers) and an edit made outside this process
+        (which changes the stat) both land. The cache itself holds the parsed object;
+        **the returned dict is a `copy.deepcopy` of it**, because `resolve()` stores
+        the table's own sub-dict into `ModelSpec.model_data`, and a caller editing its
+        spec must not rewrite the catalog's answer for the rest of the process. A
+        one-level copy would not do: the tables are `{hash: {field: value}}`.
         """
         spec = self._arch(arch)
         rel = self._table_rel(spec, kind)
@@ -426,17 +439,19 @@ class Catalog:
             raise NoBakedTableError(
                 f"arch {arch!r} has no baked {kind} table: its metadata comes from "
                 f"{'the per-model tier-1 JSON only' if arch == 'apollo' else 'the engine'}")
-        memo_key = (arch, kind, "")
-        if memo_key in self._table_memo:
-            return self._table_memo[memo_key]
         found = self._find(rel)
         if found is None:
             raise NoBakedTableError(
                 f"no {kind} table for arch {arch!r} on disk: looked for "
                 f"{rel} under " + ", ".join(str(r) for _, r in self._roots()))
-        table = _load_json(found[2])
-        self._table_memo[memo_key] = table
-        return table
+        path = found[2]
+        stat = path.stat()
+        memo_key = (str(path.resolve()), stat.st_size, stat.st_mtime_ns)
+        table = self._table_memo.get(memo_key)
+        if table is None:
+            table = _load_json(path)
+            self._table_memo[memo_key] = table
+        return copy.deepcopy(table)
 
     def _table_with_source(self, arch: str, kind: str) -> tuple[dict, RootRole, Path, Path] | None:
         spec = self._arch(arch)
@@ -606,6 +621,17 @@ class Catalog:
 
     # -- writes ------------------------------------------------------------- #
 
+    def _clear_memo(self) -> None:
+        """Drop every memo after a write.
+
+        A write can change what the next read sees: a new tier-1 file makes a name
+        resolve at tier 1, and a tier-2 table in `writable_dir` becomes the file that
+        answers. The table memo's stat key would miss anyway, but clearing is cheap and
+        leaves no window where the answer depends on which key happens to still match.
+        """
+        self._hash_memo.clear()
+        self._table_memo.clear()
+
     def write_params(self, arch: str, model_hash: str, params: dict) -> Path:
         """Save a tier-1 `<hash>.json` — into `writable_dir`, never the weights root.
 
@@ -617,7 +643,32 @@ class Catalog:
         target = self.writable_dir / spec.tier1_dir / f"{model_hash}.json"
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(json.dumps(params, indent=4), encoding="utf-8")
-        self._hash_memo.clear()
+        self._clear_memo()
+        return target
+
+    def write_table(self, arch: str, kind: str, table: dict) -> Path:
+        """Replace one baked tier-2 table — into `writable_dir`, never the weights root.
+
+        Tier 1 is `<hash>.json` (`write_params`); tier 2 is the arch's `model_data.json`
+        / `model_name_mapper.json`, and Task 12's explicit refresh replaces *that*. The
+        path comes from the arch's own `ArchSpec` via `_table_rel`, so no caller re-derives
+        it, and an arch that declares no such table raises the same `NoBakedTableError`
+        `baked_table` raises for the identical condition rather than inventing a file no
+        reader will ever open (`write_table("apollo", "params", …)` is meaningless).
+        The table cache is invalidated before returning, so the write is visible to the
+        process that performed it.
+        """
+        spec = self._arch(arch)
+        rel = self._table_rel(spec, kind)
+        if rel is None:
+            raise NoBakedTableError(
+                f"arch {arch!r} has no baked {kind} table, so write_table({arch!r}, "
+                f"{kind!r}, …) has no declared path to write to: its metadata comes from "
+                f"{'the per-model tier-1 JSON only' if arch == 'apollo' else 'the engine'}")
+        target = self.writable_dir / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(table, indent=4), encoding="utf-8")
+        self._clear_memo()
         return target
 
     # -- listings ----------------------------------------------------------- #
@@ -676,17 +727,29 @@ class Catalog:
         except CatalogError:
             return None
 
-    def demucs_pre_proc_for(self, requested: str | None, *, is_activated: bool = True,
-                            primary_stem: str | None = None) -> ModelSpec | None:
+    def demucs_pre_proc_for(self, requested: str | None, *,
+                            is_activated: bool = True) -> ModelSpec | None:
         """`process_determine_demucs_pre_proc_model` (`UVR.py:7088-7101`).
 
         One of the seven methods `ModelData` calls through `root.` — porting the
         other two but not this one would leave the dependency alive.
+
+        No architecture is passed, deliberately: upstream builds `ModelData(...)` with
+        `primary_model_primary_stem=primary_stem` and `is_pre_proc_model=True`
+        (`UVR.py:7094-7096`) and no `process_method` at all, so the name — and which
+        root holds the weight — decides. The slot itself is not demucs-only either:
+        `UVR.py:4540` fills it from
+        `model_list(VOCAL_STEM, INST_STEM, is_dry_check=True, is_no_demucs=True)`, and
+        that branch (`UVR.py:2663-2666`) filters by *stem*, while `UVR.py:6109`'s
+        ensemble list is `vr + mdx + demucs`. Pinning `arch="demucs"` here on the
+        strength of a stem would look only under `Demucs_Models/…`, raise
+        `MissingWeightError` for every VR/MDX name, and get swallowed below — i.e.
+        silently lose the feature.
         """
         if not requested or requested == NO_MODEL or not is_activated:
             return None
         try:
-            return self.resolve(requested, arch="demucs") if primary_stem else self.resolve(requested)
+            return self.resolve(requested)
         except CatalogError:
             return None
 

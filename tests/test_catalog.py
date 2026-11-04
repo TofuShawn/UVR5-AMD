@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import inspect
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -541,3 +543,228 @@ def test_demucs_spec_carries_no_fabricated_params_table(tmp_path):
     assert spec.needs_user_params is False
     assert spec.provenance.tier is catalog.Tier.BAKED_TABLE
     assert spec.primary_stem is None  # UVR.py:737 derives stems from the user's choice
+
+
+# --------------------------------------------------------------------------- #
+# 7. tier-2 writes: Catalog.write_table + an honest table cache
+#    (fix round 1, findings #2 + #3 — ruling R-T10-tier2write)
+# --------------------------------------------------------------------------- #
+
+def _under(path: Path, base: Path) -> bool:
+    try:
+        Path(path).relative_to(base)
+    except ValueError:
+        return False
+    return True
+
+
+def test_write_table_returns_the_writable_path_and_lands_there(tmp_path):
+    """Finding #2: Task 12's refresh needs a tier-2 write API, not a re-derived path.
+
+    `write_params` owns tier-1 `<hash>.json` only, so a refresh of a *baked table* had
+    no owner: the caller would have to rebuild `<writable_dir>/<arch params_table>` by
+    hand from `ArchSpec` fields. That path convention is the catalog's, so the catalog
+    exposes the write and returns the path it wrote.
+    """
+    root = tmp_path / "weights"
+    baked = {"a" * 32: _params("Vocals")}
+    _write_json(root / VR_TABLE, baked)
+    before = sorted(p.relative_to(root) for p in root.rglob("*") if p.is_file())
+
+    writable = tmp_path / "appdata" / "model_data"   # does not exist yet: mkdir -p
+    c = catalog.Catalog(root, writable, fallback_root=None)
+    refreshed = {"a" * 32: _params("Other"), "b" * 32: _params("Bass")}
+    target = c.write_table("vr", "params", refreshed)
+
+    assert target == writable / VR_TABLE
+    assert target.is_file()
+    assert _json(target) == refreshed
+    assert _under(target, writable), "tier-2 writes go to writable_dir and nowhere else"
+    assert not _under(target, root)
+
+    after = sorted(p.relative_to(root) for p in root.rglob("*") if p.is_file())
+    assert before == after, "a tier-2 write must never touch the weights root"
+
+
+def test_write_table_refresh_is_seen_by_the_same_catalog_instance(tmp_path):
+    """Findings #2 + #3: refresh-then-resolve in ONE process — exactly Task 12's shape.
+
+    The memo was keyed `(arch, kind, "")`, so it never recorded which root answered and
+    nothing ever cleared it: once `resolve()` had loaded the installed table, a table
+    written into `writable_dir` afterwards was invisible to every later `resolve()` for
+    the life of the process. Task 12's refresh runs inside the GUI process that already
+    resolved models, so this is the feature, not a corner of it.
+    """
+    c = _catalog(tmp_path)
+    first = c.resolve("1_HP-UVR")
+    assert first.provenance.tier is catalog.Tier.BAKED_TABLE
+    assert first.model_data == _json(MODEL_ROOT / VR_TABLE)[first.hash]
+
+    refreshed = {first.hash: _params("Drums")}
+    returned = c.write_table("vr", "params", refreshed)
+    assert returned == c.writable_dir / VR_TABLE
+
+    second = c.resolve("1_HP-UVR")
+    assert second.model_data == _params("Drums"), "the refresh must answer, not the memo"
+    assert second.primary_stem == "Drums"
+
+
+def test_table_memo_follows_an_external_edit_of_the_table_file(tmp_path):
+    """Finding #3: the cache key must carry the file's stat, not just (arch, kind).
+
+    This bypasses the write API entirely (`Path.write_text`), so no clear-on-write can
+    be what makes it pass — the memo has to notice that the file underneath it changed,
+    which is the same `(resolved path, st_size, st_mtime_ns)` key `hash_of` already uses.
+    """
+    root = tmp_path / "weights"
+    original = {"a" * 32: _params("Vocals")}
+    table_path = root / VR_TABLE
+    _write_json(table_path, original)
+    c = catalog.Catalog(root, tmp_path / "appdata", fallback_root=None)
+
+    assert c.baked_table("vr") == original          # loads and memoizes
+
+    changed = {"a" * 32: _params("Bass"), "b" * 32: _params("Other")}
+    table_path.write_text(json.dumps(changed), encoding="utf-8")
+    stat = table_path.stat()
+    os.utime(table_path, (stat.st_atime, stat.st_mtime + 10))  # deterministic bump
+
+    assert c.baked_table("vr") == changed, "a stale table is a wrong resolution"
+    assert c.baked_table("vr") == changed          # stable across a re-read, too
+
+
+def test_mutating_a_spec_does_not_poison_the_table_cache(tmp_path):
+    """Finding #3: `baked_table` must not hand out the cached object by reference.
+
+    `resolve()` stores the table's *own* sub-dict into `ModelSpec.model_data`
+    (`catalog.py:570-572`), so with the cached object returned directly one caller
+    editing its spec edits the catalog's cache for the whole process.
+    """
+    c = _catalog(tmp_path)
+    first = c.resolve("1_HP-UVR")
+    expected = _json(MODEL_ROOT / VR_TABLE)[first.hash]
+    assert first.model_data == expected
+
+    first.model_data["primary_stem"] = "Mutated"
+
+    second = c.resolve("1_HP-UVR")
+    assert second.model_data["primary_stem"] == expected["primary_stem"], \
+        "the cache answered with a caller's mutation"
+    assert c.baked_table("vr")[first.hash] == expected
+    assert c.baked_table("vr")[first.hash]["primary_stem"] != "Mutated"
+    # the strongest form of the same rule: the cached object never leaves the cache,
+    # so no reference a caller holds can be the reference the next reader gets.
+    assert c.baked_table("vr") is not c.baked_table("vr")
+    assert second.model_data is not first.model_data
+
+
+def test_write_table_refuses_an_arch_kind_that_has_no_such_table(tmp_path):
+    """Finding #2: never write to a path the spec does not declare.
+
+    Apollo and Demucs declare no params table and VR no names table (`ARCHS`), so
+    `write_table` there is meaningless; it raises the same `NoBakedTableError`
+    `baked_table` raises for the identical condition rather than inventing a file.
+    """
+    c = _catalog(tmp_path)
+    for arch, kind in (("apollo", "params"), ("vr", "names"), ("demucs", "params")):
+        assert c.has_baked_table(arch, kind) is False
+        with pytest.raises(catalog.NoBakedTableError) as excinfo:
+            c.write_table(arch, kind, {"a" * 32: _params()})
+        assert arch in str(excinfo.value) and kind in str(excinfo.value)
+
+    assert list(c.writable_dir.rglob("*")) == [], "a refused write must create nothing"
+
+
+def test_writable_baked_table_overrides_the_weights_root_table(tmp_path):
+    """Finding #2's other half: the writable table is the one that answers *content*.
+
+    First-file-wins already prefers `writable_dir` (`_roots()`), and that precedence is
+    finding #1's business; what a reorder could hide is a resolution that reports the
+    writable path while returning the memoized installed table. Pinned on both halves.
+    """
+    c = _catalog(tmp_path)
+    digest = c.resolve("1_HP-UVR").hash
+    refreshed = {digest: _params("Instrumental")}
+    target = c.write_table("vr", "params", refreshed)
+
+    spec = c.resolve("1_HP-UVR")
+    assert spec.provenance.tier is catalog.Tier.BAKED_TABLE
+    assert spec.provenance.root_role is catalog.RootRole.WRITABLE_DIR
+    assert spec.provenance.root == c.writable_dir
+    assert spec.provenance.source == target == c.writable_dir / VR_TABLE
+    assert spec.model_data == _params("Instrumental")
+
+
+# --------------------------------------------------------------------------- #
+# 8. the demucs pre-proc arch pin (fix round 1, finding #4)
+# --------------------------------------------------------------------------- #
+
+def _pre_proc_accepts_primary_stem() -> bool:
+    return "primary_stem" in inspect.signature(
+        catalog.Catalog.demucs_pre_proc_for).parameters
+
+
+def _pre_proc(c: catalog.Catalog, name: str, primary_stem: str | None):
+    """Call `demucs_pre_proc_for` through whichever signature `catalog.py` has right now.
+
+    Lets one test document both sides of the fix: with the pin a VR name in the pre-proc
+    slot silently becomes None; without it the name decides the architecture, which is
+    what upstream does (`UVR.py:7094-7096` passes no process method/arch at all).
+    """
+    if _pre_proc_accepts_primary_stem():
+        return c.demucs_pre_proc_for(name, primary_stem=primary_stem)
+    return c.demucs_pre_proc_for(name)
+
+
+def test_demucs_pre_proc_for_does_not_pin_the_arch(tmp_path):
+    """Finding #4: the pre-proc slot is stem-filtered, not arch-restricted.
+
+    `UVR.py:4540` fills it from `model_list(..., is_no_demucs=True)`, whose branch at
+    `UVR.py:2663-2666` filters by *stem*, and `UVR.py:6109`'s ensemble list is
+    `vr + mdx + demucs` — so VR and MDX names legitimately arrive here. With
+    `arch="demucs"` the lookup only searches `Demucs_Models/…`, raises
+    `MissingWeightError`, and the `except CatalogError: return None` swallows it: the
+    fork loses the pre-process model whenever `primary_stem` is set.
+    """
+    c = _catalog(tmp_path)
+    assert c.resolve("1_HP-UVR").arch == "vr"
+
+    spec = c.demucs_pre_proc_for("1_HP-UVR")
+    assert spec is not None and spec.arch == "vr"
+
+    with_stem = _pre_proc(c, "1_HP-UVR", "Vocals")
+    if _pre_proc_accepts_primary_stem():
+        # RED demonstration, still the shipped behaviour at this point: the pin applied
+        # because a *stem* was passed, and the failure swallowed into None.
+        assert with_stem is None, \
+            "the arch pin no longer bites, so update this test's branch"
+    else:
+        assert with_stem is not None and with_stem.arch == "vr"
+
+
+def test_demucs_pre_proc_for_has_no_primary_stem_parameter():
+    """Finding #4: drop the dead parameter, do not leave it in place.
+
+    A parameter that never affects the result but *looks* load-bearing is worse than the
+    pin itself: Task 11's caller would pass `primary_stem` believing it selects the
+    architecture. Upstream's `ModelData(...)` call at `UVR.py:7094-7096` passes no arch.
+    """
+    params = inspect.signature(catalog.Catalog.demucs_pre_proc_for).parameters
+    assert "primary_stem" not in params
+    assert set(params) == {"self", "requested", "is_activated"}
+
+
+def test_a_real_demucs_pre_proc_name_still_resolves_without_the_pin(tmp_path):
+    """Item 8: removing the pin must not break the case it was written for.
+
+    Same guarantee as `test_secondary_for_ports_all_three_decision_methods` :525-527,
+    pinned on its own: a genuine Demucs weight still answers `demucs` once the
+    architecture is left to the name and the file location.
+    """
+    c = _catalog(tmp_path)
+    assert c.demucs_pre_proc_for(NO_MODEL) is None
+    pre = _pre_proc(c, "955717e8-8726e21a.th", "Vocals")
+    assert pre is not None and pre.arch == "demucs"
+    assert pre.process_method == DEMUCS_ARCH_TYPE
+    assert c.demucs_pre_proc_for("955717e8-8726e21a.th", is_activated=False) is None
+
