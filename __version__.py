@@ -1,4 +1,8 @@
 VERSION = 'v5.6.1'
-PATCH = 'UVR_Patch_12_8_24_23_30_BETA'
-PATCH_MAC = 'UVR_Patch_12_8_24_23_30_BETA'
-PATCH_LINUX = 'UVR_Patch_12_8_24_23_30_BETA'
+# Task 12: the upstream patch identifiers are removed. They named release assets in the
+# project's patch channel, which this fork neither checks nor installs; UVR.py:33 still
+# imports these three names (current_patch feeds the license text at UVR.py:3911), so the
+# names stay and the values point at nothing.
+PATCH = 'no-update-channel'
+PATCH_MAC = 'no-update-channel'
+PATCH_LINUX = 'no-update-channel'

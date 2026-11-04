@@ -94,7 +94,9 @@ def get_execution_time(function, name):
     time_difference = end - start
     print(f'{name} Execution Time: ', time_difference)
 
-PREVIOUS_PATCH_WIN = 'UVR_Patch_10_6_23_4_27'
+# Task 12: PREVIOUS_PATCH_WIN (the previous upstream patch id, used only to tell a
+# roll-back from an update in the deleted start-up check) is gone with the rest of the
+# application's own network.
 
 is_dnd_compatible = True
 banner_placement = -2
@@ -295,7 +297,9 @@ CHANGE_LOG = os.path.join(BASE_PATH, 'gui_data', 'change_log.txt')
 DENOISER_MODEL_PATH = os.path.join(VR_MODELS_DIR, 'UVR-DeNoise-Lite.pth')
 DEVERBER_MODEL_PATH = os.path.join(VR_MODELS_DIR, 'UVR-DeEcho-DeReverb.pth')
 
-MODEL_DATA_URLS = [VR_MODEL_DATA_LINK, MDX_MODEL_DATA_LINK, MDX_MODEL_NAME_DATA_LINK, DEMUCS_MODEL_NAME_DATA_LINK]
+# Task 12: MODEL_DATA_URLS -- a list of the four killed model-table URLs, and the last
+# module-level load of them -- is deleted. Those tables are refreshed on request only,
+# by model_refresh.py writing through Catalog.write_table.
 MODEL_DATA_FILES = [VR_HASH_JSON, MDX_HASH_JSON, MDX_MODEL_NAME_SELECT, DEMUCS_MODEL_NAME_SELECT]
 
 file_check(os.path.join(MODELS_DIR, 'Main_Models'), VR_MODELS_DIR)
@@ -5130,102 +5134,45 @@ class MainWindow(TkinterDnD.Tk if is_dnd_compatible else tk.Tk):
     #--Download Center Methods--    
 
     def online_data_refresh(self, user_refresh=True, confirmation_box=False, refresh_list_Button=False, is_start_up=False, is_download_complete=False):
-        """Checks for application updates"""
-        
-        def online_check():
-            if not is_start_up:
-                self.app_update_status_Text_var.set(LOADING_VERSION_INFO_TEXT)
-                self.app_update_button_Text_var.set(CHECK_FOR_UPDATES_TEXT)
+        """Task 12: this fork performs no application-initiated network.
 
-            is_new_update = False
-            try:
-                self.online_data = json.load(urllib.request.urlopen(DOWNLOAD_CHECKS))
-                self.is_online = True
+        What used to run here, and why it is gone: upstream this fetched the release
+        manifest and the bulletin on every start-up, and when the "auto update model
+        params" setting allowed it, called `download_model_settings()` -- which pulled the
+        four model-metadata tables straight into `MODELS_DIR`. Under this fork's default
+        root that is the git-tracked repo `models/` tree, so a fresh clone both phoned
+        home and dirtied its own worktree. The installer it used to advertise is likewise
+        neither fetched nor exec'd any more.
 
-                try:
-                    with urllib.request.urlopen(BULLETIN_CHECK) as response:
-                        self.bulletin_data = response.read().decode('utf-8')
+        The signature, the `False` return and the offline branch are kept on purpose, so
+        that every call site -- start-up, the settings menu's two calls, the update
+        confirmation dialog, and the post-download refresh -- behaves exactly as it
+        already behaves today with no internet connection: nothing is fetched, no update
+        window opens, and the Download Center falls back to its offline state.
 
-                    if not is_windows:
-                        self.bulletin_data = read_bulliten_text_mac(CR_TEXT, self.bulletin_data)
-                    else:
-                        self.bulletin_data = self.bulletin_data.replace("~", "•")
+        Not everything in this file touches the network, and this fork keeps the parts a
+        user asked for: the two `wget.download` calls in `download_item` that fetch model
+        weights, and the two `urllib.request.urlopen(config_link)` calls that fetch an
+        MDX-C / Roformer config a user chose. Refreshing the model *tables* is now an
+        explicit command instead of a start-up default -- see `model_refresh.py`, which
+        writes them through `Catalog.write_table` into the user-writable catalog dir and
+        never into the weights root.
+        """
 
-                except Exception as e:
-                    self.bulletin_data = INFO_UNAVAILABLE_TEXT
-                    print(e)
+        self.command_Text.write('''This fork has no automatic application update: it will not
+check for a new version, download an installer or install anything on its own.
+Model tables are refreshed only when you ask: `python model_refresh.py --confirm`,
+which writes them into the user-writable catalog directory (never the weights root).
+''')
 
-                if user_refresh:
-                    self.download_list_state()
-                    for widget in self.download_center_Buttons:
-                        widget.configure(state=tk.NORMAL)
-                    
-                if refresh_list_Button:
-                    self.download_progress_info_var.set('Download List Refreshed!')
+        self.offline_state_set(is_start_up)
 
-                if OPERATING_SYSTEM=="Darwin":
-                    self.lastest_version = self.online_data["current_version_mac"]
-                elif OPERATING_SYSTEM=="Linux":
-                    self.lastest_version = self.online_data["current_version_linux"]
-                else:
-                    self.lastest_version = self.online_data["current_version"]
-                    
-                if self.lastest_version == current_patch and not is_start_up:
-                    self.app_update_status_Text_var.set('UVR Version Current')
-                else:
-                    is_new_update = True
-                    is_beta_version = True if self.lastest_version == PREVIOUS_PATCH_WIN and BETA_VERSION in current_patch else False
-                    
-                    if not is_start_up:
-                        if is_beta_version:
-                            self.app_update_status_Text_var.set(f"{ROLLBACK_FOUND_TEXT}: {self.lastest_version}")
-                            self.app_update_button_Text_var.set(ROLL_BACK_TEXT)
-                        else:
-                            self.app_update_status_Text_var.set(f"Update Found: {self.lastest_version}")
-                            self.app_update_button_Text_var.set('Click Here to Update')
-                        
-                        if OPERATING_SYSTEM == "Windows":
-                            self.download_update_link_var.set('{}{}{}'.format(UPDATE_REPO, self.lastest_version, application_extension))
-                            self.download_update_path_var.set(os.path.join(BASE_PATH, f'{self.lastest_version}{application_extension}'))
-                        elif OPERATING_SYSTEM == "Darwin":
-                            self.download_update_link_var.set(UPDATE_MAC_ARM_REPO if SYSTEM_PROC == ARM or ARM in SYSTEM_ARCH else UPDATE_MAC_X86_64_REPO)
-                        elif OPERATING_SYSTEM == "Linux":
-                            self.download_update_link_var.set(UPDATE_LINUX_REPO)
-                    
-                    if not user_refresh:
-                        if not is_beta_version and not self.lastest_version == current_patch:
-                            self.command_Text.write(NEW_UPDATE_FOUND_TEXT(self.lastest_version))
+        if user_refresh:
+            self.download_list_state(disable_only=True)
+            for widget in self.download_center_Buttons:
+                widget.configure(state=tk.DISABLED)
 
-                is_update_params = self.is_auto_update_model_params if is_start_up else self.is_auto_update_model_params_var.get()
-                
-                if is_update_params and is_start_up or is_download_complete:
-                    self.download_model_settings()
-                    
-                # if is_download_complete:
-                #     self.download_model_settings()
-
-            except Exception as e:
-                self.offline_state_set(is_start_up)
-                is_new_update = False
-                
-                if user_refresh:
-                    self.download_list_state(disable_only=True)
-                    for widget in self.download_center_Buttons:
-                        widget.configure(state=tk.DISABLED)
-                        
-                try:
-                    self.error_log_var.set(error_text('Online Data Refresh', e))
-                except Exception as e:
-                    print(e)
-
-            return is_new_update
-            
-        if confirmation_box:
-            return online_check()
-        else:
-            self.current_thread = KThread(target=online_check)
-            self.current_thread.setDaemon(True) if not is_windows else None
-            self.current_thread.start()
+        return False
 
     def offline_state_set(self, is_start_up=False):
         """Changes relevant settings and "Download Center" buttons if no internet connection is available"""
@@ -5336,39 +5283,6 @@ class MainWindow(TkinterDnD.Tk if is_dnd_compatible else tk.Tk):
             
             configure_combobox(self.model_download_demucs_Option, model_download_demucs_list, self.model_download_demucs_var, DEMUCS_ARCH_TYPE, model_download_demucs_name)
 
-    def download_model_settings(self):
-        '''Update the newest model settings'''
-        
-        try:
-            self.vr_hash_MAPPER = json.load(urllib.request.urlopen(VR_MODEL_DATA_LINK))
-            self.mdx_hash_MAPPER = json.load(urllib.request.urlopen(MDX_MODEL_DATA_LINK))
-            self.mdx_name_select_MAPPER = json.load(urllib.request.urlopen(MDX_MODEL_NAME_DATA_LINK))
-            self.demucs_name_select_MAPPER = json.load(urllib.request.urlopen(DEMUCS_MODEL_NAME_DATA_LINK))
-            
-            vr_hash_MAPPER_dump = json.dumps(self.vr_hash_MAPPER, indent=4)
-            with open(VR_HASH_JSON, "w") as outfile:
-                outfile.write(vr_hash_MAPPER_dump)
-                
-            mdx_hash_MAPPER_dump = json.dumps(self.mdx_hash_MAPPER, indent=4)
-            with open(MDX_HASH_JSON, "w") as outfile:
-                outfile.write(mdx_hash_MAPPER_dump)
-
-            mdx_name_select_MAPPER_dump = json.dumps(self.mdx_name_select_MAPPER, indent=4)
-            with open(MDX_MODEL_NAME_SELECT, "w") as outfile:
-                outfile.write(mdx_name_select_MAPPER_dump)
-                
-            demucs_name_select_MAPPER_dump = json.dumps(self.demucs_name_select_MAPPER, indent=4)
-            with open(DEMUCS_MODEL_NAME_SELECT, "w") as outfile:
-                outfile.write(demucs_name_select_MAPPER_dump)
-
-        except Exception as e:
-            self.vr_hash_MAPPER = load_model_hash_data(VR_HASH_JSON)
-            self.mdx_hash_MAPPER = load_model_hash_data(MDX_HASH_JSON)
-            self.mdx_name_select_MAPPER = load_model_hash_data(MDX_MODEL_NAME_SELECT)
-            self.demucs_name_select_MAPPER = load_model_hash_data(DEMUCS_MODEL_NAME_SELECT)
-            self.error_log_var.set(e)
-            print(e)
-
     def download_list_state(self, reset=True, disable_only=False):
         """Makes sure only the models from the chosen AI network are selectable."""
         
@@ -5477,7 +5391,14 @@ class MainWindow(TkinterDnD.Tk if is_dnd_compatible else tk.Tk):
                     if os.path.isfile(self.download_update_path_var.get()):
                         self.download_progress_info_var.set(FILE_EXISTS)
                     else:
-                        wget.download(self.download_update_link_var.get(), self.download_update_path_var.get(), bar=download_progress_bar)
+                        # Task 12: the application-update fetch was deleted here (it pulled
+                        # the installer named by download_update_link_var). This fork has no
+                        # update channel, so there is nothing to download. The wget.download
+                        # calls further down in this method are the user's model downloads
+                        # and stay exactly as they were.
+                        self.command_Text.write('This fork has no automatic application update'
+                                                ' -- there is no installer to download or run.'
+                                                ' Update it by pulling the repository.\n')
                         
                     self.download_post_action(DOWNLOAD_UPDATE_COMPLETE)
                 else:
@@ -5539,8 +5460,9 @@ class MainWindow(TkinterDnD.Tk if is_dnd_compatible else tk.Tk):
             self.download_list_state()
         if action == DOWNLOAD_UPDATE_COMPLETE:
             self.download_progress_info_var.set(DOWNLOAD_UPDATE_COMPLETE)
-            if os.path.isfile(self.download_update_path_var.get()):
-                subprocess.Popen(self.download_update_path_var.get())
+            # Task 12: the exec that launched the downloaded installer is deleted -- there
+            # is no installer, because this fork never fetches one. The app *restart* execs
+            # in app_close() are a different thing and stay on purpose.
             self.download_list_state()
         
         

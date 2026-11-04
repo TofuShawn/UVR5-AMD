@@ -90,21 +90,26 @@ INPUT_STEM_NAME = 'Input Stem Name'
 AUTO_SELECT = 'Auto'
 
 #LINKS
-DOWNLOAD_CHECKS = "https://raw.githubusercontent.com/TRvlvr/application_data/main/filelists/download_checks.json"
-MDX_MODEL_DATA_LINK = "https://raw.githubusercontent.com/TRvlvr/application_data/main/mdx_model_data/model_data_new.json"
-VR_MODEL_DATA_LINK = "https://raw.githubusercontent.com/TRvlvr/application_data/main/vr_model_data/model_data_new.json"
+# Task 12 deleted the application's own network from here: DOWNLOAD_CHECKS,
+# BULLETIN_CHECK, the four *_DATA_LINK model-table URLs and the patch-channel repo were
+# removed outright, not blanked to "" -- an empty sentinel is one keystroke from being
+# restored, and the guarantee tests/test_no_self_update.py checks is the absence of the
+# definitions and of every load of them in UVR.py. The four table URLs moved to
+# model_refresh.py, which only runs when the user asks for it.
+# MDX23_CONFIG_CHECKS deliberately survives: it builds the config_link that the
+# user-requested MDX-C / Roformer config download fetches (UVR.py:4212 / :5311).
+# NORMAL_REPO below also survives -- it is the weights channel the Download Center
+# downloads models from, i.e. network the user asked for.
 MDX23_CONFIG_CHECKS = "https://raw.githubusercontent.com/TRvlvr/application_data/main/mdx_model_data/mdx_c_configs/"
-BULLETIN_CHECK = "https://raw.githubusercontent.com/TRvlvr/application_data/main/bulletin.txt"
-
-DEMUCS_MODEL_NAME_DATA_LINK = "https://raw.githubusercontent.com/TRvlvr/application_data/main/demucs_model_data/model_name_mapper.json"
-MDX_MODEL_NAME_DATA_LINK = "https://raw.githubusercontent.com/TRvlvr/application_data/main/mdx_model_data/model_name_mapper.json"
 
 DONATE_LINK_BMAC = "https://www.buymeacoffee.com/uvr5"
 DONATE_LINK_PATREON = "https://www.patreon.com/uvr"
 
 #DOWNLOAD REPOS
 NORMAL_REPO = "https://github.com/TRvlvr/model_repo/releases/download/all_public_uvr_models/"
-UPDATE_REPO = "https://github.com/TRvlvr/model_repo/releases/download/uvr_update_patches/"
+# Task 12: the patch-channel repo (UPDATE_REPO, pointing at the model_repo releases
+# download path that carried application updates) is deleted. NORMAL_REPO stays: same
+# host, but it is where a user downloads model weights from.
 
 UPDATE_MAC_ARM_REPO = "https://github.com/Anjok07/ultimatevocalremovergui/releases/download/v5.6/Ultimate_Vocal_Remover_v5_6_MacOS_arm64.dmg"
 UPDATE_MAC_X86_64_REPO = "https://github.com/Anjok07/ultimatevocalremovergui/releases/download/v5.6/Ultimate_Vocal_Remover_v5_6_MacOS_x86_64.dmg"
