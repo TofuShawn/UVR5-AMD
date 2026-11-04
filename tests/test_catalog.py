@@ -684,7 +684,9 @@ def test_writable_baked_table_overrides_the_weights_root_table(tmp_path):
     """
     c = _catalog(tmp_path)
     digest = c.resolve("1_HP-UVR").hash
-    refreshed = {digest: _params("Instrumental")}
+    installed = _json(MODEL_ROOT / VR_TABLE)[digest]
+    refreshed = {digest: _params("Bass")}
+    assert refreshed[digest] != installed, "the pin only bites if the two answers differ"
     target = c.write_table("vr", "params", refreshed)
 
     spec = c.resolve("1_HP-UVR")
@@ -692,7 +694,7 @@ def test_writable_baked_table_overrides_the_weights_root_table(tmp_path):
     assert spec.provenance.root_role is catalog.RootRole.WRITABLE_DIR
     assert spec.provenance.root == c.writable_dir
     assert spec.provenance.source == target == c.writable_dir / VR_TABLE
-    assert spec.model_data == _params("Instrumental")
+    assert spec.model_data == _params("Bass")
 
 
 # --------------------------------------------------------------------------- #
