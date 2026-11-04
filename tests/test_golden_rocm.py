@@ -198,9 +198,13 @@ def test_the_gpu_presents_as_cuda_and_is_the_chosen_device():
     ``backends.resolve()`` is the single device/provider authority and
     ``separate.py`` reads it unconditionally, so "rocm -> the cuda torch device"
     is what makes `separate(arch, "cuda")` a GPU run at all. Task 6 pins the
-    decision table with monkeypatched probes; this is the live-hardware half, and
-    it is also the check that the reference and the candidate differ in exactly
-    one variable (device).
+    decision table with monkeypatched probes; this is the live-hardware half.
+
+    What this test does *not* establish is that a run used the device it asked
+    for -- it can only check what the harness requested. Saying the reference and
+    the candidate differ in exactly one variable is a claim about the engine's
+    choice, and that is measured per run by the two guards in
+    ``test_rocm_matches_cpu`` instead of inferred from the mapping asserted below.
     """
     assert getattr(torch.version, "hip", None), "not a ROCm build"
     assert torch.version.cuda is None, "hip *and* cuda: not the wheel these pins describe"
