@@ -211,7 +211,20 @@ def test_the_gpu_presents_as_cuda_and_is_the_chosen_device():
     assert torch.cuda.is_available() is True, "ROCm must present itself as CUDA"
 
     backend = backends.resolve()
-    assert (backend.name, backend.torch_device) == ("rocm", "cuda"), backend
+    # The message names the expectation *and* echoes the received value. `, backend`
+    # alone was a bare repr of what came back, so the one assertion that guards the
+    # fork's central claim -- the authority answers "rocm, and the torch device is
+    # cuda" -- failed with a sentence that did not say which half of its own tuple
+    # was violated. This assertion also carries more weight than its neighbours: a
+    # cpu torch_device does NOT trip the engine's degradation warning (separate.py
+    # keys that branch on torch_device == 'cuda' *and* a missing GPU, and warns only
+    # for the second case), so the in-run guards in test_rocm_matches_cpu catch
+    # nothing here and this message is the whole report.
+    assert (backend.name, backend.torch_device) == ("rocm", "cuda"), (
+        "backends.resolve() must present ROCm as the torch CUDA device "
+        "(name='rocm', torch_device='cuda'), but it returned "
+        f"{backend!r}: on that answer separate.py keeps self.device on CPU without "
+        "warning, so every GPU row below would score CPU against CPU")
 
     # And the harness really does ask for the GPU: ``device="cuda"`` maps to the
     # GUI's GPU switch (is_gpu_conversion >= 0), ``"cpu"`` to the off switch, so
