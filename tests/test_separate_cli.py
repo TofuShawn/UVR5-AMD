@@ -51,7 +51,7 @@ import catalog
 import separate_cli
 import uvr_paths
 from tests.test_engine_purity import (CHILD_TIMEOUT_SECONDS, ENGINE_IMPORTS,
-                                      guard_script, pin_drift)
+                                      RUN_CHILD_BLOCKED, guard_script, pin_drift)
 
 REPO = Path(__file__).resolve().parents[1]
 CLI = REPO / "separate_cli.py"
@@ -247,16 +247,27 @@ def test_process_data_keys_are_pinned_against_the_engine_and_the_cli(tmp_path):
 def blocked_child_source(argv: list[str]) -> str:
     """The purity guard's own script, then the CLI as `__main__` inside that child.
 
-    `guard_script(ENGINE_IMPORTS)` is reused, not reinvented: it installs the finder
-    over `GUI_PACKAGES`, purges `sys.modules`, and self-asserts that
-    `import tkinter` raises before anything else happens -- so a child that reached
-    the CLI already knows its blocker works. Importing all of `ENGINE_IMPORTS`
-    first is deliberate: `separate_cli` joined that list in this slice, and the
-    claim the README makes is about the whole call path, including the torch import
-    `separate` brings.
+    `guard_script(ENGINE_IMPORTS, RUN_CHILD_BLOCKED)` is reused, not reinvented: it
+    installs the finder, purges `sys.modules`, and self-asserts that `import tkinter`
+    raises before anything else happens -- so a child that reached the CLI already
+    knows its blocker works. Importing all of `ENGINE_IMPORTS` first is deliberate:
+    `separate_cli` joined that list in this slice, and the claim the README makes is
+    about the whole call path, including the torch import `separate` brings.
+
+    The block set is passed explicitly because this child *runs* the CLI rather than
+    only importing it, and from Plan 2 Task 2 the CLI *is* parse ->
+    `session.assemble` -> `session.run_job`: handing it guard 1's full `GUI_PACKAGES`
+    would make it refuse the shared assembly package, i.e. refuse the design (ruling
+    R-T2-blockset). `RUN_CHILD_BLOCKED` drops exactly one name, `app`, and keeps the
+    whole GUI stack the claim is about -- the tkinter four *plus* `PySide6` and
+    `fluentqt` -- pinned in `test_engine_purity.py::test_the_two_lists_have_not_shrunk`
+    against both its own frozen copy and `PINNED_GUI_PACKAGES - {"app"}`. Nothing the
+    Qt-freedom of `app` used to imply is lost: guard 1 still blocks `app` for its 16
+    import-time modules, and `tests/test_session.py::test_importing_session_pulls_in_no_qt`
+    asserts in a child that `import app.session` pulls in no Qt.
     """
     return (
-        guard_script(ENGINE_IMPORTS)
+        guard_script(ENGINE_IMPORTS, RUN_CHILD_BLOCKED)
         + "import runpy, sys\n"
         + f"sys.argv = [{str(CLI)!r}] + {argv!r}\n"
         + f"runpy.run_path({str(CLI)!r}, run_name='__main__')\n"

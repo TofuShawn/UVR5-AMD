@@ -9,14 +9,18 @@ imports none. Note the scope:
 that is now a *module-level GUI*-freedom claim, not merely a tkinter one: guard 1
 blocks the tkinter four *plus* `PySide6`/`fluentqt`/`app`, so it does prove the 16
 named imports reach no GUI at import time. What it still cannot see is a GUI import
-deferred into a function body, and the instance of that this fork is walking toward
-is the `from app import session` P2 Task 2 plans to put inside `separate_cli.run()`:
-`app` is already in the block set, ahead of that commit, so once it lands the import
-this guard cannot see becomes a real one instead of a hypothetical. At this commit
-neither half of it exists -- `app/` is not created, and no module in this repo
-imports it yet. What closes the gap is the test that same task adds (a child
-`import app.session` whose `sys.modules` must hold no `PySide6`/`fluentqt`), not this
-guard. Two guards, split deliberately, and each one is blind to exactly what the
+deferred into a function body, and the instance of that this fork is now walking
+through is the `from app import session` that P2 Task 2 put inside
+`separate_cli.run()`: `app` is in the block set, so the import this guard cannot see
+is a real one rather than a hypothetical, and guard 1 stays green because the import
+never executes at import time. What closes the gap is not this guard but the test
+that same task added -- a child `import app.session` whose `sys.modules` must hold no
+`PySide6`/`fluentqt` (`tests/test_session.py::test_importing_session_pulls_in_no_qt`).
+The same task made `guard_script` take its block set as a parameter, because the
+*CLI-running* child in `tests/test_separate_cli.py` must be able to import `app`
+(ruling R-T2-blockset) while still refusing the whole GUI stack around it;
+`RUN_CHILD_BLOCKED` below is that set, and it is pinned like the other two lists.
+Two guards, split deliberately, and each one is blind to exactly what the
 other sees. The names after `plan` -- `plan` (15th, Task
 11b) and `separate_cli` (16th, Task 13) -- are composition layers rather than part of
 `engine`, and they joined on purpose: Task 13's GUI-free CLI is the thing that must
@@ -48,7 +52,9 @@ red runs behind every claim here are committed as `tools/task8_red_controls.py`
 `test_the_two_lists_have_not_shrunk`, is the same defense one level up: both
 guards and both controls take `GUI_PACKAGES` and `ENGINE_IMPORTS` as *input*, so
 neither can see one of them shrink, and the pin checks the two lists against
-frozen literals instead.
+frozen literals instead. Since R-T2-blockset it checks a third list the same way --
+`RUN_CHILD_BLOCKED`, the block set the CLI-running child is handed -- because a
+guard input passed as an argument shrinks just as quietly as one read from a global.
 """
 import ast, pathlib, subprocess, sys
 
@@ -58,9 +64,10 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 # unavailable -- the tkinter four *plus* `PySide6`/`fluentqt`/`app`, so for these 16
 # names the guard does prove module-level GUI-freedom at import time (see the module
 # docstring). Two distinctions it must not blur: blocked != absent -- the finder
-# refuses by name, so `import app` raises this blocker's ImportError before P2 Task 2
-# creates the package -- and import-time GUI-free != GUI-free at call time, which is
-# the deferred-import half the docstring hands to that task's own test.
+# refuses by name, so `import app` raises this blocker's ImportError now that P2 Task 2
+# has created the package, exactly as it did before -- and import-time GUI-free !=
+# GUI-free at call time, which is the deferred-import half the docstring hands to that
+# task's own test (`tests/test_session.py::test_importing_session_pulls_in_no_qt`).
 # Verified by running the blocker against each one at HEAD 4463a80. The RED set is
 # separate, lib_v5.apollo_inference, demucs.{apply,utils,repo,pretrained,htdemucs}
 # -- all seven trace to the SAME two dead imports -- and the already-green set is
@@ -103,10 +110,24 @@ ENGINE_IMPORTS = ["separate", "backends", "plan", "separate_cli", "lib_v5.mdxnet
 GUI_PACKAGES = ("tkinter", "gui_data.tkinterdnd2", "gui_data.sv_ttk", "PIL.ImageTk",
                 "PySide6", "fluentqt", "app")
 
+# The block set for the one *consumer* of `guard_script` that does not merely import:
+# `tests/test_separate_cli.py::blocked_child_source` runs the CLI inside the child, and
+# from Plan 2 Task 2 the CLI is parse -> `session.assemble` -> `session.run_job`, so a
+# child that refused `app` would refuse the shared assembly path by construction (ruling
+# R-T2-blockset). `app` is the ONLY name this set drops: the tkinter four stay, and
+# `PySide6`/`fluentqt` stay -- that pairing is the Plan 2 strengthening and must survive,
+# which `test_the_two_lists_have_not_shrunk` enforces twice (once against the frozen
+# copy below, once against `PINNED_GUI_PACKAGES - {"app"}`). The Qt-freedom claim the
+# dropped name used to carry is not lost: `app` is still blocked for guard 1's 16
+# import-time modules, and `tests/test_session.py::test_importing_session_pulls_in_no_qt`
+# asserts directly that `import app.session` reaches no Qt module.
+RUN_CHILD_BLOCKED = ("tkinter", "gui_data.tkinterdnd2", "gui_data.sv_ttk", "PIL.ImageTk",
+                     "PySide6", "fluentqt")
+
 # Fix round 2, Item 1: frozen second copies of both name lists, asserted against
 # them by `test_the_two_lists_have_not_shrunk`. They are *separate literals* on
 # purpose: every other check on these two lists derives its expectation from the
-# list itself (`guard_script` builds BLOCKED from `GUI_PACKAGES`; the controls
+# list itself (`guard_script`'s default block set *is* `GUI_PACKAGES`; the controls
 # loop over both), so a trim shrinks the audit with the audit's input. Both
 # halves reproduced on this machine at `71683e9`: `GUI_PACKAGES` narrowed to two
 # entries plus `ENGINE_IMPORTS` narrowed to `["separate"]` leaves this file's two
@@ -122,6 +143,16 @@ GUI_PACKAGES = ("tkinter", "gui_data.tkinterdnd2", "gui_data.sv_ttk", "PIL.Image
 # lists, and a name leaving one is exactly the change that must be deliberate.
 PINNED_GUI_PACKAGES = frozenset({"tkinter", "gui_data.tkinterdnd2", "gui_data.sv_ttk",
                                  "PIL.ImageTk", "PySide6", "fluentqt", "app"})
+
+#: Frozen copy of `RUN_CHILD_BLOCKED`, for the same reason as the two pins above: that
+#: list is an *input* to a guard (the block set of the CLI-running child), so narrowing it
+#: would narrow the audit with the thing audited. Written out separately on purpose --
+#: rebuilding it as `GUI_PACKAGES - {"app"}` would be the circular self-audit this test
+#: exists to remove, so the derivation lives in the *assertion* below (against the other
+#: frozen pin), never in the list.
+PINNED_RUN_CHILD_BLOCKED = frozenset({"tkinter", "gui_data.tkinterdnd2",
+                                      "gui_data.sv_ttk", "PIL.ImageTk",
+                                      "PySide6", "fluentqt"})
 
 PINNED_ENGINE_IMPORTS = frozenset({
     "separate", "backends", "plan", "separate_cli", "lib_v5.mdxnet",
@@ -201,8 +232,15 @@ def global_root_hits(files):
     return hits, unparseable
 
 
-def guard_script(modules):
+def guard_script(modules, blocked=GUI_PACKAGES):
     """The child interpreter's source: install the finder, prove it works, import.
+
+    `blocked` is a parameter because the list has two consumers with different scopes:
+    guard 1 imports the 16 engine-surface modules and blocks all seven GUI names, while
+    `tests/test_separate_cli.py::blocked_child_source` *runs* the CLI, and from Plan 2
+    Task 2 the CLI is defined as parse -> `session.assemble` -> `session.run_job`. A
+    front end that cannot import the shared assembly package is refusing its own design
+    (ruling R-T2-blockset), so that caller passes everything except `app`.
 
     The self-assert is the first thing after the finder goes in, because
     `assert r.returncode == 0` is loud about engine couplings and silent about
@@ -211,11 +249,15 @@ def guard_script(modules):
     at `tests/test_engine_imports.py:14-16` -- invisible in the pass count. The
     purged `sys.modules` loop is above it so the probe really re-triggers the
     finder instead of hitting a cached `tkinter`. `tools/task8_red_controls.py`
-    builds its red runs out of this exact string.
+    builds its red runs out of this exact string, and every one of them calls this
+    with the default `blocked`, so the controls keep auditing the full seven-name
+    set. The probe below is written against `tkinter`, which is in *both* block sets,
+    so a child built from either list proves its blocker armed before it does
+    anything else.
     """
     return (
         "import sys\n"
-        "BLOCKED = " + repr(list(GUI_PACKAGES)) + "\n"
+        "BLOCKED = " + repr(list(blocked)) + "\n"
         "class Block:\n"
         "    def find_module(self, name, path=None): return None\n"
         "    def find_spec(self, name, path=None, target=None):\n"
@@ -326,6 +368,11 @@ def test_the_two_lists_have_not_shrunk():
     for the shorter list. Both were reproduced at `71683e9` (4 -> 2 and 14 -> 1
     entries, guards green), which is why the pin lives here: this file is collected
     by the suite, `tools/task8_red_controls.py` deliberately is not.
+
+    Since ruling R-T2-blockset this checks a third list too -- `RUN_CHILD_BLOCKED`,
+    the block set of the *CLI-running* child, which `guard_script` now takes as a
+    parameter. The name still says "two lists" because the tools and plan prose cite
+    it; what it checks is every guard input in this file.
     """
     assert frozenset(GUI_PACKAGES) == PINNED_GUI_PACKAGES, pin_drift(
         "GUI_PACKAGES", GUI_PACKAGES, PINNED_GUI_PACKAGES, "PINNED_GUI_PACKAGES")
@@ -334,6 +381,25 @@ def test_the_two_lists_have_not_shrunk():
         "PINNED_GUI_PACKAGES but the tuple grew -- duplicates hide from set "
         "equality and would be emitted twice into the child's BLOCKED list. "
         "Delete the repeat, or update the pin in the same commit and say why.")
+    assert frozenset(RUN_CHILD_BLOCKED) == PINNED_RUN_CHILD_BLOCKED, pin_drift(
+        "RUN_CHILD_BLOCKED", RUN_CHILD_BLOCKED, PINNED_RUN_CHILD_BLOCKED,
+        "PINNED_RUN_CHILD_BLOCKED")
+    assert len(RUN_CHILD_BLOCKED) == len(PINNED_RUN_CHILD_BLOCKED), (
+        "a duplicate name crept into RUN_CHILD_BLOCKED -- it would be emitted twice "
+        "into the CLI-running child's BLOCKED list. Delete the repeat, or update "
+        "PINNED_RUN_CHILD_BLOCKED in the same commit and say why.")
+    # The relation the ruling turned on, stated against the *pinned* full set so it
+    # cannot drift in either direction: `app` is the only name the CLI-running child may
+    # drop, and the Plan 2 names (`PySide6`, `fluentqt`) must stay in that child's set.
+    # Reading it off `PINNED_GUI_PACKAGES` rather than `GUI_PACKAGES` keeps this a pin
+    # check and not a tautology: adding a GUI name to the live list alone fails above,
+    # and dropping one from RUN_CHILD_BLOCKED alone fails here.
+    assert frozenset(RUN_CHILD_BLOCKED) == PINNED_GUI_PACKAGES - {"app"}, (
+        "RUN_CHILD_BLOCKED is no longer exactly the pinned GUI block set minus `app`. "
+        "Either a GUI name left the CLI-running child's blocker -- which is the "
+        "strengthening Task 1 added and ruling R-T2-blockset re-affirmed -- or `app` "
+        "went back in, and the CLI cannot import its own assembly path. If the change "
+        "is deliberate, say in the commit why the child may now reach that name.")
     assert frozenset(ENGINE_IMPORTS) == PINNED_ENGINE_IMPORTS, pin_drift(
         "ENGINE_IMPORTS", ENGINE_IMPORTS, PINNED_ENGINE_IMPORTS,
         "PINNED_ENGINE_IMPORTS")

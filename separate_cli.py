@@ -449,14 +449,13 @@ def run(args: argparse.Namespace, *, out: TextIO = sys.stdout,
         return failure("[cli] a run needs a model: --model NAME (or a positional one), "
                        "or use --list-models / --refresh-model-tables.", EXIT_USAGE)
 
-    # 1. settings -> 2. catalog -> 3. resolve -> 4. backend -> 5. plan.
-    # The catalog answers *first* among the run steps on purpose: the blocked-arch
-    # refusal must fire before anything touches the filesystem for the audio, so a
-    # refusal for `--arch roformer` is a refusal and not a missing-file error.
     st = settings_module.load(Path(args.settings) if args.settings else None)
 
+    from app import session                                  # the one assembly path
+
     try:
-        spec = cat.resolve(args.model, args.arch, required=True)
+        sess = session.assemble(st=st, cat=cat, model=args.model, arch=args.arch,
+                                force_device=args.device, printer=printer)
     except catalog.UnknownModelParamsError as exc:
         # Print the catalog's own message text verbatim: the hash and the
         # `<hash>.json` path *are* the payload, and paraphrasing loses them. The
@@ -471,35 +470,18 @@ def run(args: argparse.Namespace, *, out: TextIO = sys.stdout,
             f"baked table.", EXIT_TIER3)
     except catalog.CatalogError as exc:
         return failure(f"[cli] {exc}", code_for(exc))
-
-    requested_device = args.device
-    try:
-        backend = backends.resolve(force=requested_device)
     except ValueError as exc:
         return failure(f"[cli] {exc}", EXIT_USAGE)
-
-    for line in describe_device(backend, requested_device):
-        printer(line)
-
-    try:
-        rp = plan.build(settings=effective_settings(st, spec, requested_device),
-                        catalog=cat, backend=backend, spec=spec, selections={})
     except plan.PlanError as exc:
         return failure(f"[cli] plan refused: {exc}", EXIT_PLAN)
 
-    # The second device line, and it is printed *after* the plan because the plan is
-    # what the engine acts on (`separate.py:253` gates the whole GPU block on
-    # `is_gpu_conversion`). Printing it here rather than inside describe_device() is
-    # what keeps the pair honest: the backend line may only say what the machine
-    # offers, this one says what the run uses.
-    for line in describe_compute_device(rp.is_gpu_conversion, backend,
-                                        requested_device, rp.device_set):
+    for line in sess.compute_lines:
         printer(line)
 
     if args.dry_run:
-        print_plan(rp, printer)
-        printer(f"[cli] --dry-run: model {spec.name} (arch {spec.arch}, "
-                f"tier {spec.provenance.label if spec.provenance else '?'}) resolved; "
+        print_plan(sess.rp, printer)
+        printer(f"[cli] --dry-run: model {sess.spec.name} (arch {sess.spec.arch}, "
+                f"tier {sess.spec.provenance.label if sess.spec.provenance else '?'}) resolved; "
                 f"nothing was run and nothing was written.")
         return EXIT_OK
 
@@ -511,30 +493,15 @@ def run(args: argparse.Namespace, *, out: TextIO = sys.stdout,
         return failure(f"[cli] input audio not found: {audio}", EXIT_INPUT)
 
     export_path = Path(args.out) if args.out else (audio.parent / "UVR_out")
-    engine_class = engine_classes().get(spec.arch)
-    if engine_class is None:
-        return failure(f"[cli] arch {spec.arch!r} has no engine class in separate.py; "
-                       f"known: {', '.join(sorted(ARCH_CLASS))}", EXIT_PLAN)
-
-    process_data = build_process_data(audio, export_path, printer=printer)
-    # Snapshot *before* the run. The check below asks "did this run write anything",
-    # and a post-run rglob of a directory that already holds an earlier run's stems
-    # always answers yes -- re-running into a non-empty export dir would let an
-    # engine that produced nothing exit 0. The snapshot is a path -> (mtime, size)
-    # map rather than a set of paths, because re-running the same model overwrites
-    # the same two filenames: a new name or a changed stamp counts as written, and
-    # only a file this run did not touch at all counts as absent.
-    export_path.mkdir(parents=True, exist_ok=True)
-    before = {p: p.stat().st_mtime_ns for p in export_path.rglob("*.wav")
-              if "_(" in p.stem}
     try:
-        job = engine_class(rp, process_data)
-        job.seperate()
+        written = session.run_job(sess, audio=audio, export_path=export_path, printer=printer)
+    except session.NoEngineClass as exc:
+        # The branch that used to sit here printed this text at EXIT_PLAN with no
+        # "plan refused:" prefix. Ruling R-T2-noclass: keep those bytes, pin them with a
+        # test -- the old code had none.
+        return failure(f"[cli] {exc}", EXIT_PLAN)
     except Exception as exc:                              # engine failures are reported
         return failure(f"[cli] engine failed ({type(exc).__name__}): {exc}", EXIT_ENGINE)
-
-    written = sorted(p for p in export_path.rglob("*.wav")
-                     if "_(" in p.stem and before.get(p) != p.stat().st_mtime_ns)
     if not written:
         return failure(f"[cli] the engine returned without writing any stem to "
                        f"{export_path}; that is an engine failure, not a success.",
