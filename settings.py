@@ -489,12 +489,21 @@ class Settings:
         ECMA-404 parser refuses. `_coerce` already keeps such a value out of every field
         that arrives through it, so this only fires when one was forced onto a frozen
         instance behind the type system's back -- and then it raises instead of writing.
+
+        The file is shared with `selections.save()`, so this is a read-modify-write of
+        the top-level object, not a rewrite -- `allow_nan=False` still applies to the
+        merged result.
         """
         target = Path(path) if path is not None else config_file()
         target.parent.mkdir(parents=True, exist_ok=True)
+        raw: dict = {}
+        if target.exists():
+            loaded = json.loads(target.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                raw = loaded
+        raw.update(dataclasses.asdict(self))
         target.write_text(
-            json.dumps(dataclasses.asdict(self), indent=2, ensure_ascii=False,
-                       allow_nan=False) + "\n",
+            json.dumps(raw, indent=2, ensure_ascii=False, allow_nan=False) + "\n",
             encoding="utf-8",
         )
 
