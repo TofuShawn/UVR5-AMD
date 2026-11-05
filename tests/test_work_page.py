@@ -327,6 +327,159 @@ def test_stop_pressing_cancel_is_the_job_that_owns_the_flag(qapp, tmp_path, monk
     assert pg.start_button.isEnabled() is True
 
 
+# -- ruling R-T6-archtabs: the arch row has to be readable at the default size -- #
+
+def test_every_arch_label_is_given_its_full_text_width_at_the_default_window(qapp,
+                                                                            monkeypatch):
+    """Task 5's launch photograph showed the third tab ellipsized to `m…` and the bar
+    claiming a band of empty card. Both are geometry, so both are asserted as geometry,
+    and no number in here is a pixel constant: the required width is the binding's own
+    `fontMetrics` advance for the label, the given width is the binding's own
+    `itemHeaderGeometry`, and the window width is the one `build_app` resizes to.
+
+    The control is a `Pivot`, chosen over `SelectorBar` by measurement (see
+    `app/work_page.py`): `SelectorBar` ellipsizes `mdx` to `m…` at every width and its
+    `itemGeometry` lies about it (reports 60 px for a 23 px label and still clips), so a
+    `SelectorBar` could never pass a geometry test honestly. `Pivot`'s
+    `itemHeaderGeometry` matches what it paints -- verified offscreen against the actual
+    pixels -- which is what makes required-vs-given a real proof here rather than a
+    rubber stamp.
+
+    Three separate failures this catches, each one a different mechanism:
+      * an item whose header rect is narrower than its text -- the ellipsis in the
+        photograph;
+      * a bar whose floor is below the sum of its labels, which is what lets a squeeze
+        drop an item into overflow at all;
+      * a bar taller than its own content row, i.e. the page's slack parked in the
+        navigation instead of in the form.
+    """
+    monkeypatch.setattr(backends, "resolve", lambda force=None: _cpu_backend())
+    app_obj, window = main.build_app([])
+    window.show()
+    for _ in range(3):
+        qapp.processEvents()
+
+    page = window.controller.work_page
+    bar = page.arch_bar
+    fm = bar.fontMetrics()
+    texts = [item.header for item in bar.items()]
+    assert texts == page.arch_names(), (
+        "the bar's labels are the catalog's own arch strings, in the order the page "
+        "offered them -- no invented names, no abbreviation, no filtering")
+    assert not bar.hiddenItemIndexes(), (
+        "an arch is in overflow, so the user cannot see or reach it at the default width")
+
+    for index, text in enumerate(texts):
+        required = fm.horizontalAdvance(text)
+        given = bar.itemHeaderGeometry(index).width()
+        assert given >= required, f"{text!r} needs {required}px of text, the bar gives {given}px"
+    assert bar.minimumWidth() >= sum(fm.horizontalAdvance(t) for t in texts), (
+        "the bar may be squeezed below the width its own labels need")
+    assert bar.height() == bar.sizeHint().height(), (
+        f"the bar is {bar.height()}px tall but only needs {bar.sizeHint().height()}px; "
+        f"the page's slack is landing in the navigation row")
+
+
+# -- the settings dialog (Task 6) --------------------------------------------- #
+
+@pytest.fixture()
+def appdata(tmp_path, monkeypatch):
+    """`Controller.save_settings` writes `settings.config_file()`, which reads `APPDATA`.
+    Repointed here for the same reason `tests/test_settings.py` does it: the shared file
+    is what every other test's `load()` would otherwise pick up."""
+    base = tmp_path / "Roaming"
+    base.mkdir()
+    monkeypatch.setenv("APPDATA", str(base))
+    return base / "UVR-fork"
+
+
+def _settings_page(qapp, tmp_path, monkeypatch):
+    ctrl, pg = _vr_page(qapp, tmp_path, monkeypatch)
+    pg.settings_requested.emit()
+    return ctrl, pg, ctrl.settings_dialog.page
+
+
+def test_the_settings_button_opens_a_page_covering_every_editable_field(qapp, tmp_path,
+                                                                        monkeypatch):
+    """One click, the whole engine surface: 50 settings + 33 selections, in a dialog the
+    controller owns. And no second `Job` appears while it is open (R-T4-onejob) -- the
+    dialog edits state, it does not run anything."""
+    ctrl, pg, page = _settings_page(qapp, tmp_path, monkeypatch)
+    assert page is not None and ctrl.settings_dialog.isVisible() is True
+    assert len(page.widget_names()) == 83, len(page.widget_names())
+    assert not hasattr(page, "job"), "the settings dialog built a second Job"
+    assert ctrl.work_page.job is pg.job, "the page still owns the one Job"
+    assert pg.settings_button.text() == "Settings"
+
+
+def test_opening_the_settings_twice_reuses_the_one_dialog(qapp, tmp_path, monkeypatch):
+    """83 widgets is not something to stack. A second click raises what is already open."""
+    ctrl, pg, page = _settings_page(qapp, tmp_path, monkeypatch)
+    pg.settings_requested.emit()
+    assert ctrl.settings_dialog.page is page, "a second dialog was built over the first"
+
+
+def test_saving_from_the_dialog_writes_the_shared_file_and_hands_the_state_on(qapp, tmp_path,
+                                                                              monkeypatch,
+                                                                              appdata):
+    """The pairing this root exists to keep: what the page validated becomes the objects
+    the next `START` assembles from, and the file the next launch loads."""
+    ctrl, pg, page = _settings_page(qapp, tmp_path, monkeypatch)
+    page.set_field_value("window_size", 768)
+    page.set_field_value("vr_voc_inst_secondary_model", "UVR-BVE-458n")
+    ctrl.settings_dialog.save_button.click()
+
+    assert settings_module.load().window_size == 768
+    assert selections_module.load().vr_voc_inst_secondary_model == "UVR-BVE-458n"
+    assert ctrl.settings.window_size == 768
+    assert ctrl.selections.vr_voc_inst_secondary_model == "UVR-BVE-458n"
+    assert pg.selections is ctrl.selections
+    assert ctrl.settings_dialog.isVisible() is False
+    assert str(settings_module.config_file()) in pg.console.toPlainText()
+
+
+def test_a_refused_save_writes_nothing_and_keeps_the_dialog_open(qapp, tmp_path, monkeypatch,
+                                                                 appdata):
+    """The other half of `apply`'s promise, seen from the button: the file is not created,
+    the dialog stays so the field can be fixed, and the console names it."""
+    ctrl, pg, page = _settings_page(qapp, tmp_path, monkeypatch)
+    before = ctrl.settings.window_size
+    page.set_field_value("window_size", 640)                  # a clean change ...
+    page.set_field_value_raw("save_format", ["FLAC"])         # ... and one refused value
+    ctrl.settings_dialog.save_button.click()
+
+    assert not (appdata / "settings.json").exists(), "a refused save touched the file"
+    assert ctrl.settings.window_size == before, "the controller adopted refused values"
+    assert ctrl.settings_dialog.isVisible() is True
+    assert "save_format" in pg.console.toPlainText(), pg.console.toPlainText()
+
+
+def test_the_settings_dialog_reaches_the_controller_only_through_a_weakref(qapp, tmp_path,
+                                                                           monkeypatch):
+    """The crash this pins is heap corruption (`0xc0000374`) during pytest's forced
+    `gc_collect_harder()` at unconfigure, *after* every test had passed. The controller
+    holds the dialog in `settings_dialog`, and the dialog had held the controller back
+    strongly, so the pair was a reference cycle that only the **cyclic** collector could
+    free -- and it freed the dialog's Qt-child page behind Qt's own back. Measured on the
+    pinned wheel: with four dialogs accumulated, 6 crashes out of 6; a single dialog was
+    clean, which is exactly why it hid from a one-test run and only bit the full suite.
+    Held weakly the dialog's lifetime is the Qt parent chain's alone and no cycle forms.
+
+    Asserted structurally, not by `gc.collect()`: the dialog is a live child of the work
+    page, so it is not collectable while the page is, and a collectability assertion
+    would pass for the wrong reason. What has to be true is that nothing on the dialog
+    *is* the controller by strong reference.
+    """
+    import weakref
+
+    ctrl, pg, page = _settings_page(qapp, tmp_path, monkeypatch)
+    dialog = ctrl.settings_dialog
+    assert isinstance(dialog._ctrl_ref, weakref.ReferenceType)
+    assert dialog._ctrl_ref() is ctrl
+    strong = [name for name, value in vars(dialog).items() if value is ctrl]
+    assert not strong, f"the dialog strongly references the controller via {strong}"
+
+
 # -- teardown: ruling R-T4-shutdown ------------------------------------------- #
 
 def test_closing_the_window_drains_the_job_before_the_widgets_go(qapp, tmp_path, monkeypatch):

@@ -42,6 +42,11 @@ FLUENT_INTERNALS: dict[str, set[str]] = {
     "Expander": {"QWidget"},
     "ComboBox": {"QWidget", "QFrame", "QListView", "QScrollBar"},
     "TextEdit": {"QWidget", "QScrollBar", "QTextEdit"},
+    # Task 6's settings page scrolls 83 fields through one of these. Measured at
+    # FluentQt 1.11.2 with every section expanded: 4 `QWidget`s (the
+    # `qt_scrollarea_viewport` plus the binding's own bar hosts) and no `QScrollBar`
+    # class of Qt's at all, because the wheel paints its own.
+    "ScrollView": {"QWidget"},
 }
 
 #: Module-level `fluentqt` names that are functions or enums rather than widget
@@ -103,6 +108,25 @@ def test_the_window_content_itself_is_a_fluent_surface(qapp):
     content = window.contentWidget()
     assert content is not None and _is_fluent(content), (
         f"window content is {type(content).__name__}, not a Fluent surface")
+
+
+def test_the_settings_page_adds_no_bare_surface_of_its_own(qapp):
+    """Task 6 puts 83 fields behind a `ScrollView` and five `Expander`s inside a dialog.
+    The dialog is opened here rather than assumed: the table above licenses only the
+    wheel's own internals, and this is what makes an app-authored bare `QWidget` in the
+    scrollable body -- the one place the page could hide one -- fail the commit."""
+    app_obj, window = main.build_app([])
+    window.controller.work_page.settings_requested.emit()
+    dialog = window.controller.settings_dialog
+    assert _is_fluent(dialog.page), f"the settings page is a {type(dialog.page).__name__}"
+    offenders = []
+    for widget in dialog.findChildren(QWidget):
+        if _is_fluent(widget) or isinstance(widget, QDialog):
+            continue
+        if type(widget).__name__ not in FLUENT_INTERNALS.get(_owner(widget) or "", ()):
+            offenders.append(f"{_owner(widget)} owns a {type(widget).__name__} "
+                             f"({widget.objectName() or '<unnamed>'}) that is not Fluent")
+    assert not offenders, "\n".join(offenders)
 
 
 def test_app_only_touches_the_reviewed_fluent_surface():

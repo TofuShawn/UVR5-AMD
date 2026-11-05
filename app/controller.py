@@ -3,7 +3,9 @@
 Everything else in `app/` takes one of those as a given. This module owns the pairing:
 it builds the `Catalog`, loads `Settings`/`Selections`, constructs the `WorkPage`, and
 connects the page's `run_requested` to the single assembly path (`session.assemble`) and
-the single worker (`page.job.start`). Two rules live here and nowhere else:
+the single worker (`page.job.start`). Its third job is the settings dialog: the page
+edits the same two objects this root holds, so a save here is what the next run
+assembles from. Two rules live here and nowhere else:
 
 * **Exactly one `Job`** (ruling R-T4-onejob). It is the page's `job` attribute, built once
   when the page is built, and this module is the only place that starts it. No second
@@ -14,18 +16,78 @@ the single worker (`page.job.start`). Two rules live here and nowhere else:
 """
 from __future__ import annotations
 
+import weakref
 from pathlib import Path
 
 import catalog
+import fluentqt
 import plan
 import separate_cli
 import selections as selections_module
 import settings as settings_module
-from app import job, session, work_page
+from PySide6.QtWidgets import QDialog, QVBoxLayout
+
+from app import job, session, settings_page, work_page
+
+
+class SettingsDialog(QDialog):
+    """The shell around `SettingsPage` until Task 7 delivers `app/dialogs.py`.
+
+    A plain `QDialog` and not a `fluentqt.ContentDialog`, which is what the plan allows
+    for exactly this interval: Task 7 owns the dialog *shell* (title, primary/close
+    button vocabulary, the tier-3 params form, the failure reports), and a `ContentDialog`
+    wired here would be re-fitted there anyway. The guard in `tests/test_ui_surfaces.py`
+    treats a `QDialog` as an allowed surface for the same reason, and everything *inside*
+    this one is Fluent: the page is a `Card`, its fields are Fluent widgets.
+
+    Non-modal on purpose. `SettingsPage.refresh_tables` prints four fetch lines into the
+    page's own status box and a refused save is reported in the work page's console, so a
+    modal `exec()` loop would hide the output this dialog exists to produce -- and would
+    also stop the user watching a run they started before opening it.
+    """
+
+    def __init__(self, ctrl, *, settings_obj, selections_obj, parent=None):
+        super().__init__(parent)
+        # A weak reference to the controller, not a strong one. `Controller` holds this
+        # dialog in `self.settings_dialog`, so a strong `self.controller = ctrl` closes a
+        # Python cycle (controller -> dialog -> controller) that only the *cyclic*
+        # collector can free -- and pytest's `gc_collect_harder()` at unconfigure runs
+        # exactly that collector. Measured: with the strong back-reference the dialog and
+        # its page were collected there and the process died with heap corruption
+        # (`0xc0000374`) during "Garbage-collecting", 6 runs out of 6 once four dialogs
+        # had accumulated; a single dialog was clean, which is why it hides from a
+        # one-test run and bites the full suite. Held weakly, the dialog's lifetime is the
+        # Qt parent chain's alone, and the collector never finalises it behind Qt's back.
+        self._ctrl_ref = weakref.ref(ctrl)
+        self.setWindowTitle("Settings")
+        self.page = settings_page.SettingsPage(settings_obj=settings_obj,
+                                               selections_obj=selections_obj, parent=self)
+        self.save_button = fluentqt.Button("Save settings", self)
+        # Connected through a weak reference for the same reason as the back-reference
+        # above, and the same reason `SettingsPage` connects its own refresh button (see
+        # `settings_page._weak_slot`): a bound `self.save` held by the child button is a
+        # second dialog -> button -> bound-method -> dialog cycle.
+        self.save_button.clicked.connect(
+            settings_page._weak_slot(weakref.ref(self), "save"))
+        layout = QVBoxLayout(self)
+        layout.addWidget(self.page, 1)
+        layout.addWidget(self.save_button)
+
+    def save(self) -> list[str]:
+        ctrl = self._ctrl_ref()
+        if ctrl is None:
+            return []
+        return ctrl.save_settings(self.page, self)
 
 
 class Controller:
-    """Wires the page's two buttons to the assembly path and the worker thread."""
+    """Wires the page's buttons to the assembly path, the worker thread and the settings.
+
+    Three signals, three owners: `run_requested` assembles and starts the one `Job`,
+    `cancel_requested` asks that same `Job` to stop, and `settings_requested` opens the
+    settings dialog -- which does not construct a `Job` (R-T4-onejob) and does not fetch
+    anything until the user confirms inside `model_refresh`.
+    """
 
     def __init__(self, *, cat: catalog.Catalog | None = None,
                  st=None, selections=None):
@@ -37,6 +99,11 @@ class Controller:
                                              selections_obj=self.selections)
         self.work_page.run_requested.connect(self._on_run)
         self.work_page.cancel_requested.connect(self.work_page.job.request_cancel)
+        # The settings dialog, kept so it is not collected while it is on screen. One at a
+        # time: a second click re-raises the dialog it already opened rather than stacking
+        # another copy of 83 fields over the first.
+        self.settings_dialog: SettingsDialog | None = None
+        self.work_page.settings_requested.connect(self._on_settings_requested)
 
     # -- START ---------------------------------------------------------------- #
 
@@ -96,6 +163,53 @@ class Controller:
     def _refuse(self, text: str) -> None:
         """Say why nothing was started. No dialog, no traceback, no fake progress."""
         self.work_page.console.appendPlainText(text)
+
+    # -- SETTINGS -------------------------------------------------------------- #
+
+    def _on_settings_requested(self) -> None:
+        """One dialog, re-raised rather than stacked.
+
+        Built lazily: the page is 83 widgets, and a user who never opens it should not
+        pay for it at start-up -- which also keeps it out of `tests/test_ui_surfaces.py`'s
+        tree until something asks for it.
+        """
+        if self.settings_dialog is None:
+            self.settings_dialog = SettingsDialog(self, settings_obj=self.settings,
+                                                  selections_obj=self.selections,
+                                                  parent=self.work_page)
+        self.settings_dialog.show()
+        self.settings_dialog.raise_()
+
+    def save_settings(self, page, dialog) -> list[str]:
+        """Write what the page validated, then hand the new objects to every later reader.
+
+        The destination is the fork's own settings file -- `config_file()`, the same path
+        `load()` read at start-up. `apply(path)` takes the destination precisely so a test
+        can point the page somewhere else; nothing here writes a second format.
+
+        A refusal means the file was not touched and the dialog stays open with the
+        message in the console, because the user has to be able to fix the field. On
+        success the controller's two objects become the page's: the next START assembles
+        from *these*, so a saved change takes effect on the next run rather than after a
+        restart. The work page's reference follows, but `refresh_models()` is deliberately
+        **not** called: the Model combo is a per-run pick that may legitimately differ
+        from the persisted `*_model` selection, and re-populating it here would discard a
+        model the user chose and has not run yet.
+        """
+        messages = page.apply(settings_module.config_file())
+        console = self.work_page.console.appendPlainText
+        if messages:
+            # One line per message -- `apply` reports the first value the type system
+            # refused, and it names the field, which is what the user has to act on.
+            for line in messages:
+                console(line)
+            console("settings not saved: fix the field above and press Save again")
+            return messages
+        self.settings, self.selections = page.st, page.sel
+        self.work_page.selections = self.selections
+        console(f"settings saved to {settings_module.config_file()}")
+        dialog.close()
+        return messages
 
     # -- teardown ------------------------------------------------------------- #
 

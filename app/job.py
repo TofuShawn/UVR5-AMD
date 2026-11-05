@@ -121,8 +121,8 @@ class Job(QObject):
         The guard is `is_running()` on this single `Job`: it stops two runs from one
         instance, not two `Job` instances. Two live runs would share the export directory
         and the VRAM (Plan 1 measured a 76 MiB leak per separation), and worse,
-        `run_job` decides which files it wrote by diffing a pre-run snapshot of that
-        directory (`session.py:187`), so a second run into the same directory would
+        `run_job` decides which files it wrote by diffing its own `before` snapshot of
+        that directory (`session.run_job`), so a second run into the same directory would
         attribute the first's files to itself -- a reporting bug, not only a resource one.
 
         Deliberately not process-wide (ruling R-T4-onejob): no registry or lock is added,
@@ -243,10 +243,13 @@ class Job(QObject):
 
         It now mirrors `shutdown()`'s discipline: ask the thread, and touch `_started` only
         when it really finished. So True means *this call watched a live worker reach its
-        end*, and False means there was no live worker to drain (no job accepted right now).
-        The destroy-safety question is a different one and stays with `shutdown()` -- which
-        answers True when no thread was ever built -- or with `is_running()`, a report on the
-        thread that is safe to ask at any time.
+        end*. False has two causes and this helper does not tell them apart: there was no
+        live worker to drain (no job accepted right now), **or** the bound expired while a
+        live worker was still running -- `QThread.wait(ms)` returns False on that path too,
+        so a False never means "nothing was running". Reading it as the first would be
+        reading a timeout as an idle job. The destroy-safety question is a different one and
+        stays with `shutdown()` -- which answers True when no thread was ever built -- or
+        with `is_running()`, a report on the thread that is safe to ask at any time.
 
         It does not run the main thread's event loop, so a True return leaves the terminal
         signal the body posted still in the queue -- a caller that wants to observe it has to

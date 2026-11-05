@@ -2,8 +2,10 @@
 
 Layout is a Fluent `Card` because a plain QWidget would keep the native palette while
 its children follow the theme (spec §5.3). No NavigationView: the Python binding
-exposes no item/selection API (spec §5.2), so the arch switch is a `SelectorBar` and
-the settings page is a dialog opened from a button.
+exposes no item/selection API (spec §5.2), so the arch switch is a `Pivot` and the
+settings page is a dialog opened from a button. (It was a `SelectorBar` until ruling
+R-T6-archtabs measured that `SelectorBar` ellipsizes the third label to `m…` at every
+width -- see the note on the bar below.)
 
 One file per job, and that is the whole scope of the percentage: `session.run_job()`
 separates a single audio file and never passes `total_files`, and `Job.progress` carries
@@ -68,6 +70,7 @@ def device_summary(backend: backends.Backend) -> str:
 class WorkPage(fluentqt.Card):
     run_requested = Signal()
     cancel_requested = Signal()
+    settings_requested = Signal()
 
     def __init__(self, *, cat: catalog.Catalog, settings_obj, selections_obj, parent=None):
         super().__init__(parent)
@@ -91,12 +94,31 @@ class WorkPage(fluentqt.Card):
         root.addWidget(self.device_label)
         root.addWidget(self.compute_label)
 
-        self.arch_bar = fluentqt.SelectorBar(self)
+        self.arch_bar = fluentqt.Pivot(self)
         self._arch_names = self._archs()
         for arch in self._arch_names:
-            self.arch_bar.addItem(fluentqt.SelectorBarItem(arch))   # text-only form:
-            # SelectorBarItem('vr', parent) hits the same Shiboken overload defect as
+            self.arch_bar.addItem(fluentqt.PivotItem(arch))   # header-only form:
+            # PivotItem('vr', parent) hits the same Shiboken overload defect as
             # Expander('title') (spec §5.2.1), so the parent is never passed here.
+        # Ruling R-T6-archtabs. This bar was a `SelectorBar` and Task 5's launch
+        # photograph showed the third arch label ellipsized to `m…` at the 760 px
+        # default. Measured on the pinned wheel (four probes, offscreen, comparing the
+        # *painted* pixels to `fontMetrics.horizontalAdvance`, not to `itemGeometry`):
+        # `SelectorBar` elides `mdx` to `m…` at 520, 728, 1200 and 2000 px alike -- the
+        # elision is a rule of the control itself, so sizing it to content, bounding its
+        # width or widening the window cannot reach it. Its `itemGeometry` reports a 60 px
+        # rect for a 23 px label and still clips, which is why the geometry numbers are
+        # untrustworthy here. `Pivot` (already in the reviewed `UI_CLASSES`) paints all
+        # four labels in full at every width tested -- its `itemHeaderGeometry` matches
+        # the paint, so the geometry *is* honest for this control. The arch switch needs
+        # only headers plus `currentChanged`/`selectedIndex`; the model list lives in the
+        # combo below, so `Pivot`'s lack of a content setter (which rules it out for the
+        # settings sections) costs nothing here. The two sizing lines keep the bar at its
+        # own content height (44 px, not the 158 px band Task 5 photographed) and give it
+        # at least its content width; the labels stay `Catalog.archs()`' own strings --
+        # nothing abbreviated, filtered or renamed.
+        self.arch_bar.setFixedHeight(self.arch_bar.sizeHint().height())
+        self.arch_bar.setMinimumWidth(self.arch_bar.sizeHint().width())
         self.arch_bar.currentChanged.connect(self._on_arch_changed)
         self.arch_bar.setSelectedIndex(0)
         root.addWidget(self.arch_bar)
@@ -143,6 +165,13 @@ class WorkPage(fluentqt.Card):
         self.stop_button.clicked.connect(self.cancel_requested.emit)
         buttons.addWidget(self.start_button)
         buttons.addWidget(self.stop_button)
+        # The one entry to the settings page. It asks the controller for the dialog and
+        # does nothing else: the page itself (`app/settings_page.py`) owns the fields, and
+        # this page keeps no copy of them -- `Controller` hands it the same two objects it
+        # hands `session.assemble()`.
+        self.settings_button = fluentqt.Button("Settings", self)
+        self.settings_button.clicked.connect(self.settings_requested.emit)
+        buttons.addWidget(self.settings_button)
         root.addLayout(buttons)
 
         self.progress = fluentqt.ProgressBar(self)
