@@ -23,9 +23,17 @@ import fluentqt
 import selections as selections_module
 import settings as settings_module
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QVBoxLayout
+from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout
 
-from app import job
+from app import dialogs, job
+
+#: The page's own terminal vocabulary. These are the titles the terminal handlers speak
+#: to `_notify` with, and the seam the suite spies on: `Stopped` *is* the cancel surface
+#: (kind `cancelled`), and `Failed` is what a message the page cannot classify stays.
+#: The widget's own title comes from `app/dialogs.py`.
+DONE_TITLE = "Done"
+FAILED_TITLE = "Failed"
+CANCELLED_TITLE = "Stopped"
 
 #: arch -> the `Selections` field holding this arch's main model pick.
 MAIN_MODEL_FIELD = {"vr": "vr_model", "mdx": "mdx_net_model", "demucs": "demucs_model",
@@ -132,19 +140,19 @@ class WorkPage(fluentqt.Card):
         form.addWidget(fluentqt.Label("Input file", self))
         path_row = QHBoxLayout()
         self.input_edit = fluentqt.LineEdit(self)
-        browse = fluentqt.Button("Browse", self)
-        browse.clicked.connect(self._pick_input)
+        self.browse_input = fluentqt.Button("Browse", self)
+        self.browse_input.clicked.connect(self._pick_input)
         path_row.addWidget(self.input_edit)
-        path_row.addWidget(browse)
+        path_row.addWidget(self.browse_input)
         form.addLayout(path_row)
 
         form.addWidget(fluentqt.Label("Output directory", self))
         out_row = QHBoxLayout()
         self.output_edit = fluentqt.LineEdit(self)
-        out_btn = fluentqt.Button("Browse", self)
-        out_btn.clicked.connect(self._pick_output)
+        self.browse_output = fluentqt.Button("Browse", self)
+        self.browse_output.clicked.connect(self._pick_output)
         out_row.addWidget(self.output_edit)
-        out_row.addWidget(out_btn)
+        out_row.addWidget(self.browse_output)
         form.addLayout(out_row)
 
         self.params = fluentqt.Expander(self)                # string-first ctor raises
@@ -174,6 +182,16 @@ class WorkPage(fluentqt.Card):
         buttons.addWidget(self.settings_button)
         root.addLayout(buttons)
 
+        # Ruling R-T7-infobar. The band is a *layout*, not a widget: a plain QWidget here
+        # would keep the native palette (spec §5.3) and the surface census would rightly
+        # refuse it. A layout sibling of the console also cannot overlap it, which is the
+        # property the ruling asks for -- Task 5's bars laid out at (0,0) over the content,
+        # none ever closed, and a run with several left a pile that hid the output. An
+        # empty nested layout has no size, so a page with nothing to say pays nothing.
+        # `app/dialogs.py`'s queue puts at most one bar in it at a time.
+        self.notification_band = QVBoxLayout()
+        self.notification_band.setContentsMargins(0, 0, 0, 0)
+        root.addLayout(self.notification_band)      # between the buttons and the bar
         self.progress = fluentqt.ProgressBar(self)
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
@@ -252,17 +270,16 @@ class WorkPage(fluentqt.Card):
 
     def _pick_input(self) -> None:
         # Fluent has no file dialog in Python and `FluentMenu` is broken (spec §5.2),
-        # so paths come from Qt's own dialog. `getOpenFileName` returns (text, filter).
-        chosen, _ = QFileDialog.getOpenFileName(
-            self, "Choose an audio file", self.input_edit.text() or str(Path.home()),
-            "Audio (*.wav *.mp3 *.flac *.ogg *.m4a *.opus *.aac *.aiff *.wma)")
+        # so paths come from Qt's own dialog -- through `dialogs.Pickers`, which is the
+        # one place that says which dialog, with what caption and what filter.
+        chosen = dialogs.Pickers.input_file(
+            self, self.input_edit.text() or str(Path.home()))
         if chosen:
             self.input_edit.setText(str(Path(chosen)))
 
     def _pick_output(self) -> None:
-        chosen = QFileDialog.getExistingDirectory(
-            self, "Choose an output directory",
-            self.output_edit.text() or str(Path.home()))
+        chosen = dialogs.Pickers.output_dir(
+            self, self.output_edit.text() or str(Path.home()))
         if chosen:
             self.output_edit.setText(str(Path(chosen)))
 
@@ -273,28 +290,43 @@ class WorkPage(fluentqt.Card):
         self.set_busy(False)
         for path in written:
             self.console.appendPlainText(f"wrote {path} ({path.stat().st_size} bytes)")
-        self._notify("Done", f"{len(written)} file(s) written")
+        self._notify(DONE_TITLE, f"{len(written)} file(s) written")
 
     def _on_failed(self, text: str) -> None:
         self.set_busy(False)
-        # Task 5 has no failure vocabulary yet: show the engine's own words verbatim.
-        # Task 7 replaces this body with dialogs.report_failure(_classify_failure(text)),
-        # and `_classify_failure` stays here because it is a property of the page's text.
-        self._notify("Failed", text)
+        # The console is the permanent record and the surface is the one that gets your
+        # attention: both get the engine's own words, never a paraphrase. Task 5 showed
+        # these lines in the console only; the category comes from `_classify_failure`,
+        # which answers None for text nobody recognises -- and that stays `Failed`.
+        self.console.appendPlainText(f"failed: {text}")
+        self._notify(FAILED_TITLE, text)
 
     def _on_cancelled(self, text: str) -> None:
         self.set_busy(False)
         self.progress.setValue(0)
-        self._notify("Stopped", text)
+        self._notify(CANCELLED_TITLE, text)
 
     def _notify(self, title: str, text: str):
-        bar = fluentqt.InfoBar(parent=self)     # setTitle/setMessage/show are the real
-        bar.setTitle(title)                      # names; InfoBar.show_message does not
-        bar.setMessage(text)                     # exist -- pinned by Task 1.
-        # Measured at 1.11.2: a parented InfoBar keeps Qt's 100x30 default size, which
-        # clips both labels to an unreadable box in the corner. `adjustSize()` is the
-        # binding's own size-to-content call (600x50 with these two labels), so the
-        # message a user has to read is actually readable. Task 7 replaces this body.
-        bar.adjustSize()
-        bar.show()
-        return bar
+        """Hand a terminal message to the queue in `app/dialogs.py`.
+
+        Ruling R-T7-infobar. This is the page's one notification seam, and the queue is
+        what makes it honest: `InfoBar` has no auto-dismiss on this wheel (no
+        `show_message`, no `setDuration` -- pinned by Task 1), so without a queue a bar
+        landed at (0,0) over the content and stayed for ever. One bar goes in
+        `notification_band` at a time, and it goes away on its own or when the user
+        presses its close button.
+
+        The page's title chooses the surface, and only from what the page actually knows:
+        a cancel is the `cancelled` kind because it arrived on `Job.cancelled` (a signal,
+        never a guess); a failure is one of the three classified kinds only if its own
+        text says so, and otherwise keeps the plain `Failed` surface with the engine's
+        words as the message.
+        """
+        kind = None
+        if title == CANCELLED_TITLE:
+            kind = "cancelled"
+        elif title == FAILED_TITLE:
+            kind = _classify_failure(text)
+        if kind is None:
+            return dialogs.notify(title, text, parent=self)
+        return dialogs.report_failure(kind, text, parent=self)

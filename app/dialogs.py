@@ -1,0 +1,401 @@
+"""Where a run stops and a human has to answer.
+
+Three surfaces, all of them consequences of decisions already made:
+
+* tier 3 (`UnknownModelParamsError`) -- the fork's GUI-free path refuses with a
+  message naming the hash and the file it wanted; the GUI is the place that message
+  turns into a form (spec §4.2, R-T10-params tier 3).
+* the four abnormal states the design requires distinct surfaces for (§8): VRAM
+  exhaustion, a missing weight, ORT's silent CPU fallback, and a user cancel. Ruling
+  R-T7-infobar adds the *discipline*: one at a time, in a band the page reserves for it,
+  and gone on its own. Measured on 1.11.2, `InfoBar` has no `show_message`, no
+  `setDuration` and no auto-dismiss timer of any kind, and `Flyout` -- which does carry
+  `closePolicy`/`aboutToShow`/`closed` -- cannot host one from Python: `Flyout(view)`
+  constructs but `show()` leaves it invisible (it wants the C++
+  `Flyout(view, position, anchor, ...)` factory), and `Flyout(view, anchor)` raises
+  `TypeError: Flyout() takes at most 1 argument (2 given)`, the same Shiboken overload
+  hole as `Expander('title', parent)`. So the dismissal is owned here.
+* file and directory picking -- `QFileDialog`, because Fluent-Qt's Python binding
+  has no file dialog and `FluentMenu` cannot even construct (spec §5.2).
+
+Nothing in this module runs a job or touches the catalog except through
+`Catalog.write_params`, and nothing here invents a Fluent verb: `setContent` (not
+`setContentWidget`), `setTitle`, `setPrimaryButtonText`, `setCloseButtonText`, `result()`
+and `closed` are the names Task 1 pinned.
+"""
+from __future__ import annotations
+
+import collections
+import math
+from pathlib import Path
+
+import fluentqt
+from PySide6.QtCore import QObject, QTimer
+from PySide6.QtWidgets import QFileDialog, QVBoxLayout
+
+#: The per-arch param fields the legacy popups collected. This is the field list from
+#: `UVR.py`'s popup bodies, read before those bodies are deleted in Task 8 -- so this
+#: table is the last copy, and `tests/test_dialogs.py` compares it against `ast` over the
+#: source (two of the four verbs the brief named do not exist: there is no
+#: `pop_up_mdx_param` -- the MDX popup is `pop_up_mdx_model` at `UVR.py:4560` -- and there
+#: is no `pop_up_onnx_param` at all, because an `.onnx` model goes through that same body,
+#: which reads the graph at `:4570-4575` and writes the `mdx` row).
+#:
+#: Every key here is a key the engine reads out of `spec.model_data`, because a key a
+#: popup collected that `plan.py` never looks up is a *silent* tier-3 failure: the form
+#: appears to save and `resolve()` is still blind.
+PARAM_FIELDS: dict[str, tuple[tuple[str, type], ...]] = {
+    # `pop_up_vr_param.pull_data` (`UVR.py:4874-4889`). Engine reads: `vr_model_param`
+    # (`plan.py:485`, which then opens `lib_v5/vr_network/modelparams/<name>.json` -- the
+    # `dimension_c`/`dim_f`/`n_fft` family lives *inside that file*, not in this answer),
+    # `primary_stem` (`plan.py:516/560`, `catalog.py:644`), `nout`+`nout_lstm`
+    # (`plan.py:497-498`), and the karaoke trio via the constants at
+    # `gui_data/constants.py:83-85` (`plan.py:599-602`).
+    "vr": (("vr_model_param", str), ("primary_stem", str), ("nout", int),
+           ("nout_lstm", int), ("is_karaoke", bool), ("is_bv_model", bool),
+           ("is_bv_model_rebalanced", float)),
+    # `pop_up_mdx_model.pull_data` (`UVR.py:4706-4715`). Engine reads: `compensate`
+    # (`plan.py:546/552` -- indexed, not `.get()`, so a row without it raises),
+    # `mdx_dim_f_set`/`mdx_dim_t_set`/`mdx_n_fft_scale_set`/`primary_stem`
+    # (`plan.py:557-560`), the karaoke trio (`plan.py:599-602`).
+    "mdx": (("compensate", float), ("mdx_dim_f_set", int), ("mdx_dim_t_set", int),
+            ("mdx_n_fft_scale_set", int), ("primary_stem", str),
+            ("is_karaoke", bool), ("is_bv_model", bool),
+            ("is_bv_model_rebalanced", float)),
+    # `pop_up_mdx_c_param.pull_data` (`UVR.py:4749-4751`). Engine reads: `config_yaml`
+    # (`plan.py:516`, `catalog.py:651`), `is_roformer` (`plan.py:592`). Unreachable in
+    # this fork -- `mdx_c` is a blocked arch (`catalog.py:104`, refused at `:427`), so no
+    # spec can carry it; kept because this is the last copy of the body.
+    "mdx_c": (("config_yaml", str), ("is_roformer", bool)),
+    # `pop_up_apollo_param.pull_data` (`UVR.py:4807-4808`): `config_yaml` and nothing
+    # else. Apollo is the arch whose tier-3 path is still wired in `UVR.py` itself
+    # (`get_model_data_from_popup`, `:702-715`). Engine reads `config_yaml`
+    # (`catalog.py:651-652`, which builds `config_path` from it).
+    "apollo": (("config_yaml", str),),
+}
+
+#: Values upstream's own popup pre-sets, so a box the tkinter dialog also pre-sets is not
+#: left for the user to guess: `primary_stem` 'Vocals' (`UVR.py:4860`, and `VOCAL_STEM` at
+#: `:4565`), `compensate` 1.035 (`:4608`), `is_bv_model_rebalanced` 0 (`:4610`, `:4864`).
+#: Everything else starts blank -- including the three MDX dims, which upstream derives
+#: from the checkpoint or ONNX graph it loaded (`:4572-4585`). This GUI does not open
+#: weight files, so pre-filling them would be inventing a size the engine then runs with.
+FIELD_DEFAULTS: dict[str, object] = {
+    "primary_stem": "Vocals",
+    "compensate": 1.035,
+    "is_bv_model_rebalanced": 0.0,
+}
+
+#: The one pair that is collected *together or not at all*: `UVR.py:4868-4870` disables
+#: the two boxes until the "VR 5.1 model" checkbox is on and `:4872-4889` omits both keys
+#: when it is off, and `plan.py:497` reads them only `if "nout" in params and "nout_lstm"
+#: in params` -- presence of both is what sets `is_vr_51_model` (`:499`). So a blank pair
+#: is left out of the answer, and half a pair is refused: the engine could not see it.
+OPTIONAL_KEYS = frozenset({"nout", "nout_lstm"})
+
+FAILURE_KINDS = ("vram", "missing_weight", "cpu_fallback", "cancelled")
+
+_TITLE = {"vram": "Out of video memory",
+          "missing_weight": "Weight file not found",
+          "cpu_fallback": "Not running on the GPU",
+          "cancelled": "Stopped by user"}
+
+#: How long a notification stays up. The app's own number, not the wheel's: `InfoBar`
+#: exposes no duration at all, so without this line a bar would sit on the page until the
+#: user pressed its close button -- and Task 5's pile was exactly that.
+DEFAULT_DISMISS_MS = 8000
+
+
+class Notifier(QObject):
+    """At most one notification on screen, and every one of them goes away.
+
+    A `QObject` rather than a plain class for one measured reason: a slot connected to a
+    bound method is held *weakly* by the binding when the receiver is a `QObject`, so the
+    `InfoBar` cannot reach back and hold the queue that holds it. That cycle is what the
+    crash in `app/controller.py`'s docstring is about, and these bars are transient
+    surfaces named nothing like `Dialog`, so no AST guard in the suite would have looked.
+
+    The band (a `QVBoxLayout` the host reserves) is where a bar goes when it is this
+    queue's turn: a layout sibling cannot overlap the console or another notification,
+    which is the property R-T7-infobar asks for. With no band the bar is a top-level
+    window instead -- still one at a time.
+    """
+
+    def __init__(self, dismiss_ms: int = DEFAULT_DISMISS_MS):
+        super().__init__()
+        self.dismiss_ms = dismiss_ms
+        self._pending: collections.deque = collections.deque()
+        self._showing: tuple | None = None           # (bar, band, dismiss_ms)
+        self._timer = QTimer(self)                  # one timer for the whole queue: it
+        self._timer.setSingleShot(True)             # always aims at the current bar
+        self._timer.timeout.connect(self._retire)
+
+    # -- posting -------------------------------------------------------------- #
+
+    def post(self, title: str, text: str, *, parent=None, band=None,
+             dismiss_ms: int | None = None) -> fluentqt.InfoBar:
+        """Build the bar now and return it; showing it is the queue's decision."""
+        if band is None:
+            band = _band_for(parent)
+        bar = fluentqt.InfoBar(parent)
+        bar.setTitle(title)
+        bar.setMessage(text)
+        # Measured at 1.11.2: an InfoBar's own sizeHint is 600x50 while a parented one
+        # keeps Qt's default until something sizes it, and a 0-height bar in a band is
+        # the (0,0)-bug in a new costume. Height comes from the hint; width comes from
+        # the band, which is what a full-width line wants.
+        bar.setFixedHeight(bar.sizeHint().height())
+        bar.closed.connect(self._retire)
+        ms = self.dismiss_ms if dismiss_ms is None else dismiss_ms
+        self._pending.append((bar, band, ms))
+        self._pump()
+        return bar
+
+    def current(self) -> "fluentqt.InfoBar | None":
+        return None if self._showing is None else self._showing[0]
+
+    def pending_count(self) -> int:
+        return len(self._pending)
+
+    # -- the one-at-a-time discipline ----------------------------------------- #
+
+    def _pump(self) -> None:
+        if self._showing is not None or not self._pending:
+            return
+        bar, band, ms = self._pending.popleft()
+        self._showing = (bar, band, ms)
+        if band is not None:
+            band.insertWidget(0, bar)
+        bar.show()
+        if ms > 0:
+            self._timer.start(ms)
+
+    def _retire(self) -> None:
+        """Close the current bar, give the slot back, and let the next one through.
+
+        Idempotent and identity-checked, because two things call it: the timer and the
+        bar's own close button (`closed` fires on that press -- measured; neither `close()`
+        nor `setIsOpen(False)` emits it, which is why the timer cannot lean on them).
+        """
+        if self._showing is None:
+            return
+        bar, band, _ms = self._showing
+        self._showing = None
+        self._timer.stop()
+        if band is not None:
+            band.removeWidget(bar)
+        bar.hide()
+        # Measured: `deleteLater()` is not honoured inside `processEvents()` (Qt only
+        # processes deferred deletes when control returns to a *real* loop), so a
+        # deleteLater'd bar stays alive past the last reference and a leak here would be
+        # invisible to the suite. Dropping the parent hands ownership back to Python, and
+        # the widget goes now.
+        bar.setParent(None)
+        self._pump()
+
+
+def _band_for(parent) -> "QVBoxLayout | None":
+    """The notification band a host offers, if it has one.
+
+    `WorkPage` keeps one; a parent that does not is treated as a floating surface. Read
+    by attribute on purpose: `report_failure(kind, text, parent=...)` is the interface the
+    brief names, and a host that reserves space should not have to pass its layout twice.
+    """
+    return getattr(parent, "notification_band", None)
+
+
+#: The app-wide queue. One at a time is a property of the *screen*, not of a page, and a
+#: run can produce a failure while a Done bar is still up.
+DEFAULT_NOTIFIER = Notifier()
+
+
+def notify(title: str, text: str, parent=None, *, band=None,
+           dismiss_ms: int | None = None) -> fluentqt.InfoBar:
+    """Say something that is not one of the four abnormal states (`Done`, or a refusal
+    the failure vocabulary has no category for)."""
+    return DEFAULT_NOTIFIER.post(title, text, parent=parent, band=band,
+                                 dismiss_ms=dismiss_ms)
+
+
+def report_failure(kind: str, text: str, parent=None, *, band=None,
+                   dismiss_ms: int | None = None) -> fluentqt.InfoBar:
+    """The four abnormal states, each with its own title and the engine's own words as
+    its message.
+
+    `kind` comes from `work_page._classify_failure`, which answers `None` for text it
+    does not recognise -- and `None` is not a kind here, because guessing a category is
+    how a crash gets labelled a cancel. A caller that has nothing to classify calls
+    `notify`.
+    """
+    if kind not in FAILURE_KINDS:
+        raise ValueError(f"unknown failure kind {kind!r}; known: {FAILURE_KINDS}")
+    return notify(_TITLE[kind], text, parent, band=band, dismiss_ms=dismiss_ms)
+
+
+class ModelParamsDialog(fluentqt.ContentDialog):
+    """The tier-3 refusal, as a form.
+
+    Named `*Dialog` so the lifetime guard in `tests/test_work_page.py` scans it, and
+    built as a `ContentDialog` subclass because the answer it collects belongs to the
+    field list that produced it: `collected_params` coerces by the *declared* type, and
+    a `NumberBox` answers a float for a key the engine indexes as an int.
+
+    No connection here captures `self`: the dialog is answered through Fluent's own
+    buttons and read back after `exec()` returns, which is the only shape in which the
+    controller can call `collected_params(dlg)` on the line after asking.
+    """
+
+    def __init__(self, spec, catalog_obj, fields, parent=None):
+        super().__init__(parent)
+        self.spec = spec
+        #: The catalog that asked. Kept so the object the answer is written into travels
+        #: with the form that collected it -- `write_answer(dlg.catalog, dlg.spec, ...)`.
+        self.catalog = catalog_obj
+        self.fields = tuple(fields)
+        self.editors: dict[str, object] = {}
+        host = fluentqt.Card(self)                   # a widget, never a layout: Fluent's
+        body = QVBoxLayout(host)                    # setContent takes exactly one
+        self.message_label = fluentqt.Label(spec.missing_message, host)
+        body.addWidget(self.message_label)
+        for name, typ in self.fields:
+            editor = _make_editor(name, typ, host)
+            if typ is not bool:
+                body.addWidget(fluentqt.Label(name, host))
+            body.addWidget(editor)
+            self.editors[name] = editor
+        self.setContent(host)                        # `setContent`, not
+        self.setTitle(f"{spec.arch} params for {spec.name}")
+        self.setPrimaryButtonText("Save params")     # both verbs pinned by Task 1's
+        self.setCloseButtonText("Cancel")            # name assertions
+
+
+def _make_editor(name: str, typ: type, parent):
+    if typ is bool:
+        return fluentqt.CheckBox(name, parent)       # the label is the field's own name
+    if typ in (int, float):
+        editor = fluentqt.NumberBox(parent)
+        default = FIELD_DEFAULTS.get(name)
+        if default is not None:
+            editor.setValue(default)
+        return editor
+    editor = fluentqt.LineEdit(parent)
+    default = FIELD_DEFAULTS.get(name)
+    if default is not None:
+        editor.setText(str(default))
+    return editor
+
+
+def _is_blank(editor) -> bool:
+    """No answer given yet. A checkbox always answers (`False` is a decision), a cleared
+    `NumberBox` reads back NaN -- which is also how it paints: an empty field, measured --
+    and an empty line edit is empty."""
+    if isinstance(editor, fluentqt.CheckBox):
+        return False
+    if isinstance(editor, fluentqt.NumberBox):
+        return math.isnan(editor.value())
+    return not editor.text().strip()
+
+
+def model_params_dialog(spec, cat, *, offer: bool = True, parent=None):
+    """Collect the params a tier-3 model is missing, or say why nothing can be collected.
+
+    `spec.missing_message` is shown verbatim: the hash and the wanted filename are the
+    payload, and paraphrasing them is what made the CLI path unusable for a user.
+
+    This builds the form; it does not run it. `offer=False` hands it back unshown, which
+    is what a caller that means to `exec()` it needs (a `ContentDialog` is modal by
+    construction -- measured -- and the tier-3 branch runs before any worker thread
+    exists, so a nested loop cannot interleave with a job; see `Controller._offer_params`).
+    """
+    fields = PARAM_FIELDS.get(spec.arch)
+    if fields is None:
+        notify(f"{spec.arch}: no params template",
+               "app/dialogs.py has no field list for this arch, so there is nothing for "
+               "a form to collect. Write the JSON the message above names, then press "
+               "START again.", parent=parent)
+        return None
+    dlg = ModelParamsDialog(spec, cat, fields, parent)
+    if offer:
+        dlg.show()
+    return dlg
+
+
+def collected_params(dlg) -> dict | None:
+    """Read the editors back, but only if the user pressed the primary button.
+
+    `result()` reports Fluent's own code -- `ResultNone` / `ResultPrimary` /
+    `ResultSecondary`, measured as plain ints 0/1/2 on this wheel, which is why this is
+    `!=` and not `is`. A dismissal is not an error and must not be reported as one: the
+    caller returns quietly and the run stays unresolved. A half-filled answer is neither:
+    `unanswered_fields` refuses it, because a JSON with a hole in it saves cleanly and then
+    fails inside `plan.build`, with a message that blames the engine.
+    """
+    if dlg is None or dlg.result() != fluentqt.ContentDialog.ResultPrimary:
+        return None
+    if unanswered_fields(dlg):
+        return None
+    out: dict[str, object] = {}
+    for name, typ in dlg.fields:
+        editor = dlg.editors[name]
+        if typ is bool:
+            out[name] = bool(editor.isChecked())
+            continue
+        if isinstance(editor, fluentqt.NumberBox):
+            if _is_blank(editor):                     # optional and left alone
+                continue
+            value = editor.value()
+            out[name] = int(value) if typ is int else float(value)
+        else:
+            text = editor.text().strip()
+            if not text:
+                continue
+            out[name] = text                          # verbatim, including `config_yaml`
+    return out
+
+
+def unanswered_fields(dlg) -> list[str]:
+    """The fields that have no answer yet, in table order -- empty when the answer is
+    complete.
+
+    `OPTIONAL_KEYS` is the one exception worth a test: upstream disables those two boxes
+    and omits both keys together, and `plan.py:497` only reads them as a pair, so a form
+    with one filled and one not must refuse rather than drop the number the user typed.
+    """
+    if dlg is None:
+        return []
+    blank = {name for name, _typ in dlg.fields if _is_blank(dlg.editors[name])}
+    missing = blank - OPTIONAL_KEYS
+    if (blank & OPTIONAL_KEYS) and (OPTIONAL_KEYS - blank):
+        missing |= blank & OPTIONAL_KEYS
+    return [name for name, _typ in dlg.fields if name in missing]
+
+
+def write_answer(cat, spec, params: dict) -> Path:
+    """Persist a tier-3 answer where `resolve()` looks first (writable_dir, tier 1)."""
+    return cat.write_params(spec.arch, spec.hash, params)
+
+
+class Pickers:
+    """The two native dialogs this binding has no equivalent of (spec §5.2).
+
+    `FluentMenu` cannot construct and the wheel ships no file dialog from Python, so
+    Qt's own is used -- here, in one place, so the suite can say what was asked for
+    without hanging on a modal dialog it cannot answer.
+    """
+
+    #: Same extensions the CLI accepts for input audio.
+    AUDIO_FILTER = "Audio (*.wav *.mp3 *.flac *.ogg *.m4a *.opus *.aac *.aiff *.wma)"
+
+    @staticmethod
+    def input_file(parent=None, start: str = "") -> "str | None":
+        """The chosen path, or None. A refused pick is not a path."""
+        chosen, _filter = QFileDialog.getOpenFileName(
+            parent, "Choose an audio file", start or str(Path.home()),
+            Pickers.AUDIO_FILTER)
+        return chosen or None
+
+    @staticmethod
+    def output_dir(parent=None, start: str = "") -> "str | None":
+        chosen = QFileDialog.getExistingDirectory(
+            parent, "Choose an output directory", start or str(Path.home()))
+        return chosen or None

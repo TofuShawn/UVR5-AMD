@@ -298,7 +298,10 @@ class SettingsPage(fluentqt.Card):
 
         All three land in the status box that was built for exactly this. Nothing here
         weakens the confirmation rule: the page still passes `confirmed=False`, and a real
-        refresh still needs the CLI flag or Task 7's confirm dialog.
+        refresh still needs the CLI flag -- Task 7 shipped the params form, the failure
+        surfaces and the pickers, and no confirmation dialog (it is not in that brief's
+        interfaces, and inventing a yes/no surface for a network call is not this page's
+        call to make).
         """
         try:
             self.refresh_tables(confirmed=False)

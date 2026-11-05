@@ -27,18 +27,19 @@ import selections as selections_module
 import settings as settings_module
 from PySide6.QtWidgets import QDialog, QVBoxLayout
 
-from app import job, session, settings_page, work_page
+from app import dialogs, job, session, settings_page, work_page
 
 
 class SettingsDialog(QDialog):
-    """The shell around `SettingsPage` until Task 7 delivers `app/dialogs.py`.
+    """The shell around `SettingsPage` -- still a `QDialog`, and still on purpose.
 
-    A plain `QDialog` and not a `fluentqt.ContentDialog`, which is what the plan allows
-    for exactly this interval: Task 7 owns the dialog *shell* (title, primary/close
-    button vocabulary, the tier-3 params form, the failure reports), and a `ContentDialog`
-    wired here would be re-fitted there anyway. The guard in `tests/test_ui_surfaces.py`
-    treats a `QDialog` as an allowed surface for the same reason, and everything *inside*
-    this one is Fluent: the page is a `Card`, its fields are Fluent widgets.
+    Task 7 delivered `app/dialogs.py` (the tier-3 form, the failure surfaces, the
+    pickers) and did not take this shell over: a plain `QDialog` and not a
+    `fluentqt.ContentDialog` is what the plan allows for the settings page, because
+    `ContentDialog` is modal and the page has to keep printing while it is open. The
+    guard in `tests/test_ui_surfaces.py` treats a `QDialog` as an allowed surface for the
+    same reason, and everything *inside* this one is Fluent: the page is a `Card`, its
+    fields are Fluent widgets.
 
     Non-modal on purpose. `SettingsPage.refresh_tables` prints four fetch lines into the
     page's own status box and a refused save is reported in the work page's console, so a
@@ -147,10 +148,7 @@ class Controller:
                                     # console widget is where a GUI user reads them.
                                     printer=page.console.appendPlainText)
         except catalog.UnknownModelParamsError as exc:
-            # Tier 3: the model needs params nobody has supplied. Task 7 replaces this
-            # dismissal with the params dialog; until then the catalog's own message is
-            # shown whole, because it names the hash and the JSON it wanted.
-            page.show_cancelled(str(exc))
+            self._offer_params(exc.spec)
             return
         except (catalog.CatalogError, ValueError, plan.PlanError) as exc:
             self._refuse(f"not started: {exc}")
@@ -163,6 +161,63 @@ class Controller:
     def _refuse(self, text: str) -> None:
         """Say why nothing was started. No dialog, no traceback, no fake progress."""
         self.work_page.console.appendPlainText(text)
+
+    # -- TIER 3 --------------------------------------------------------------- #
+
+    def _offer_params(self, spec) -> None:
+        """Turn the catalog's tier-3 refusal into a form, then run what it answered.
+
+        Modal, and that is the measured shape rather than a preference: a `ContentDialog`
+        reports `isModal()` True on this wheel, and this branch runs **before**
+        `job.start()` -- no worker thread exists yet, so a nested loop cannot interleave
+        with a run and R-T4-onejob is untouched. `exec()` is also what makes reading the
+        answer on the line after asking honest: `collected_params` asks for `result()`,
+        and a modeless dialog would still report 0 (`ResultNone`) with the user's typing
+        still to come.
+
+        Three exits, and only one of them is worth a message:
+
+        * no field list for the arch -> `model_params_dialog` already said so through the
+          notification queue, and the catalog's own line goes to the console;
+        * dismissed (the close button, Escape, or the window) -> nothing is written and
+          nothing is reported: a change of mind is not a failure, and the run stays
+          unresolved exactly as the CLI left it;
+        * answered -> `write_params` into `writable_dir`, where `resolve()` looks first
+          (R-T10-writable: preferring the older weights-dir copy would make this popup
+          read as "it did not save"), then START again with what the user said.
+
+        Pressing Save on a half-empty form is the fourth case, and it is the one the
+        refusal names: `unanswered_fields` lists the boxes, because a JSON with a hole in
+        it would fail later, inside `plan.build`, with a message that blames the engine.
+        """
+        page = self.work_page
+        dlg = dialogs.model_params_dialog(spec, self.catalog, offer=False, parent=page)
+        if dlg is None:
+            page.show_cancelled(spec.missing_message)
+            return
+        try:
+            dlg.exec()
+            dismissed = dlg.result() != fluentqt.ContentDialog.ResultPrimary
+            params = dialogs.collected_params(dlg)
+            if params is not None:
+                written = dialogs.write_answer(self.catalog, spec, params)
+                page.console.appendPlainText(f"params written to {written}")
+                self._on_run()
+                return
+            if not dismissed:
+                page.console.appendPlainText(
+                    "params not written: this form still needs a value for "
+                    + ", ".join(dialogs.unanswered_fields(dlg))
+                    + " -- press START again and fill them in")
+        finally:
+            # Detach, whatever the answer was. The form is built with the page as its
+            # parent, so a dialog that stays parented is a Card, seven editors and a
+            # Catalog reference the page holds for the rest of the session -- one per
+            # refusal, and a user who mistypes an answer gets several. Dropping the
+            # parent hands ownership back to Python, and the local goes with it; measured
+            # on this wheel, `deleteLater()` would not have gone before the next real
+            # event loop, so a census taken after this line would still see it.
+            dlg.setParent(None)
 
     # -- SETTINGS -------------------------------------------------------------- #
 

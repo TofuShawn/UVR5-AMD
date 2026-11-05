@@ -19,6 +19,9 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import catalog
+import fluentqt
+import separate_cli
 from PySide6.QtWidgets import QDialog, QWidget
 
 from app import main
@@ -39,41 +42,54 @@ from tests.test_fluent_binding import UI_CLASSES
 FLUENT_INTERNALS: dict[str, set[str]] = {
     "Window": {"QWidget"},
     "TitleBar": {"QWidget"},
-    "Expander": {"QWidget"},
     "ComboBox": {"QWidget", "QFrame", "QListView", "QScrollBar"},
     "TextEdit": {"QWidget", "QScrollBar", "QTextEdit"},
 }
 
-#: The `ScrollView` Task 6 scrolls the settings body through needs a **name**-keyed
-#: licence, not a class-keyed one. Its internals are `QWidget`s (measured offscreen on
-#: the built dialog, every section expanded: `qt_scrollarea_viewport`,
-#: `qt_scrollarea_hcontainer`, `qt_scrollarea_vcontainer` -- Qt's own scroll-area parts --
-#: and `FluentScrollViewTransparentCorner`, the binding's corner host; and no
-#: `QScrollBar` class of Qt's at all, because the wheel paints its own), and `QWidget` is
-#: exactly the class this guard exists to refuse. Licensing the *class* would license the
-#: mistake the docstring above says it catches: `SettingsPage._body` sits at
-#: body -> viewport(`QWidget`) -> `ScrollView`, so swapping the `Card` for a bare
-#: `QWidget` reads as "ScrollView owns a QWidget" and the suite stays green. Naming each
-#: host means an app-authored widget -- which is never named `qt_scrollarea_*` -- cannot
-#: pass for one.
-SCROLLAREA_INTERNALS = frozenset({
-    "qt_scrollarea_viewport",
-    "qt_scrollarea_hcontainer",
-    "qt_scrollarea_vcontainer",
-    "FluentScrollViewTransparentCorner",
-})
+#: The `ScrollView` Task 6 scrolls the settings body through and the `Expander` it puts
+#: each section in need a **name**-keyed licence, not a class-keyed one. Their internals
+#: are `QWidget`s -- measured offscreen on the built dialog, every section expanded:
+#: `qt_scrollarea_viewport`, `qt_scrollarea_hcontainer`, `qt_scrollarea_vcontainer` (Qt's
+#: own scroll-area parts) and `FluentScrollViewTransparentCorner`, the binding's corner
+#: host, and for the Expander the single clip widget `fluentExpanderClip` (no `QScrollBar`
+#: class of Qt's at all, because the wheel paints its own) -- and `QWidget` is exactly the
+#: class this guard exists to refuse. Licensing the *class* would license the mistake the
+#: docstring above says it catches: `SettingsPage._body` sits at body ->
+#: viewport(`QWidget`) -> `ScrollView`, and a section's content host sits at
+#: content -> `fluentExpanderClip`(QWidget) -> `Expander`, so swapping the `Card` for a
+#: bare `QWidget` reads as "the container owns a QWidget" and the suite stays green.
+#: Naming each host means an app-authored widget -- which is never named `qt_scrollarea_*`
+#: or `fluentExpanderClip` -- cannot pass for one.
+NAMED_INTERNALS: dict[str, frozenset[str]] = {
+    "ScrollView": frozenset({
+        "qt_scrollarea_viewport",
+        "qt_scrollarea_hcontainer",
+        "qt_scrollarea_vcontainer",
+        "FluentScrollViewTransparentCorner",
+    }),
+    "Expander": frozenset({"fluentExpanderClip"}),
+}
 
 
 def _is_licensed_internal(widget) -> bool:
     """True when the wheel, not the app, built this Qt part inside the control that owns
-    it. A `ScrollView` only licenses its four named hosts; every other owner is licensed
-    by class, as measured."""
-    owner = _owner(widget) or ""
+    it. A `ScrollView` and an `Expander` only license their named hosts; a
+    `ContentDialog` licenses the one panel it builds for its button bar, which is the
+    same class the app's content host is -- so that one is told apart by `content()`,
+    the dialog's own verb for the widget the caller handed it. Every other owner is
+    licensed by class, as measured."""
+    owner_widget = _owner_widget(widget)
+    if owner_widget is None:
+        return False
+    owner = _binding_name(owner_widget)
     klass = type(widget).__name__
     if klass in FLUENT_INTERNALS.get(owner, ()):
         return True
-    return (owner == "ScrollView" and klass == "QWidget"
-            and widget.objectName() in SCROLLAREA_INTERNALS)
+    if klass == "QWidget" and widget.objectName() in NAMED_INTERNALS.get(owner, ()):
+        return True
+    return (owner == "ContentDialog" and klass == "QWidget"
+            and widget.parent() is owner_widget
+            and widget is not owner_widget.content())
 
 
 def _offenders(widgets) -> list[str]:
@@ -114,11 +130,21 @@ def _binding_name(widget) -> str:
 
 
 def _owner(widget) -> str | None:
-    """The nearest Fluent-backed ancestor -- the control that built this Qt part."""
+    """The nearest Fluent-backed ancestor's binding name -- the control that built this
+    Qt part."""
+    owner = _owner_widget(widget)
+    return None if owner is None else _binding_name(owner)
+
+
+def _owner_widget(widget):
+    """The nearest Fluent-backed ancestor itself, so a licence can ask that widget what
+    it made. `ContentDialog.content()` is the question the name-only version cannot
+    ask -- which is the difference between licensing a bare content host and refusing
+    one."""
     parent = widget.parent()
     while parent is not None:
         if _is_fluent(parent):
-            return _binding_name(parent)
+            return parent
         parent = parent.parent()
     return None
 
@@ -150,7 +176,7 @@ def test_the_settings_page_adds_no_bare_surface_of_its_own(qapp):
     content in `qt_scrollarea_viewport`, a `QWidget`, so the body's nearest Fluent
     ancestor is the `ScrollView` itself -- which means "the body is a bare QWidget"
     arrives here as "ScrollView owns a QWidget" and would be licensed by class if the
-    licence were by class. It is by name (see `SCROLLAREA_INTERNALS`), and these two
+    licence were by class. It is by name (see `NAMED_INTERNALS`), and these two
     lines ask about the body directly instead of through the owner chain: the widget the
     page put in the scroll area, and whatever the scroll area reports as its content,
     must both be Fluent surfaces. Measured with a bare `QWidget` substituted for the
@@ -198,3 +224,62 @@ def test_no_theme_override_call_sites_in_the_app():
             if isinstance(node, ast.Attribute) and node.attr in banned:
                 offenders.append(f"{path.name}:{node.lineno} {node.attr}")
     assert not offenders, "token overrides are back in the app:\n" + "\n".join(offenders)
+
+
+def test_the_params_dialog_adds_no_bare_surface_of_its_own(qapp, tmp_path):
+    """Task 7 puts a form inside a `ContentDialog`, and the dialog builds exactly one
+    `QWidget` of its own -- the panel that holds its button bar (measured offscreen at
+    1.11.2: one direct child, unnamed, three Fluent `Button`s inside it). `QWidget` is the
+    class this guard exists to refuse, and the app's own content host is the *same class
+    with the same parent*, so a class-keyed licence would swallow the mistake Task 6's
+    carry names: a bare `QWidget` passed to `setContent` in place of the `Card` arrives at
+    the census as "ContentDialog owns a QWidget" and the suite stays green.
+
+    So the licence asks the dialog a question a class cannot answer -- `content()` is
+    Fluent's own verb for the widget the caller handed it, and it is the second half of
+    what this test asserts: the app's body must be a Fluent surface *and* a bare widget
+    put in the same place must be an offender.
+    """
+    from app import dialogs
+
+    cat = separate_cli.make_catalog(tmp_path / "nope", tmp_path / "w")
+    spec = catalog.ModelSpec(name="mystery", arch="vr", process_method="VR Architecture",
+                             primary_stem="Vocals", secondary_stem="Instrumental",
+                             weights_path=None, config_path=None, hash="deadbeef",
+                             model_data=None)
+    dlg = dialogs.model_params_dialog(spec, cat, offer=False)
+    body = dlg.content()
+    assert body is not None and _is_fluent(body), (
+        f"the form's body is a {type(body).__name__} -- it is the largest painted "
+         "rectangle inside the dialog")
+    assert _binding_name(body) == "Card", _binding_name(body)
+    offenders = _offenders(dlg.findChildren(QWidget))
+    assert not offenders, "\n".join(offenders)
+
+    naked = fluentqt.ContentDialog()
+    host = QWidget()
+    naked.setContent(host)
+    assert not _is_licensed_internal(host), (
+        "a bare content host is licensed as the dialog's own panel: the licence stopped "
+        "asking `content()`")
+    assert _offenders(naked.findChildren(QWidget)), (
+        "the census let a bare QWidget through as a content host")
+
+
+def test_an_app_widget_parented_into_an_expander_is_not_its_clip(qapp):
+    """Task 6's carry, landed: the `Expander` licence used to be `{"QWidget"}` by class,
+    which is the same hole the `ScrollView` entry had -- a section's `Card` content host
+    swapped for a bare `QWidget` still reads as "Expander owns a QWidget", because
+    `_owner()` reports the nearest Fluent ancestor and not who built the widget. The
+    binding's own part is named (`fluentExpanderClip`, measured); an app widget is not.
+    """
+    expander = fluentqt.Expander()
+    clip = expander.findChild(QWidget, "fluentExpanderClip")
+    assert clip is not None and type(clip).__name__ == "QWidget", (
+        "the Expander's internals moved -- re-measure the licence")
+    assert _is_licensed_internal(clip)
+
+    bare = QWidget(expander)
+    assert not _is_licensed_internal(bare)
+    assert _offenders(expander.findChildren(QWidget)) == [
+        "Expander owns a QWidget (<unnamed>) that is not Fluent"]

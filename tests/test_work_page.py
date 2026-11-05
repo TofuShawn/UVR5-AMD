@@ -19,7 +19,7 @@ import selections as selections_module
 import settings as settings_module
 from PySide6.QtGui import QColor, QFontMetrics, QImage, QPainter, QPen
 
-from app import controller, job, main, session, work_page
+from app import controller, dialogs, job, main, session, work_page
 
 
 @pytest.fixture()
@@ -88,10 +88,11 @@ def _deliver(qapp):
 def _spy_notify(page, monkeypatch):
     """Capture the notifications the page would show.
 
-    Task 5's terminal handlers speak through `_notify` (a local `InfoBar`); Task 7
-    replaces that one body with `app/dialogs.py`. Spying here asserts *which* surface a
-    terminal reaches -- the distinction a cancel is all about -- without pinning the
-    widget Task 7 owns.
+    The terminal handlers speak through `_notify`, which since Task 7 hands the message to
+    the queue in `app/dialogs.py` (Task 5 built a local `InfoBar` in that one body).
+    Spying here asserts *which* surface a terminal reaches -- the distinction a cancel is
+    all about -- without pinning the widget Task 7 owns; the widget, the band and the
+    one-at-a-time queue are `tests/test_dialogs.py`.
     """
     shown: list[tuple[str, str]] = []
     monkeypatch.setattr(page, "_notify", lambda title, text: shown.append((title, text)))
@@ -290,10 +291,17 @@ def test_an_assembly_refusal_is_shown_as_the_catalog_written_it(qapp, tmp_path, 
     assert pg.start_button.isEnabled() is True and pg.job.is_running() is False
 
 
-def test_tier_three_is_dismissed_until_task_7_opens_the_dialog(qapp, tmp_path, monkeypatch):
-    """Tier 3 (a model with no params anywhere) is Task 7's dialog. Until then the page
-    dismisses it with the catalog's own `missing_message`, which already names the model,
-    the hash and the JSON it wanted."""
+def test_tier_three_hands_the_refusal_to_the_params_dialog(qapp, tmp_path, monkeypatch):
+    """Tier 3 (a model with no params anywhere) is `app/dialogs.py`'s form now, so this
+    pins the *handoff* rather than the dialog: the controller passes the spec it was
+    handed, the catalog it holds, and the page as parent. The `None` answer -- an arch with
+    no field list, which the dialog module reports by itself -- still leaves the catalog's
+    own `missing_message` on the console whole, because that line names the model, the hash
+    and the JSON it wanted.
+
+    Task 5's version of this test asserted the dismissal it shipped ("until Task 7 opens
+    the dialog"); the form, the answer and the retry are `tests/test_dialogs.py`.
+    """
     spec = catalog.ModelSpec(name="1_HP-UVR", arch="vr", process_method="VR Architecture",
                              primary_stem="Vocals", secondary_stem="Instrumental",
                              weights_path=None, config_path=None, hash="deadbeef",
@@ -304,12 +312,21 @@ def test_tier_three_is_dismissed_until_task_7_opens_the_dialog(qapp, tmp_path, m
 
     monkeypatch.setattr(session, "assemble", refuse)
     ctrl, pg = _vr_page(qapp, tmp_path, monkeypatch)
+    handed: list = []
+
+    def no_form(held_spec, held_catalog, **kwargs):
+        handed.append((held_spec, held_catalog, kwargs.get("parent")))
+        return None
+
+    monkeypatch.setattr(dialogs, "model_params_dialog", no_form)
     audio = tmp_path / "in.wav"
     audio.write_bytes(b"RIFF")
     pg.input_edit.setText(str(audio))
 
     pg.run_requested.emit()
 
+    assert [entry[0] for entry in handed] == [spec], handed
+    assert handed[0][1] is ctrl.catalog and handed[0][2] is pg
     text = pg.console.toPlainText()
     assert "deadbeef" in text and "1_HP-UVR" in text, text
     assert pg.job.is_running() is False
@@ -455,6 +472,16 @@ def _legibility_deficits(bar, labels):
     """
     pixmap = bar.grab()
     image = pixmap.toImage().convertToFormat(QImage.Format_RGB888)
+    # The reference below is painted into a `QImage` at this process's own ratio, and on a
+    # scaled desktop `prepare_high_dpi_application()` can make that 1.5 or 2 -- the grab is
+    # already in device pixels then, so every item's rect would be measured against a
+    # reference in logical ones and the comparison would be a size test, not a legibility
+    # one. Measured offscreen on this machine: ratio 1.0, and `image.width()` equals the
+    # widget's own width. If this ever fails, scale `_reference_span` rather than deleting
+    # the comparison.
+    assert image.devicePixelRatio() == 1.0, (
+        f"the grab is at {image.devicePixelRatio()} while the reference paint is at 1.0: "
+        "the ink comparison is no longer comparing like with like")
     scale = image.width() / max(bar.width(), 1)
     font = fluentqt.font_for_role(bar.itemFontRole())
     deficits = []

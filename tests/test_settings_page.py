@@ -327,6 +327,57 @@ def test_clicking_refresh_says_no_to_the_user_instead_of_to_the_console(qapp, mo
         f"the user gets a class name, not a reason: {status}")
 
 
+def test_a_refresh_that_breaks_after_the_refusal_is_reported_too(qapp, monkeypatch):
+    """The other two branches of the same slot, which shipped untested.
+
+    Task 6 added the catch for `RefreshError` and, in the same `try`, the one for
+    `OSError`/`catalog.CatalogError` -- a stalled or refused fetch (`urllib.error.URLError`
+    is an `OSError`, and `model_refresh.fetch_json` lets it through) and a writable
+    directory that will not take a table (`Catalog.write_table`'s refusal). Nothing in the
+    suite reached those two lines, so the branch that turns a failed fetch into a line in
+    the status box was only ever *read*, never run.
+
+    It matters for the same reason the refusal did: an exception that leaves a Qt slot is
+    printed by the binding and swallowed by the event loop, so the user sees a button that
+    did nothing. And this message keeps the class name on purpose -- here the class *is*
+    the information a user needs ("OSError"/"URLError" says the machine could not reach the
+    network), unlike `RefreshError`, whose text alone already reads as a refusal.
+    """
+    import sys
+
+    escapes = []
+    monkeypatch.setattr(sys, "excepthook",
+                        lambda exc_type, value, tb: escapes.append(value))
+
+    def raise_when_called(exc):
+        def raiser(*, confirmed):
+            raise exc
+        return raiser
+
+    page = _page(qapp)
+    monkeypatch.setattr(page, "refresh_tables",
+                        raise_when_called(OSError(
+                            "[WinError 121] The wait operation on the timed out")))
+    page.refresh_button.click()
+
+    assert not escapes, f"the fetch failure left the slot again: {escapes!r}"
+    status = page.status.toPlainText()
+    assert "refresh failed" in status and "OSError" in status, status
+    assert "timed out" in status, status
+
+    page.status.clear()
+    monkeypatch.setattr(page, "refresh_tables",
+                        raise_when_called(catalog.WritableLocationError(
+                            "writable_dir sits inside a version-controlled root")))
+    page.refresh_button.click()
+
+    assert not escapes, escapes
+    status = page.status.toPlainText()
+    assert "refresh failed" in status, status
+    assert "WritableLocationError" in status, status
+    assert "version-controlled" in status, status
+
+
 def test_an_opened_section_pushes_everything_below_it_down(qapp):
     """The overlap a real session caught and the offscreen numbers did not: a section
     that grew to 1307 px inside a 338 px body painted its fields straight over the
