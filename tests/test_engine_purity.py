@@ -85,7 +85,8 @@ ENGINE_IMPORTS = ["separate", "backends", "plan", "separate_cli", "lib_v5.mdxnet
 # The block set: what the child's finder refuses. Pinned by `PINNED_GUI_PACKAGES`
 # for the same reason -- the controls loop over this tuple, so a narrower tuple
 # audits less and still passes.
-GUI_PACKAGES = ("tkinter", "gui_data.tkinterdnd2", "gui_data.sv_ttk", "PIL.ImageTk")
+GUI_PACKAGES = ("tkinter", "gui_data.tkinterdnd2", "gui_data.sv_ttk", "PIL.ImageTk",
+                "PySide6", "fluentqt", "app")
 
 # Fix round 2, Item 1: frozen second copies of both name lists, asserted against
 # them by `test_the_two_lists_have_not_shrunk`. They are *separate literals* on
@@ -104,8 +105,8 @@ GUI_PACKAGES = ("tkinter", "gui_data.tkinterdnd2", "gui_data.sv_ttk", "PIL.Image
 # guard 2's *glob*, whose count stays printed-only because a vendored file
 # appearing must not break the suite for the wrong reason. These are hand-named
 # lists, and a name leaving one is exactly the change that must be deliberate.
-PINNED_GUI_PACKAGES = frozenset({"tkinter", "gui_data.tkinterdnd2",
-                                 "gui_data.sv_ttk", "PIL.ImageTk"})
+PINNED_GUI_PACKAGES = frozenset({"tkinter", "gui_data.tkinterdnd2", "gui_data.sv_ttk",
+                                 "PIL.ImageTk", "PySide6", "fluentqt", "app"})
 
 PINNED_ENGINE_IMPORTS = frozenset({
     "separate", "backends", "plan", "separate_cli", "lib_v5.mdxnet",

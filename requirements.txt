@@ -13,6 +13,12 @@ numpy>=1.26,<3
 omegaconf>=2.3
 onnx>=1.16
 onnxruntime-directml==1.24.4
+# Plan 2 UI foundation: Shiboken6 binding of the Fluent-Qt C++ Qt Widgets library.
+# Exact pin on purpose -- it carries PySide6-Essentials==6.9.3 / shiboken6==6.9.3 of
+# its own, its wheel matrix tests cp311-abi3 on 3.11/3.12/3.13, and its upstream
+# deletes public API without compatibility shims (v1.7 removed the design-language
+# selector). The smoke test in tests/test_fluent_binding.py is the upgrade tripwire.
+FluentQt==1.11.2
 onnx2pytorch>=0.1.6
 psutil>=6.0
 pydub>=0.25
