@@ -14,10 +14,11 @@ for in upstream's own terms — if you use a model published by a third party, h
 model's licence.
 
 One caveat a reader should not have to discover later: **this tree contains no `LICENSE`
-file.** Upstream removed it in commit `63a4cb6` ("Delete LICENSE", 2022-12-18), and the
-fork's `README.md` still links to it under §License. The paragraph above is therefore the
-licence statement of record for this branch; the file is a follow-up a maintainer should
-add rather than something this notice invents.
+file.** Upstream removed it in commit `63a4cb6` ("Delete LICENSE", 2022-12-18). The fork's
+`README.md` says so plainly under §License — it no longer links to a file that is not there
+— and points back here, so the paragraph above is the licence statement of record for this
+branch. Writing the file is a maintainer's decision, because it means naming a copyright
+holder; this notice does not invent one.
 
 ## UI layer
 

@@ -1,7 +1,7 @@
 """`UVR.py` is retired: the model table, then the GUI, and a guard for both.
 
 `UVR.py` was 7,342 lines of legacy tkinter GUI until Plan 2 Task 8 deleted all but its
-358-line header, so this file deliberately checks *shapes in the AST* rather than
+389-line header, so this file deliberately checks *shapes in the AST* rather than
 importing the module -- it cannot be imported on this machine anyway (`import pyglet`
 still fails here, and the refusal at the top only fires when the file is *run*, not when
 it is read). Task 12 parses it the same way.
@@ -36,6 +36,14 @@ What keeps that from becoming a one-sided "it is gone" suite is
 `test_tkinter_is_gone_and_the_engine_still_runs`: absence plus presence, in one
 function, because a guard that only checks absence is satisfied by deleting the fork's
 whole feature. The fork's feature is the app.
+
+The residue gets the same treatment as the deletion. `UVR.py`'s header comment used to
+justify its import block by claiming the set-up below the refusal reads it, which the
+file refutes -- so the dead half is now measured and pinned here (`DEAD_IMPORT_BINDINGS`,
+`READ_IMPORT_BINDINGS`, `CALLER_LESS_FUNCTIONS` and their two tests) instead of asserted
+by prose nobody can check. Pinning it in both directions is the point: deleting an unread
+import is welcome and only costs editing the list, and adding one to a file nothing runs
+is refused.
 """
 import ast
 import dataclasses
@@ -60,6 +68,70 @@ GONE_FUNCTIONS = ("legacy_main", "drop", "read_bulliten_text_mac", "open_link",
 #: the last copy of that evidence; these assertions are what tell a reader so.
 GONE_POPUPS = ("pop_up_vr_param", "pop_up_mdx_model", "pop_up_mdx_c_param",
                "pop_up_apollo_param")
+
+# --- The inert residue, measured instead of claimed -------------------------- #
+# `UVR.py`'s header comment used to justify its import block by saying the set-up below
+# the refusal reads it. Measured against the file's own AST that is false for 40 of 61
+# names, and the named reason -- `pyglet`, which is what makes the module unimportable --
+# is itself one of the unread. The fix for a comment that lies is a true comment plus a
+# number nobody has to trust, so the split lives here as data with a guard.
+#
+# Scope of the measurement: 62 explicit import statements bind the 61 unique names below
+# (`from collections import Counter` appears twice), and the two `from x import *` lines
+# are excluded because an AST cannot enumerate what they bind. The comment that binds the
+# file to these lists is in `UVR.py` above the import block; change one, change both.
+
+#: Import names `UVR.py` binds and never references. Deleting one is an improvement and
+#: this test will say so; adding one is the residue growing and this test refuses it.
+DEAD_IMPORT_BINDINGS = frozenset({
+    "Counter", "Fernet", "List", "ModelParameters", "PBKDF2HMAC", "Path",
+    "SeperateDemucs", "SeperateMDX", "SeperateMDXC", "SeperateVR", "VERSION",
+    "apollo_inference", "audioread", "base64", "clear_gpu_cache", "datetime",
+    "error_dialouge", "error_text", "hashes", "hashlib", "librosa", "match", "math",
+    "natsort", "onnx", "playsound", "pyglet_font", "pyperclip", "re", "save_format",
+    "sf", "shutil", "spec_utils", "torch", "traceback", "urllib", "webbrowser", "wget",
+    "windll", "wintypes",
+})
+
+#: The 21 it does reference -- `os`, `sys`, `subprocess` and the rest of the path/OS
+#: set-up, the three `gui_data.old_data_check` helpers it calls at import time, the two
+#: device probes and the three patch-id names from `__version__`. Seven of these
+#: twenty-one (`json`, `time`, `queue`, `psutil`, `yaml`, `ConfigDict`, `KThread`) are
+#: referenced only from inside the
+#: caller-less functions below, so what the set-up itself earns is fourteen names.
+READ_IMPORT_BINDINGS = frozenset({
+    "ConfigDict", "KThread", "PATCH", "PATCH_LINUX", "PATCH_MAC", "cuda_available",
+    "expanduser", "file_check", "json", "mps_available", "os", "pickle", "psutil",
+    "queue", "remove_temps", "remove_unneeded_yamls", "ssl", "subprocess", "sys",
+    "time", "yaml",
+})
+
+#: Header functions with no caller in any tracked file -- five of the seven that survive.
+#: The cross-file half was measured with
+#: `git grep -n "get_execution_time\|close_process\|load_model_hash_data\|font_checker\|get_yaml_data" -- "*.py"`
+#: on 2026-11-06: outside `UVR.py` the only hits are this list and the prose naming it.
+#: What is asserted below is the stronger in-file half -- not one `ast.Name` load, so not
+#: even a sibling calling them. Task 8's report counted one caller-less function; five is
+#: the measurement, and `UVR.py`'s header comment now says so.
+CALLER_LESS_FUNCTIONS = ("get_execution_time", "close_process", "load_model_hash_data",
+                         "font_checker", "get_yaml_data")
+
+#: The two that ARE reached: `data = load_data()` is `UVR.py`'s last statement, and
+#: `save_data` is called from `load_data`'s except branch.
+REACHED_FUNCTIONS = ("save_data", "load_data")
+
+
+def _import_split(tree):
+    """(referenced, unreferenced) over the names the file's explicit imports bind."""
+    bound = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            bound |= {a.asname or a.name.split(".")[0] for a in node.names}
+        elif isinstance(node, ast.ImportFrom):
+            bound |= {a.asname or a.name for a in node.names if a.name != "*"}
+    loads = {n.id for n in ast.walk(tree)
+             if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)}
+    return bound & loads, bound - loads
 
 
 def _top_level(name):
@@ -155,7 +227,9 @@ def test_no_class_and_no_popup_prefix_survives_at_all():
     tkinter coming back has to fail here before it can fail by deleting a name from
     `GONE_CLASSES`. (The seven functions that survive are header helpers, not GUI
     classes: `get_execution_time`, `close_process`, `save_data`, `load_data`,
-    `load_model_hash_data`, `font_checker`, `get_yaml_data`.)
+    `load_model_hash_data`, `font_checker`, `get_yaml_data` -- and five of those seven
+    have no caller anywhere, which is `CALLER_LESS_FUNCTIONS`'s business, not this
+    test's. "Not a GUI class" is not the same claim as "used".)
     """
     classes = sorted({n.name for n in ast.walk(UVR_TREE) if isinstance(n, ast.ClassDef)})
     assert not classes, (
@@ -168,6 +242,62 @@ def test_no_class_and_no_popup_prefix_survives_at_all():
         f"`pop_up_*` dialogs are back: {popups} -- 16 of them went in Plan 2 Task 8, and "
         f"`tests/test_dialogs.py::POPUP_EVIDENCE` is the frozen record of what four of "
         f"them collected; a new popup needs the same treatment, not a second live read.")
+
+
+def test_the_inert_header_import_block_is_still_the_measured_one():
+    """`UVR.py` cannot be imported here and is imported by nothing, so its import block
+    is a claim about dead text -- and the claim used to be false. Pinned as two sets
+    rather than as a sentence: the header comment above that block quotes 40 unread of
+    61, and this is the measurement behind the number.
+
+    Asserted as EQUALITY, not as a ceiling, because both directions have to be noticed.
+    A dead name disappearing means someone deleted an unread import, which is the right
+    thing to do and only costs moving it out of `DEAD_IMPORT_BINDINGS` and re-saying the
+    count in `UVR.py`'s comment. A dead name appearing means an unread import was added
+    to a file nothing runs, and that deserves the argument.
+    """
+    read, dead = _import_split(UVR_TREE)
+    assert dead == DEAD_IMPORT_BINDINGS, (
+        f"`UVR.py`'s unreferenced import bindings no longer match the pinned inventory: "
+        f"live={sorted(dead)} pinned={sorted(DEAD_IMPORT_BINDINGS)}. "
+        f"Newly dead: {sorted(dead - DEAD_IMPORT_BINDINGS)}; cleaned up: "
+        f"{sorted(DEAD_IMPORT_BINDINGS - dead)}. Either way the header comment above the "
+        f"import block quotes these counts, so change the comment and this list in the "
+        f"same commit -- the finding this guard answers was a comment that had stopped "
+        f"matching the file.")
+    assert read == READ_IMPORT_BINDINGS, (
+        f"the imports `UVR.py` actually references have changed: "
+        f"live={sorted(read)} pinned={sorted(READ_IMPORT_BINDINGS)}; "
+        f"differences {sorted(read ^ READ_IMPORT_BINDINGS)}. Seven of the pinned set are "
+        f"read only inside caller-less functions, and `UVR.py`'s comment says the "
+        f"set-up itself reads fourteen -- re-derive that sentence with this list.")
+
+
+def test_the_caller_less_header_functions_are_still_caller_less():
+    """The other half of the same autopsy: five of the seven surviving functions have no
+    caller at all. This asserts the in-file half, which is the half that can rot without
+    anyone editing a comment -- a call added inside `UVR.py` itself.
+
+    Deliberately not a machine check of "no other file calls them": `UVR.py` is not
+    importable, so any cross-file scan here would be a text grep over trees this suite
+    does not own. That half is measured, recorded and dated in the comment above
+    `CALLER_LESS_FUNCTIONS`, and re-run with the command quoted there.
+    """
+    for name in CALLER_LESS_FUNCTIONS:
+        assert _any_defs(name), (f"{name} is gone from UVR.py; it was recorded as inert "
+                                 f"header code, not as missing -- if the residue is being "
+                                 f"deleted, say so in UVR.py's header comment in the same "
+                                 f"commit.")
+        loads = _name_loads(name)
+        assert not loads, (
+            f"{name} is now called from inside UVR.py at line(s) "
+            f"{sorted(n.lineno for n in loads)}. It leaves CALLER_LESS_FUNCTIONS, and "
+            f"`UVR.py`'s header comment ('five have no caller') has to follow.")
+    for name in REACHED_FUNCTIONS:
+        assert _name_loads(name), (
+            f"{name} has lost its only caller, so the caller-less count is six, not "
+            f"five: move it from REACHED_FUNCTIONS into CALLER_LESS_FUNCTIONS and update "
+            f"the paragraph at the foot of UVR.py's header comment with it.")
 
 
 def test_tkinter_is_gone_and_the_engine_still_runs():

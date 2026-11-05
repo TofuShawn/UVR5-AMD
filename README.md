@@ -1,8 +1,9 @@
 # UVR5 AMD/ROCm fork — read this before your first run
 
 This branch (`fork/amd-rocm-pyside`) runs UVR's engine on an AMD GPU through torch's ROCm build,
-behind a Fluent-Qt (PySide6) window or a GUI-free CLI. The tkinter GUI is retired to a 358-line
-header in `UVR.py` whose first statement refuses; `THIRD_PARTY_NOTICES.md` names what ships.
+behind a Fluent-Qt (PySide6) window or a GUI-free CLI. The tkinter GUI is retired to a 389-line
+header in `UVR.py` whose first statement refuses; `THIRD_PARTY_NOTICES.md` names what ships, and
+§License below carries this fork's own licence — MIT, with the `LICENSE` file still to be added.
 
 ## 1. `pytest` is supported only on a `-Backend rocm` venv
 
@@ -56,7 +57,7 @@ Conditions on every figure: **RX 7900 XTX (gfx1100)**, Windows, `torch 2.9.1+roc
 * SNR ≥ 40 dB CPU-vs-ROCm verified for `vr` and `htdemucs` only; `mdx`, `onnx`, `roformer`,
   `mdx_c` and demucs v1/v2 have no weights here — refused as blocked, not simulated.
 
-The upstream v5.6 document follows, kept intact; it describes the **official** application.
+The upstream v5.6 document follows, kept intact but for §License; it describes the **official** app.
 
 ---
 
@@ -329,7 +330,14 @@ If possible, click the "Settings Button" to the left of the "Start Processing" b
 
 ## License
 
-The **Ultimate Vocal Remover GUI** code is [MIT-licensed](LICENSE). 
+The **Ultimate Vocal Remover GUI** code is MIT-licensed, and this fork is offered under that
+same MIT licence. **There is no `LICENSE` file in this tree**: upstream deleted its own in
+`63a4cb6` ("Delete LICENSE", 2022-12-18), and the link this sentence carried pointed at a
+file that has not existed since, so it is removed rather than restated — adding the file
+means naming a copyright holder, which is the maintainer's decision, not this branch's.
+The licence statement of record for `fork/amd-rocm-pyside` is the "own licence" section of
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), which also lists the third-party terms;
+Qt via PySide6 is LGPL-3.0, so its dynamic-linking exception is the one to read first.
 
 - **Please Note:** For all third-party application developers who wish to use our models, please honor the MIT license by providing credit to UVR and its developers.
 

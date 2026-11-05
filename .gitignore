@@ -9,3 +9,7 @@ tests/golden/_artifacts/
 
 # agent planning scratch
 .superpowers/
+
+# design and plan documents are kept local by policy, like .superpowers/ -- a broad
+# `git add -A` at branch end must not stage either one
+docs/

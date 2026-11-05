@@ -30,7 +30,8 @@ if __name__ == "__main__":
     # `extract_stems`) are not tkinter themselves, so each was checked before cutting:
     # every call of every one of them sat inside the range above, and none is reached
     # from outside this file. They went on that evidence, and
-    # `tests/test_model_data_retired.py` names all five in GONE_FUNCTIONS.
+    # `tests/test_model_data_retired.py` names all five of those helpers in
+    # GONE_FUNCTIONS. (The five named further below are a different five: survivors.)
 
     # The keys those dialogs collected are not lost: `app/dialogs.py` PARAM_FIELDS is
     # the live copy the app builds its tier-3 form from, and
@@ -42,9 +43,39 @@ if __name__ == "__main__":
 # could not delete along with the GUI. What it imported and no longer does: `tk`, `ttk`,
 # `Font`, `filedialog` and `messagebox` from the windowing toolkit, the themed-widget
 # binding and the drag-and-drop binding -- seven lines, none of them reachable once the
-# classes that used them went. The rest stays, because the set-up below this raise still
-# reads it, and because `pyglet` -- whose absence is why the refusal above has to be the
-# first statement in the file -- is still among them.
+# classes that used them went.
+#
+# The sentence that used to justify everything BELOW those seven was "the rest stays,
+# because the set-up below this raise still reads it, and because `pyglet` -- whose
+# absence is why the refusal above has to be the first statement in the file -- is still
+# among them." It was false, and this file is the refutation. Measured against its own
+# AST, 40 of the 61 names its explicit imports bind are never referenced anywhere below
+# -- `torch`, `librosa`, `onnx`, `wget`, `urllib.request`, `webbrowser`, `pyperclip`,
+# `playsound`, `matchering`, the four model classes in the `separate` import and the
+# three `cryptography` names are the heavy ones -- and `pyglet_font` is one of the 40, so
+# the reason named for keeping the block is itself unread. `import pyglet` still *runs*,
+# which is exactly why the refusal has to be the file's first statement; execution is not
+# use. Both sets -- the 40 dead and the 21 read -- are pinned as DEAD_IMPORT_BINDINGS and
+# READ_IMPORT_BINDINGS in `tests/test_model_data_retired.py`, whose guard fails if either
+# set moves in either direction, so this paragraph and its counts cannot go quietly
+# stale. Seven of the 21 (`json`, `time`, `queue`, `psutil`, `yaml`, `ConfigDict`,
+# `KThread`) are read only inside the caller-less functions named below, so the set-up
+# that earns its keep here touches fourteen names, not twenty-one.
+#
+# The real reason this block stayed is a boundary, not a reader. Task 8 cut the tkinter
+# layer at one line -- the first GUI class definition -- rather than re-auditing 61
+# import bindings inside the residue, and the file is inert either way: no front end
+# imports it, and nothing that ships reaches anything in it. Trimming the unread imports
+# is a separate call about how much of an inert file to keep, and it has not been made
+# here.
+#
+# The same honesty is owed to the functions, and Task 8's report understated it (it
+# named one of five): seven survive below, and five have no caller in any tracked file,
+# inside this file included -- `get_execution_time`, `close_process`,
+# `load_model_hash_data`, `font_checker`, `get_yaml_data`. Only `save_data` and
+# `load_data` are reached, `load_data` from the last line of this file and `save_data`
+# from inside `load_data`. `CALLER_LESS_FUNCTIONS` in
+# `tests/test_model_data_retired.py` pins both halves.
 import time
 #start_time = time.time()
 import audioread

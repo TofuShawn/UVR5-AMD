@@ -108,7 +108,7 @@ def test_importing_session_pulls_in_no_qt():
 
 
 def test_dry_run_never_imports_the_engine(tmp_path):
-    """`separate_cli`'s "No GUI, and no import of one" bullet (`separate_cli.py:21-37`)
+    """`separate_cli`'s "No GUI, and no import of one" bullet (`separate_cli.py:21-40`)
     promises the no-run path never pulls the engine into the process, which is what keeps
     `--dry-run` cheap and usable on a machine whose venv is not the ROCm one. Task 2 moved
     the assembly into `session.assemble()`, and an engine-class lookup there would break
@@ -119,7 +119,7 @@ def test_dry_run_never_imports_the_engine(tmp_path):
     `torch` wording is not the engine's real behaviour and was measured here before
     being narrowed: at HEAD 59d3799 -- before Task 2 touched anything -- the same child
     (`--model 1_HP-UVR --device cpu --dry-run`) exits 0 with `torch` in `sys.modules`
-    and `separate` absent. `torch` arrives from `separate_cli.py:347`, inside
+    and `separate` absent. `torch` arrives from `separate_cli.py:349`, inside
     `describe_compute_device`, which HEAD and `assemble()` both call *before* the
     dry-run return because the `compute device:` line is pinned output
     (`tests/test_cli_device_reporting.py`); with no `--device` flag it also arrives
