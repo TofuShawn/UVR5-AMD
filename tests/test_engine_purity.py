@@ -9,11 +9,15 @@ imports none. Note the scope:
 that is now a *module-level GUI*-freedom claim, not merely a tkinter one: guard 1
 blocks the tkinter four *plus* `PySide6`/`fluentqt`/`app`, so it does prove the 16
 named imports reach no GUI at import time. What it still cannot see is a GUI import
-deferred into a function body -- a case `app` in the block set makes live, because
-`separate_cli.run()` pulls `app.session` in from inside its body -- and a later
-task's test is what closes it, not this guard. Two guards, split deliberately, and
-each one is
-blind to exactly what the other sees. The names after `plan` -- `plan` (15th, Task
+deferred into a function body, and the instance of that this fork is walking toward
+is the `from app import session` P2 Task 2 plans to put inside `separate_cli.run()`:
+`app` is already in the block set, ahead of that commit, so once it lands the import
+this guard cannot see becomes a real one instead of a hypothetical. At this commit
+neither half of it exists -- `app/` is not created, and no module in this repo
+imports it yet. What closes the gap is the test that same task adds (a child
+`import app.session` whose `sys.modules` must hold no `PySide6`/`fluentqt`), not this
+guard. Two guards, split deliberately, and each one is blind to exactly what the
+other sees. The names after `plan` -- `plan` (15th, Task
 11b) and `separate_cli` (16th, Task 13) -- are composition layers rather than part of
 `engine`, and they joined on purpose: Task 13's GUI-free CLI is the thing that must
 import clean with the GUI blocked, and guard 1 is the only place that proves it for
@@ -50,8 +54,13 @@ import ast, pathlib, subprocess, sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
-# Engine modules this fork must be able to import with the tkinter GUI packages
-# blocked (see the module docstring: blocked != absent, and != GUI-free).
+# Engine modules this fork must be able to import with the full GUI_PACKAGES block set
+# unavailable -- the tkinter four *plus* `PySide6`/`fluentqt`/`app`, so for these 16
+# names the guard does prove module-level GUI-freedom at import time (see the module
+# docstring). Two distinctions it must not blur: blocked != absent -- the finder
+# refuses by name, so `import app` raises this blocker's ImportError before P2 Task 2
+# creates the package -- and import-time GUI-free != GUI-free at call time, which is
+# the deferred-import half the docstring hands to that task's own test.
 # Verified by running the blocker against each one at HEAD 4463a80. The RED set is
 # separate, lib_v5.apollo_inference, demucs.{apply,utils,repo,pretrained,htdemucs}
 # -- all seven trace to the SAME two dead imports -- and the already-green set is
