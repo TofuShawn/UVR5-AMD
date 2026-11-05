@@ -22,6 +22,7 @@ from __future__ import annotations
 import ast
 import gc
 import json
+import sys
 import time
 import weakref
 from pathlib import Path
@@ -660,6 +661,42 @@ def test_the_console_keeps_the_engine_text_after_the_surface_gone(
 
 # -- the VRAM obligation: triggered for real, never simulated ----------------- #
 
+#: The one request this test makes of the hardware: 60 GiB on the 24 GiB card is a
+#: refusal the ROCm allocator produces by itself. A card bigger than the request cannot
+#: refuse, and the test says so out loud rather than passing quietly -- the number to
+#: raise is here and nowhere else.
+VRAM_REQUEST_BYTES = 60 * 2 ** 30
+
+#: Carried by every failure exit below. Ruling R-T7-vram keeps the real trigger and rules
+#: a `skipif` out, so off-GPU this suite is red *by contract*; the contract is what has to
+#: be legible at the point of failure, not in a file nobody opens.
+GPU_VENV_REQUIREMENT = (
+    "This case is this file's only GPU-resident test, and it needs the venv this fork "
+    "runs pytest in.\n"
+    "  * build it: `.\\bootstrap.ps1 -Backend rocm` -- the ROCm torch wheel -- and run "
+    "the suite with that venv's python: "
+    "`./.venv/Scripts/python.exe -m pytest -q`;\n"
+    "  * it is the same device the app asks for by flag (`separate_cli.py --device "
+    "rocm`), so a venv that can run the app can run this test;\n"
+    "  * `tests/test_golden_rocm.py` requires this venv too and fails without it (its "
+    "autouse `_rocm_is_in_the_room`), so a cuda/cpu venv is red here on purpose -- "
+    "ruling R-T7-vram: a skip would turn honest coverage of spec §8's VRAM surface into "
+    "silent green;\n"
+    "  * on a machine that is meant to have no GPU, deselect this one case "
+    "`-k 'not vram'` rather than weaken an assertion in it."
+)
+
+
+def _torch_for_vram_test():
+    """The ROCm torch, or a failure that names the venv that would have had it."""
+    try:
+        import torch
+    except ImportError as exc:
+        pytest.fail(f"`import torch` failed under {sys.executable} ({exc}). "
+                    + GPU_VENV_REQUIREMENT)
+    return torch
+
+
 def test_the_vram_surface_fires_on_a_real_out_of_memory_on_the_gpu(qapp, tmp_path,
                                                                    monkeypatch, queue):
     """Spec §8's VRAM case, from a real allocation on the device `--device rocm` answers
@@ -670,21 +707,61 @@ def test_the_vram_surface_fires_on_a_real_out_of_memory_on_the_gpu(qapp, tmp_pat
     blocked, never simulated. So this asks the ROCm allocator for 60 GiB on a 24 GiB card
     and lets it refuse. Nothing about the error is manufactured: the classification, the
     wording and the surface all come from the exception the allocator raised itself.
+
+    COUPLING, stated where a maintainer meets it: this test needs a ROCm venv and a GPU
+    in the room, and ruling R-T7-vram keeps that coupling instead of skipping it, because
+    this fork runs `pytest` on the `bootstrap.ps1 -Backend rocm` venv and
+    `tests/test_golden_rocm.py` is already red without it. Its cost is measured on this
+    fork's RX 7900 XTX machine, not assumed: 0.9 s of call time inside the 222 s full
+    suite (torch is imported by then), 1.4 s within `tests/test_dialogs.py` alone, 2.9 s
+    run by itself -- the last two include the ~2 s `import torch`. Cheap enough, so the
+    surface keeps being tested by the real refusal rather than by a smaller stand-in.
+    Every exit below fails *diagnostically* -- it names the requirement, the command that
+    answers it, and the machine's own numbers -- so a red run on a CPU-only box reads as
+    a contract, not as a mystery `assert torch.cuda.is_available()`. Deselect with
+    `-k 'not vram'` there; do not soften an assertion here.
     """
-    import torch
+    torch = _torch_for_vram_test()
 
     backend = backends.resolve(force="rocm")
     assert backend.torch_device == "cuda", (
-        f"--device rocm must answer with the torch device an allocator can run out of; "
-        f"it reported {backend}")
-    assert torch.cuda.is_available() is True, (
-        "the VRAM surface's only honest test needs the GPU in the room; this venv has "
-        f"torch {torch.__version__} with hip={torch.version.hip}")
+        f"`--device rocm` must answer with the torch device an allocator can run out of; "
+        f"this venv ({sys.executable}) reported {backend!r}. "
+        + GPU_VENV_REQUIREMENT)
+
+    if not torch.cuda.is_available():
+        pytest.fail(
+            f"torch {torch.__version__} (hip={torch.version.hip}) under "
+            f"{sys.executable} reports no reachable GPU, so `--device rocm` has no "
+            f"allocator for this test to run out of. " + GPU_VENV_REQUIREMENT)
 
     free_before = torch.cuda.mem_get_info()[0]
-    with pytest.raises(torch.cuda.OutOfMemoryError) as excinfo:
-        torch.empty(60 * 2 ** 30, dtype=torch.uint8, device="cuda")
-    text = str(excinfo.value)
+    try:
+        tensor = torch.empty(VRAM_REQUEST_BYTES, dtype=torch.uint8, device="cuda")
+    except torch.cuda.OutOfMemoryError as exc:
+        text = str(exc)
+    except Exception as exc:
+        raise AssertionError(
+            f"the allocator answered {type(exc).__name__} ({exc}) to a request of "
+            f"{VRAM_REQUEST_BYTES:,} bytes ({VRAM_REQUEST_BYTES / 2 ** 30:g} GiB) instead "
+            f"of torch.cuda.OutOfMemoryError, so the needles asserted below were never "
+            f"handed the out-of-memory text they exist to catch.") from exc
+    else:
+        # Not a defect in the surface: the card is bigger than the request. Give the
+        # memory back *before* failing, so no later GPU test inherits the block.
+        total = torch.cuda.mem_get_info()[1]
+        device_name = torch.cuda.get_device_name(0)
+        del tensor
+        torch.cuda.empty_cache()
+        pytest.fail(
+            f"the request of {VRAM_REQUEST_BYTES:,} bytes "
+            f"({VRAM_REQUEST_BYTES / 2 ** 30:g} GiB) SUCCEEDED on '{device_name}' "
+            f"({total / 2 ** 30:.2f} GiB total), so nothing raised and the VRAM surface "
+            f"went untested. Raise VRAM_REQUEST_BYTES above this card's capacity -- the "
+            f"honest alternative is `-k 'not vram'`, not a pass.")
+
+    # The failed request is the allocator's own bookkeeping, not a tensor: give it back
+    # now, before the surface is built, so the card is clean for whatever runs next.
     torch.cuda.empty_cache()
     _settle(qapp)
 
@@ -705,7 +782,9 @@ def test_the_vram_surface_fires_on_a_real_out_of_memory_on_the_gpu(qapp, tmp_pat
 
     free_after = torch.cuda.mem_get_info()[0]
     assert free_after >= free_before - 2 ** 20, (
-        f"the allocation was not given back: {free_before} -> {free_after}")
+        f"the allocation was not given back: {free_before} -> {free_after} free bytes on "
+        f"'{torch.cuda.get_device_name(0)}' -- this test must leave the card as it found "
+        f"it, or the suite's later GPU cases fail for the wrong reason")
     assert torch.cuda.memory_allocated() == 0, torch.cuda.memory_stats()
 
 
@@ -838,6 +917,144 @@ def test_a_json_answer_written_through_the_form_resolves_at_tier_one(qapp, tmp_p
     assert again.provenance.label == "tier1-per-model-json@writable_dir"
     assert again.model_data == VR_ANSWER
     assert again.primary_stem == "Instrumental"
+
+
+# -- config_yaml is a file name, not a value ---------------------------------- #
+
+def _apollo_tier3(tmp_path):
+    """An apollo tier-3 refusal, built in a throwaway root.
+
+    This is deliberately not the machine's own catalog: apollo cannot reach tier 3 here
+    today, because `Catalog.names()` lists weight *files* (`catalog.py:734-738`) and no
+    root has one (`models/Apollo_Models` carries `model_configs/*.yaml` and
+    `model_data/*.json` and nothing else), so `app/work_page.py:243` has nothing to offer
+    and `app/controller.py:120` refuses before `session.assemble` ever resolves. The
+    weight is what the gate is, so the fixture supplies one; `params_table=None`
+    (`catalog.py:257-259`) then leaves no tier 2 to answer from, and `resolve()` raises at
+    `catalog.py:663` exactly as it would for a VR model.
+    """
+    root = tmp_path / "root"
+    (root / "Apollo_Models" / "model_configs").mkdir(parents=True)
+    (root / "Apollo_Models" / "apollo_demo.pth").write_bytes(b"z" * 1024)
+    cat = separate_cli.make_catalog(root, tmp_path / "w")
+    assert "apollo_demo.pth" in cat.names("apollo"), (
+        "the name below is a name the Model list would hand the user")
+    with pytest.raises(catalog.UnknownModelParamsError) as excinfo:
+        cat.resolve("apollo_demo.pth", required=True)
+    assert excinfo.value.spec.arch == "apollo"
+    return excinfo.value.spec, cat
+
+
+def test_a_typed_config_yaml_reaches_the_engine_with_its_extension(qapp, tmp_path):
+    """The bug this round fixes: upstream's popup never writes what the user typed --
+    `UVR.py:4808` (apollo) and `:4750` (mdx_c) both write `f"{var.get()}{YAML}"`, with
+    `YAML` = `gui_data/constants.py:128` -- because the value is a *stem*: the dropdown
+    that fills that variable is built with `os.path.splitext(x)[0]` (`UVR.py:4803`).
+    Collected verbatim, the engine reads a stem as if it were a file name:
+    `catalog.py:651-652` turns it into `config_path` (apollo's consumer, and the one this
+    test measures) and `plan.py:516-519` does the same for the mdx_c row, whose `:521-526`
+    `PlanError` names a yaml the user had spelled correctly apart from the extension
+    nobody showed them."""
+    spec, cat = _apollo_tier3(tmp_path)
+    dlg = dialogs.model_params_dialog(spec, cat, offer=False)
+    assert list(dlg.editors) == ["config_yaml"], "the apollo row is one field, no more"
+
+    _fill(dlg, {"config_yaml": "apollo_base"})
+    dlg.setResult(fluentqt.ContentDialog.ResultPrimary)
+    params = dialogs.collected_params(dlg)
+    assert params == {"config_yaml": "apollo_base" + const.YAML}, (
+        "the value must be the one upstream's popup would have written, with the suffix "
+        "it appends -- not the stem the form was handed")
+    assert params["config_yaml"] == "apollo_base.yaml"
+
+    written = dialogs.write_answer(cat, spec, params)
+    assert json.loads(written.read_text(encoding="utf-8")) == params
+
+    # The config itself, where the engine looks: `catalog.py:652` derives `config_path`
+    # from the root that answered, and after this write the answer came from
+    # `writable_dir`, so that is the root the path is read against.
+    config = (cat.writable_dir / "Apollo_Models" / "model_configs"
+              / params["config_yaml"])
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text("training:\n  target_instrument: Vocals\n", encoding="utf-8")
+
+    again = separate_cli.make_catalog(spec_weights_root(tmp_path),
+                                      tmp_path / "w").resolve("apollo_demo.pth",
+                                                              required=True)
+    assert again.needs_user_params is False
+    assert again.provenance.label == "tier1-per-model-json@writable_dir"
+    assert again.config_path == config, (
+        f"the engine derived {again.config_path!r}; the suffix the form appends is the "
+        f"whole difference between that path naming a file and naming nothing")
+    assert again.config_path.is_file() is True
+    assert config.parent.joinpath("apollo_base").is_file() is False, (
+        "the stem on its own is not a readable config -- that is the value the fix "
+        "prevents from ever being written")
+
+
+def test_a_config_yaml_that_already_carries_the_extension_is_kept_as_typed(
+        qapp, tmp_path):
+    """The idempotence half the ruling names: a user who types the whole file name is not
+    wrong, and appending a second time would write `apollo_base.yaml.yaml` -- a path even
+    more certainly absent than the one the fix is about. Leading and trailing space is
+    stripped first, so `" apollo_base.yaml "` is the same answer."""
+    spec, cat = _apollo_tier3(tmp_path)
+    dlg = dialogs.model_params_dialog(spec, cat, offer=False)
+    dlg.setResult(fluentqt.ContentDialog.ResultPrimary)
+
+    for typed in ("apollo_base.yaml", "  apollo_base.yaml  "):
+        _fill(dlg, {"config_yaml": typed})
+        assert dialogs.collected_params(dlg) == {"config_yaml": "apollo_base.yaml"}, (
+            f"{typed!r} was answered with the suffix twice over")
+
+    _fill(dlg, {"config_yaml": "apollo_base"})
+    assert dialogs.collected_params(dlg) == {"config_yaml": "apollo_base.yaml"}, (
+        "the bare stem is still the case the rule exists for")
+
+
+def _popup_yaml_suffix(function_name: str) -> str:
+    """What one popup's `config_yaml` value appends, resolved the way Python would.
+
+    Same source of truth as `_popup_collected_keys`: `UVR.py` cannot be imported here, so
+    the body is read with `ast`, and the appended name is looked up in
+    `gui_data.constants` -- the module upstream itself imports.
+    """
+    tree = ast.parse((REPO / "UVR.py").read_text(encoding="utf-8"))
+    funcs = [n for n in ast.walk(tree)
+             if isinstance(n, ast.FunctionDef) and n.name == function_name]
+    assert len(funcs) == 1, f"{function_name} found {len(funcs)} times in UVR.py"
+    for node in ast.walk(funcs[0]):
+        if not isinstance(node, ast.Dict):
+            continue
+        for key, value in zip(node.keys, node.values):
+            if not (isinstance(key, ast.Constant) and key.value == "config_yaml"):
+                continue
+            assert isinstance(value, ast.JoinedStr), (
+                f"{function_name} builds config_yaml as {type(value).__name__}, not an "
+                f"f-string; re-read the body before trusting the suffix")
+            last = value.values[-1]
+            assert isinstance(last, ast.FormattedValue), ast.dump(value)
+            name = last.value
+            assert isinstance(name, ast.Name), ast.dump(name)
+            suffix = getattr(const, name.id, None)
+            assert isinstance(suffix, str), f"{name.id} is not a string constant"
+            return suffix
+    raise AssertionError(f"{function_name} writes no config_yaml")
+
+
+@pytest.mark.parametrize("popup", ("pop_up_apollo_param", "pop_up_mdx_c_param"))
+def test_the_config_yaml_suffix_is_the_one_upstreams_popup_appends(popup):
+    """.yaml is read out of the two sources that decide it, not assumed by this file: the
+    f-string in the popup body that writes the value, and the constant that f-string
+    interpolates. If either moves, `app/dialogs.py`'s copy has to move with it -- which is
+    the only way this GUI can still be said to write what upstream's popup wrote."""
+    suffix = _popup_yaml_suffix(popup)
+    assert suffix == const.YAML, (
+        f"{popup} appends a constant that resolves to {suffix!r} while "
+        f"gui_data.constants.YAML is {const.YAML!r}")
+    assert dialogs.CONFIG_YAML_SUFFIX == suffix, (
+        f"app/dialogs.py appends {dialogs.CONFIG_YAML_SUFFIX!r} but upstream's popup "
+        f"appends {suffix!r}; the engine reads the path the value names")
 
 
 # -- lifetimes ---------------------------------------------------------------- #

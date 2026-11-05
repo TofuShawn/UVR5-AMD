@@ -63,7 +63,9 @@ PARAM_FIELDS: dict[str, tuple[tuple[str, type], ...]] = {
             ("is_karaoke", bool), ("is_bv_model", bool),
             ("is_bv_model_rebalanced", float)),
     # `pop_up_mdx_c_param.pull_data` (`UVR.py:4749-4751`). Engine reads: `config_yaml`
-    # (`plan.py:516`, `catalog.py:651`), `is_roformer` (`plan.py:592`). Unreachable in
+    # (`plan.py:516`, which puts it straight into a path at `:519` and raises `PlanError`
+    # at `:521-526` when that path is not a file; `catalog.py:651-652` builds
+    # `config_path` the same way), `is_roformer` (`plan.py:592`). Unreachable in
     # this fork -- `mdx_c` is a blocked arch (`catalog.py:104`, refused at `:427`), so no
     # spec can carry it; kept because this is the last copy of the body.
     "mdx_c": (("config_yaml", str), ("is_roformer", bool)),
@@ -71,8 +73,36 @@ PARAM_FIELDS: dict[str, tuple[tuple[str, type], ...]] = {
     # else. Apollo is the arch whose tier-3 path is still wired in `UVR.py` itself
     # (`get_model_data_from_popup`, `:702-715`). Engine reads `config_yaml`
     # (`catalog.py:651-652`, which builds `config_path` from it).
+    #
+    # REACHABLE THROUGH THIS FORM? Not on this machine today, and that was measured
+    # rather than assumed (`tests/test_dialogs.py::_apollo_tier3` records the reading):
+    # the *code* path is live -- `catalog.py:257-259` gives apollo `params_required=True`
+    # with `params_table=None`, so `resolve()` has no tier 2 to fall back on and raises
+    # the tier-3 error at `catalog.py:663` -- but nothing reaches it, because
+    # `Catalog.names()` lists weight files only (`catalog.py:734-738`) and no root has
+    # one (`models/Apollo_Models` holds `model_configs/*.yaml` and `model_data/*.json`
+    # and nothing else), so `app/work_page.py:243` has an empty Model list to offer and
+    # `app/controller.py:120` refuses before `session.assemble` ever resolves. The suffix
+    # rule below is still made -- `test_a_typed_config_yaml_reaches_the_engine_with_its_
+    # extension` supplies a throwaway weight to prove the row arms itself the moment one
+    # is installed -- and note that even then the run stops later, at `plan.py:311-314`:
+    # apollo's `process_method` is None, so no branch of `separate.py` reads one (the
+    # module's own words, `plan.py:98`). The params file is what the dialog is for; the
+    # plan is not this form's to promise.
     "apollo": (("config_yaml", str),),
 }
+
+#: The suffix a typed config name needs before the engine can use it. Upstream does not
+#: store what the user typed: `UVR.py:4750` (mdx_c) and `UVR.py:4808` (apollo) both write
+#: `f"{var.get()}{YAML}"`, and that `YAML` is `gui_data/constants.py:128` -- the literal
+#: `'.yaml'`, read from the file rather than assumed, and pinned against both sources by
+#: `tests/test_dialogs.py::test_the_config_yaml_suffix_is_the_one_upstreams_popup_appends`.
+#: The name arrives bare because the dropdowns that feed upstream's variables are built
+#: with `os.path.splitext(x)[0]` (`UVR.py:4803`), while `catalog.py:651-652` puts the
+#: value straight into `config_path` and `plan.py:516-519` into an `mdx_c_configs` path
+#: that `:521-526` refuses with `PlanError` when the file is not there. Collecting it
+#: verbatim therefore writes a JSON whose config nobody can find.
+CONFIG_YAML_SUFFIX = ".yaml"
 
 #: Values upstream's own popup pre-sets, so a box the tkinter dialog also pre-sets is not
 #: left for the user to guess: `primary_stem` 'Vocals' (`UVR.py:4860`, and `VOCAL_STEM` at
@@ -329,6 +359,10 @@ def collected_params(dlg) -> dict | None:
     caller returns quietly and the run stays unresolved. A half-filled answer is neither:
     `unanswered_fields` refuses it, because a JSON with a hole in it saves cleanly and then
     fails inside `plan.build`, with a message that blames the engine.
+
+    Every string is collected as typed except `config_yaml`, which is the one answer that
+    is a *file name* and so goes through `_config_yaml` -- the same thing upstream's
+    `pull_data` does before writing its JSON.
     """
     if dlg is None or dlg.result() != fluentqt.ContentDialog.ResultPrimary:
         return None
@@ -349,8 +383,21 @@ def collected_params(dlg) -> dict | None:
             text = editor.text().strip()
             if not text:
                 continue
-            out[name] = text                          # verbatim, including `config_yaml`
+            out[name] = _config_yaml(text) if name == "config_yaml" else text
     return out
+
+
+def _config_yaml(value: str) -> str:
+    """Put the extension back on a typed config name -- once.
+
+    Idempotent because a user who types the whole file name is not wrong: upstream's
+    popup pre-selects from stems, but nothing stops a person writing `apollo_base.yaml`,
+    and appending again would hand the engine `apollo_base.yaml.yaml`. The test is the
+    same case-sensitive `endswith` upstream's own list filter uses
+    (`UVR.py:4803`, `x.endswith(YAML)`), so a config named `X.YAML` on disk keeps the
+    behaviour the engine's directory listing would have it.
+    """
+    return value if value.endswith(CONFIG_YAML_SUFFIX) else f"{value}{CONFIG_YAML_SUFFIX}"
 
 
 def unanswered_fields(dlg) -> list[str]:
