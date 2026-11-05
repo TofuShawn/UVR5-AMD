@@ -15,8 +15,10 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import math
 import typing
 from pathlib import Path
+from types import MappingProxyType
 
 import catalog
 import settings as settings_module
@@ -24,9 +26,100 @@ import settings as settings_module
 _GROUPS = ("voc_inst", "other", "drums", "bass")          # catalog._stem_group's names
 _ARCHS = ("vr", "mdx", "demucs")
 
+#: Memoised `{field name: declared type}`, sealed, filled on the first `_field_types()`
+#: call. Same reason as `settings._FIELD_TYPES`: `__post_init__` asks for it on every
+#: construction, and the class is closed at import.
+_FIELD_TYPES: typing.Mapping[str, type] | None = None
+
+
+def _coerce(field_name: str, value: object, typ: type) -> typing.Any:
+    """Parse one selection into the field's declared type. This module's one table.
+
+    The mechanism is `settings._coerce`'s (settings.py:247-332), reused rather than
+    re-invented so that a value entering a typed field parses the same way wherever it
+    came from -- file, widget text, or a bare constructor argument. Without it the
+    annotations on `Selections` are decoration: the Task 5/6 UI builds this class from
+    widget text, so `Selections(vr_voc_inst_secondary_model_scale='0.7')` *held* the
+    `str` `'0.7'` in a field annotated `float`, `save()` wrote `"0.7"`, and the next
+    `load()` raised `TypeError` (see its float gate) -- the app poisoning its own
+    config. The bare constructor is made safe here instead of adding a
+    `from_widget_values()` factory beside the unsafe one, exactly as
+    `Settings.__post_init__` (settings.py:443-481) settled for the sibling class.
+
+    Three branches, one of them a deliberate divergence from the sibling table:
+
+      * `bool` -- **only a real `bool` passes; anything else raises.** This is the one
+        place the table is *stricter* than `settings._to_bool`
+        (settings.py:211-229), which parses `0`/`1` and the tokens `'true'`/`'False'`
+        because those are genuine `data.pkl` and `tk` encodings for *those* flags. Two
+        reasons it cannot do that here: this module's own `load()` accepts only
+        `isinstance(value, bool)` for a bool field, so a constructor taking `1` or
+        `'False'` would accept what the file it writes refuses to read back; and
+        `to_plan_dict()` re-coerces this field with `bool(...)` (see its
+        `vocal_splitter` entry), so the *truthy text* `'False'` would not raise, not
+        store `False`, and not stay quiet -- it would silently activate a second model
+        in the plan. No truthifying, no guessing.
+      * `float` -- text parses (`'0.7'` -> `0.7`) and an `int` widens, because JSON has
+        one number type; unparseable text **raises** rather than becoming `0.0`; a
+        `bool` raises (a bool is not a scale -- it is the very confusion
+        `test_a_wrongly_typed_selection_raises_instead_of_silently_passing` pins);
+        PEP 515 separators in text raise (`float('1_0')` parses, and no widget text or
+        JSON number can contain the underscore); and `nan`/`inf` raise, since neither
+        strict JSON (this module's `save()` writes `allow_nan=False`) nor the class's
+        own round trip carries them -- `nan != nan` would make
+        `constructed == load(save(constructed))` False by itself. Mirrors
+        settings.py:311-323.
+      * `str` -- a `str` passes through as the **very object given**, so model names
+        and the two checkbox labels stay verbatim (whitespace included); `bool`/`int`/
+        `float` are stringified, because that is the one rewrite a widget performs on
+        its own numeric content; anything else raises instead of rendering as `'[]'`.
+        Same as settings.py:324-331.
+
+    `None` raises in every branch: no widget stores a null in these 33 fields.
+    """
+    if value is None:
+        raise ValueError(f"Selections.{field_name}: null is not a value any widget stores")
+    if typ is bool:
+        if isinstance(value, bool):
+            return value
+        raise TypeError(f"Selections.{field_name}: {value!r} is a "
+                        f"{type(value).__name__}, not a bool; this module's loader "
+                        f"refuses one too, and a truthy non-bool would reach "
+                        f"to_plan_dict()'s bool(...) and activate a model nobody chose")
+    if typ is float:
+        if isinstance(value, bool):
+            raise ValueError(f"Selections.{field_name}: a bool is not a float")
+        if isinstance(value, str) and "_" in value:
+            raise ValueError(f"Selections.{field_name}: {value!r} uses a Python digit "
+                             f"separator, which no widget text or JSON number can contain")
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(f"Selections.{field_name}: {value!r} is not a float ({exc})") from exc
+        if not math.isfinite(parsed):
+            raise ValueError(f"Selections.{field_name}: {value!r} is not a finite float "
+                             f"(neither this module's round trip nor strict JSON carries "
+                             f"NaN or Infinity)")
+        return parsed
+    if typ is str:
+        if isinstance(value, str):
+            return value
+        if isinstance(value, (bool, int, float)):
+            return str(value)
+        raise TypeError(f"Selections.{field_name}: {type(value).__name__} is not text a "
+                        f"widget can hold, and a str field does not render objects")
+    raise TypeError(f"Selections.{field_name}: unsupported type {typ!r}")
+
 
 @dataclasses.dataclass(frozen=True)
 class Selections:
+    """The 33 model selections `plan.build()` takes that are not `Settings` fields.
+
+    Frozen, all-defaulted, and coerced at construction: `__post_init__` re-parses
+    every field through `_coerce`, so the declared types are enforced rather than
+    advertised, and `Selections(**{...scale: '0.7'})` equals what `load()` returns for
+    the same logical value. Same contract `Settings` carries (settings.py:443-481).
+    """
     # main model per arch (these feed Catalog.resolve, not plan.build)
     vr_model: str = catalog.NO_MODEL
     mdx_net_model: str = catalog.NO_MODEL
@@ -63,6 +156,39 @@ class Selections:
     is_set_vocal_splitter: bool = False
     vocal_splitter_primary_label: str = ""
     vocal_splitter_secondary_label: str = ""
+
+    def __post_init__(self) -> None:
+        """Re-parse every field into its declared type, in place (fix round 1).
+
+        `Settings` gained this for the same reason (settings.py:443-481), and the
+        argument carries over verbatim: Plan 2's UI builds both classes from widget
+        text, and only one of them had a gate. Task 6's `apply(path)` validates the
+        settings half by constructing `Settings(**values)` and letting
+        `__post_init__` be the validator; the selections half had no such gate, so the
+        settings page could write a `settings.json` whose selections block
+        `load()` then refuses to read back. Putting it here rather than in a Qt widget
+        makes Task 6 correct by construction (controller ruling R-T3-coerce).
+
+        See `_coerce` for what each branch accepts and refuses; in short -- a numeric
+        string in a scale field becomes the float, a non-numeric one **raises**
+        instead of becoming `0.0`, and the splitter switch takes only a real `bool`:
+        `'False'`, `0`, `[]` and `''` all raise, none of them truthified into
+        activating a second model.
+
+        `object.__setattr__` because the instance is frozen -- `self.x = ...` here
+        would raise `FrozenInstanceError` -- and only when the parse produced a
+        different object, so a `str` field keeps its identity and a value already of
+        the declared type is left alone. That makes the coercion idempotent, which is
+        what the finding's round trip needs: every value `load()` accepts is already in
+        range, so `Selections(**asdict(load(p))) == load(p)` and
+        `load(save(constructed)) == constructed` both hold.
+        """
+        types = _field_types()
+        for f in dataclasses.fields(self):
+            value = getattr(self, f.name)
+            coerced = _coerce(f.name, value, types[f.name])
+            if coerced is not value:
+                object.__setattr__(self, f.name, coerced)
 
     def to_plan_dict(self) -> dict:
         """The nested `selections` argument `plan.build` documents at plan.py:741-750.
@@ -109,6 +235,20 @@ SELECTION_FIELD_NAMES: frozenset[str] = frozenset(
 _KEY = "selections"
 
 
+def _field_types() -> typing.Mapping[str, type]:
+    """`{field name: declared type}`, resolved once, cached, and handed out sealed.
+
+    `settings._field_types()` (settings.py:511-527) is the model, including the
+    `MappingProxyType`: `__post_init__` calls this for every instance, and handing out
+    the mutable cache would let one caller rewrite what every later construction
+    coerces *to* -- which is exactly the round-1 defect that fix closed there.
+    """
+    global _FIELD_TYPES
+    if _FIELD_TYPES is None:
+        _FIELD_TYPES = MappingProxyType(typing.get_type_hints(Selections))
+    return _FIELD_TYPES
+
+
 def _read_raw(path: Path) -> dict:
     if not path.exists():
         return {}
@@ -125,10 +265,18 @@ def load(path: Path | None = None) -> Selections:
     value cannot be its declared type **raises** -- silently keeping a corrupt value is
     how a wrong-type field reaches the engine. `isinstance` alone would not do it,
     because `True` is an `int` and `1` is not a `bool`.
+
+    The gate stays in this loop rather than leaning on `__post_init__`: the two raise
+    for different audiences. This one names the file and the offending key, because a
+    corrupt config is a file-level diagnosis; `_coerce` speaks for a constructor
+    argument. What they must agree on is the *domain* -- every value this accepts has
+    to survive the coercion unchanged in substance, and this refuses `1` for a bool
+    field, so `_coerce` must refuse it too rather than let the constructor accept what
+    the loader rejects.
     """
     target = Path(path) if path is not None else settings_module.config_file()
     block = _read_raw(target).get(_KEY) or {}
-    types = typing.get_type_hints(Selections)
+    types = _field_types()
     values: dict[str, typing.Any] = {}
     for f in dataclasses.fields(Selections):
         if f.name not in block:

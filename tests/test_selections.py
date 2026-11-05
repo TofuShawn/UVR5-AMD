@@ -98,6 +98,108 @@ def test_a_wrongly_typed_selection_raises_instead_of_silently_passing(tmp_path):
         selections.load(target)
 
 
+def test_a_numeric_string_scale_coerces_to_the_float():
+    """R-T3-coerce. The Task 5/6 UI builds `Selections` from widget text, so `'0.7'`
+    is a real constructor argument -- and before `__post_init__` it *stayed* text in a
+    field annotated `float`. `save()` then wrote `"0.7"` and the next `load()` raised
+    `TypeError` at its float gate: the app poisoning its own config. The value is in
+    its declared type at construction now, so what the writer stores is what the reader
+    accepts, and `to_plan_dict()` hands `plan.build` a number. (The engine itself
+    survived the string -- `plan.py:280` does `float(scale)` -- which is exactly why
+    this was a persistence hazard rather than a crash, and why it needed a test.)
+    """
+    sel = selections.Selections(vr_voc_inst_secondary_model="UVR-BVE-458n",
+                                vr_voc_inst_secondary_model_scale="0.7")
+    held = sel.vr_voc_inst_secondary_model_scale
+    assert held == 0.7
+    assert type(held) is float, f"the constructor kept {held!r}"
+    # `to_plan_dict()` ships a scale only with its model name, so the slot is present
+    # here -- and it ships as the number, not the text the widget handed over.
+    assert type(sel.to_plan_dict()["vr"]["voc_inst_secondary_model_scale"]) is float
+
+
+def test_a_junk_string_scale_raises_instead_of_becoming_zero():
+    """The other half of the coercion: `'0.7'` parses, and a value that does not parse
+    **raises** rather than landing on `0.0` -- a silent `0.0` would mute the secondary
+    model in the plan while the UI still showed it selected. Same rule as
+    `_coerce`'s float branch in `Settings` (settings.py:311-323), including the refusal
+    of a PEP 515 separator: `float('1_0')` parses, to a number no widget typed."""
+    with pytest.raises(ValueError, match="mdx_bass_secondary_model_scale"):
+        selections.Selections(mdx_bass_secondary_model_scale="loud")
+    with pytest.raises(ValueError, match="mdx_bass_secondary_model_scale"):
+        selections.Selections(mdx_bass_secondary_model_scale="1_0")
+    with pytest.raises(ValueError, match="demucs_other_secondary_model_scale"):
+        selections.Selections(demucs_other_secondary_model_scale=float("nan"))
+
+
+def test_the_splitter_switch_takes_only_a_real_bool():
+    """The hazard this fix exists for. `is_set_vocal_splitter='False'` used to
+    construct happily, and `to_plan_dict()` re-coerces the field with `bool(...)`
+    (its `vocal_splitter` entry), so the *text* `'False'` -- truthy -- silently
+    activated a second model in the plan. `0` and `''` are the same category of input:
+    a non-bool this module's loader refuses. Construction now takes only a `bool`, so
+    nothing untyped ever reaches that `bool(...)`; the real values still pass
+    untouched."""
+    for bad in ("False", "True", "0", "1", 1, 0, 2.0, "", [], {}, object()):
+        with pytest.raises(TypeError, match="is_set_vocal_splitter"):
+            selections.Selections(is_set_vocal_splitter=bad)
+    assert selections.Selections(is_set_vocal_splitter=True).is_set_vocal_splitter is True
+    assert selections.Selections().is_set_vocal_splitter is False
+
+
+def test_construction_refuses_what_the_loader_refuses(tmp_path):
+    """The two gates must agree on the bool field's domain. `load()` has always
+    required `isinstance(value, bool)` there, so a constructor accepting `1` or
+    `'False'` would let Task 6 write, via the bare constructor, a value the same file
+    cannot be read back as -- and the round trip would only ever have agreed by
+    accident. Checked from both sides here."""
+    target = tmp_path / "settings.json"
+    for bad in (1, "False"):
+        target.write_text(json.dumps({"selections": {"is_set_vocal_splitter": bad}}),
+                          encoding="utf-8")
+        with pytest.raises(TypeError, match="is_set_vocal_splitter"):
+            selections.load(target)
+        with pytest.raises(TypeError, match="is_set_vocal_splitter"):
+            selections.Selections(is_set_vocal_splitter=bad)
+
+
+def test_a_str_field_keeps_its_text_and_does_not_render_objects():
+    """`_coerce`'s `str` branch as `Settings`' does it (settings.py:324-331): a `str`
+    returns as the very object given, so the two checkbox labels and the model names
+    stay verbatim (whitespace included -- `test_defaults_round_trip` would not notice
+    `' Vocals '` becoming `'Vocals'`), while a container raises instead of becoming the
+    text `'[]'`, which no model directory is named."""
+    label = " Vocals "
+    sel = selections.Selections(vocal_splitter_primary_label=label)
+    assert sel.vocal_splitter_primary_label is label
+    assert sel.vocal_splitter_primary_label == " Vocals "
+    for bad in ([], {}, {"a": 1}, (1,)):
+        with pytest.raises(TypeError, match="vocal_splitter_primary_label"):
+            selections.Selections(vocal_splitter_primary_label=bad)
+
+
+def test_constructing_from_what_the_loader_accepts_is_idempotent(tmp_path):
+    """The property R-T3-coerce had to preserve: coercion runs on every construction,
+    so running it twice must change nothing. `load()` hands the constructor values it
+    has already type-checked -- including the `int` JSON writes for a `float` field --
+    and `Selections(**those)` must equal the instance `load()` returned, so
+    `constructed == loaded` holds for every file this module can read."""
+    target = tmp_path / "settings.json"
+    stored = {"vr_model": "1_HP-UVR",
+              "vr_voc_inst_secondary_model_scale": 1,
+              "mdx_drums_secondary_model_scale": 0.7,
+              "is_set_vocal_splitter": True,
+              "vocal_splitter_primary_label": " Vocals "}
+    target.write_text(json.dumps({"selections": stored}), encoding="utf-8")
+    loaded = selections.load(target)
+    assert loaded.vr_voc_inst_secondary_model_scale == 1.0
+    assert loaded == selections.Selections(**stored)
+    assert loaded == selections.Selections(**json.loads(
+        (target.read_text(encoding="utf-8")))["selections"])
+    selections.save(loaded, target)
+    assert selections.load(target) == loaded
+
+
 def test_a_selection_reaches_the_plan_only_when_its_switch_is_on(tmp_path):
     """Not a mock: build real plans with one secondary model selected, once with the
     gate off and once with it on, and assert the plan carries the value only in the
