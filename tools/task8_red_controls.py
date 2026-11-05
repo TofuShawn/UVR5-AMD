@@ -627,7 +627,7 @@ def test_red_the_pin_fires_when_a_name_list_shrinks():
     name is still in the pin, so the pin is a second source and not
     `frozenset(GUI_PACKAGES) == frozenset(GUI_PACKAGES)` in disguise.
     """
-    t8.test_the_two_lists_have_not_shrunk()
+    t8.test_the_pinned_lists_have_not_shrunk()
     print("[red] pin on the committed lists -> PASSES (as it must)", flush=True)
 
     for name, pin_name in (("GUI_PACKAGES", "PINNED_GUI_PACKAGES"),
@@ -645,7 +645,7 @@ def test_red_the_pin_fires_when_a_name_list_shrinks():
             f"from {name} rather than copied next to it -- this control would be "
             f"watching a tautology go red")
         with pytest.raises(AssertionError) as fired:
-            ns["test_the_two_lists_have_not_shrunk"]()
+            ns["test_the_pinned_lists_have_not_shrunk"]()
         message = str(fired.value)
         missing_line = next((ln for ln in message.splitlines()
                              if ln.strip().startswith("MISSING from " + name)), "")
@@ -665,7 +665,7 @@ def test_red_the_pin_fires_when_a_name_list_shrinks():
         "premise broken: the duplicate was supposed to be invisible to set "
         "equality; if it is not, the len() assert this control proves is dead code")
     with pytest.raises(AssertionError, match=DUP_MARK) as fired:
-        ns["test_the_two_lists_have_not_shrunk"]()
+        ns["test_the_pinned_lists_have_not_shrunk"]()
     print(f"[red] {dup_name} with a repeated name -> "
           f"{str(fired.value).splitlines()[0]}", flush=True)
 

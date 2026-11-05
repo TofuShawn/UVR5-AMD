@@ -33,17 +33,23 @@ import fluentqt
 from PySide6.QtCore import QObject, QTimer
 from PySide6.QtWidgets import QFileDialog, QVBoxLayout
 
-#: The per-arch param fields the legacy popups collected. This is the field list from
-#: `UVR.py`'s popup bodies, read before those bodies are deleted in Task 8 -- so this
-#: table is the last copy, and `tests/test_dialogs.py` compares it against `ast` over the
-#: source (two of the four verbs the brief named do not exist: there is no
-#: `pop_up_mdx_param` -- the MDX popup is `pop_up_mdx_model` at `UVR.py:4560` -- and there
-#: is no `pop_up_onnx_param` at all, because an `.onnx` model goes through that same body,
+#: The per-arch param fields the legacy popups collected. This is the field list read
+#: out of `UVR.py`'s popup bodies before Plan 2 Task 8 deleted them, so it is the last
+#: copy -- and the line numbers cited throughout this block are line numbers *in that
+#: deleted copy*, `UVR.py` at commit `720ca46`, re-derivable only from git. The guard
+#: that used to re-read them with `ast` now compares this table against
+#: `tests/test_dialogs.py::POPUP_EVIDENCE`, the frozen record of what the walk produced,
+#: and `test_the_popups_the_table_was_read_from_are_gone` says why the walk is gone (two
+#: of the four verbs the brief named do not exist: there is no `pop_up_mdx_param` -- the
+#: MDX popup is `pop_up_mdx_model` at `:4560` of that copy -- and there is no
+#: `pop_up_onnx_param` at all, because an `.onnx` model goes through that same body,
 #: which reads the graph at `:4570-4575` and writes the `mdx` row).
 #:
 #: Every key here is a key the engine reads out of `spec.model_data`, because a key a
 #: popup collected that `plan.py` never looks up is a *silent* tier-3 failure: the form
-#: appears to save and `resolve()` is still blind.
+#: appears to save and `resolve()` is still blind. That half is still checked live,
+#: against `plan.py` and `catalog.py`, by
+#: `test_every_field_the_dialog_collects_is_a_key_the_engine_reads`.
 PARAM_FIELDS: dict[str, tuple[tuple[str, type], ...]] = {
     # `pop_up_vr_param.pull_data` (`UVR.py:4874-4889`). Engine reads: `vr_model_param`
     # (`plan.py:485`, which then opens `lib_v5/vr_network/modelparams/<name>.json` -- the
@@ -93,16 +99,33 @@ PARAM_FIELDS: dict[str, tuple[tuple[str, type], ...]] = {
 }
 
 #: The suffix a typed config name needs before the engine can use it. Upstream does not
-#: store what the user typed: `UVR.py:4750` (mdx_c) and `UVR.py:4808` (apollo) both write
+#: store what the user typed: its mdx_c and apollo popups both write
 #: `f"{var.get()}{YAML}"`, and that `YAML` is `gui_data/constants.py:128` -- the literal
-#: `'.yaml'`, read from the file rather than assumed, and pinned against both sources by
-#: `tests/test_dialogs.py::test_the_config_yaml_suffix_is_the_one_upstreams_popup_appends`.
-#: The name arrives bare because the dropdowns that feed upstream's variables are built
-#: with `os.path.splitext(x)[0]` (the lambda at `UVR.py:4802`, called with `YAML` at
-#: `:4803`), while `catalog.py:651-652` puts the value straight into `config_path` and
-#: `plan.py:516-519` into an `mdx_c_configs` path that `:521-525` refuses with
-#: `PlanError` when the file is not there. Collecting it verbatim therefore writes a
-#: JSON whose config nobody can find.
+#: `'.yaml'`. The two popup bodies are gone with Plan 2 Task 8's tkinter layer, so the
+#: evidence is the frozen table at
+#: `tests/test_dialogs.py::POPUP_EVIDENCE` (read from `UVR.py` at commit `720ca46`,
+#: lines `:4750` and `:4808` of that copy) and the live check is
+#: `test_the_config_yaml_suffix_is_the_one_upstreams_popup_appends`, which compares this
+#: copy against `gui_data.constants.YAML` without importing it.
+#:
+#: WHY THIS FILE HOLDS ITS OWN LITERAL RATHER THAN `from gui_data.constants import YAML`:
+#: not coupling, and an earlier draft of this note said it was, which was false --
+#: `app/work_page.py`, `app/controller.py`, `app/session.py` and `app/settings_page.py`
+#: all `import catalog`, and `catalog` imports `gui_data.constants`, so that module is
+#: already in the app's process. The reason is *what a failure means*. The guard above
+#: compares two sources and is supposed to fire when the app stops writing what
+#: upstream's popup wrote. If this line read the constant instead, an upstream rename
+#: with zero behavioural effect -- `YAML` to `YAML_SUFFIX`, say -- would take the whole
+#: GUI half of the suite red for the wrong reason, the exact pattern this fork pins
+#: against elsewhere (`tests/test_engine_purity.py` refuses to count guard 2's files for
+#: the same cause). A literal plus a comparison fails only on a real mismatch.
+#:
+#: The name arrives bare because upstream's dropdowns that feed those variables are built
+#: with `os.path.splitext(x)[0]` (the lambda at `:4802` of the same copy, called with
+#: `YAML` at `:4803`), while `catalog.py:651-652` puts the value straight into
+#: `config_path` and `plan.py:516-519` into an `mdx_c_configs` path that `:521-525`
+#: refuses with `PlanError` when the file is not there. Collecting it verbatim therefore
+#: writes a JSON whose config nobody can find.
 CONFIG_YAML_SUFFIX = ".yaml"
 
 #: Values upstream's own popup pre-sets, so a box the tkinter dialog also pre-sets is not

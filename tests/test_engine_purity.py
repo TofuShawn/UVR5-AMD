@@ -49,12 +49,14 @@ Both "what it cannot see" clauses are load-bearing, not hedging: a ratchet whose
 docstring implies more than it delivers invites the edit that defeats it. The
 red runs behind every claim here are committed as `tools/task8_red_controls.py`
 (run it explicitly; it is not collected by bare `pytest`). A third test,
-`test_the_two_lists_have_not_shrunk`, is the same defense one level up: both
+`test_the_pinned_lists_have_not_shrunk`, is the same defense one level up: both
 guards and both controls take `GUI_PACKAGES` and `ENGINE_IMPORTS` as *input*, so
-neither can see one of them shrink, and the pin checks the two lists against
-frozen literals instead. Since R-T2-blockset it checks a third list the same way --
-`RUN_CHILD_BLOCKED`, the block set the CLI-running child is handed -- because a
+neither can see one of them shrink, and the pin checks the lists against frozen
+literals instead. It checks three of them -- `RUN_CHILD_BLOCKED`, the block set the
+CLI-running child is handed, joined the pair under ruling R-T2-blockset, because a
 guard input passed as an argument shrinks just as quietly as one read from a global.
+(The fourth pinned name list in this file, `PINNED_LINT_GLOBS`, is asserted inside
+`test_no_global_tkinter_root_reference`, next to the sweep it belongs to.)
 """
 import ast, pathlib, subprocess, sys
 
@@ -116,7 +118,7 @@ GUI_PACKAGES = ("tkinter", "gui_data.tkinterdnd2", "gui_data.sv_ttk", "PIL.Image
 # child that refused `app` would refuse the shared assembly path by construction (ruling
 # R-T2-blockset). `app` is the ONLY name this set drops: the tkinter four stay, and
 # `PySide6`/`fluentqt` stay -- that pairing is the Plan 2 strengthening and must survive,
-# which `test_the_two_lists_have_not_shrunk` enforces twice (once against the frozen
+# which `test_the_pinned_lists_have_not_shrunk` enforces twice (once against the frozen
 # copy below, once against `PINNED_GUI_PACKAGES - {"app"}`). The Qt-freedom claim the
 # dropped name used to carry is not lost: `app` is still blocked for guard 1's 16
 # import-time modules, and `tests/test_session.py::test_importing_session_pulls_in_no_qt`
@@ -124,11 +126,11 @@ GUI_PACKAGES = ("tkinter", "gui_data.tkinterdnd2", "gui_data.sv_ttk", "PIL.Image
 RUN_CHILD_BLOCKED = ("tkinter", "gui_data.tkinterdnd2", "gui_data.sv_ttk", "PIL.ImageTk",
                      "PySide6", "fluentqt")
 
-# Fix round 2, Item 1: frozen second copies of both name lists, asserted against
-# them by `test_the_two_lists_have_not_shrunk`. They are *separate literals* on
-# purpose: every other check on these two lists derives its expectation from the
+# Fix round 2, Item 1: frozen second copies of the guard-input name lists, asserted
+# against them by `test_the_pinned_lists_have_not_shrunk`. They are *separate literals*
+# on purpose: every other check on these lists derives its expectation from the
 # list itself (`guard_script`'s default block set *is* `GUI_PACKAGES`; the controls
-# loop over both), so a trim shrinks the audit with the audit's input. Both
+# loop over them), so a trim shrinks the audit with the audit's input. Both
 # halves reproduced on this machine at `71683e9`: `GUI_PACKAGES` narrowed to two
 # entries plus `ENGINE_IMPORTS` narrowed to `["separate"]` leaves this file's two
 # guards PASSED (2 passed, RC=0) and every control green -- the controller's
@@ -359,10 +361,10 @@ def pin_drift(list_name, live, pinned, pin_name):
         f"remove.")
 
 
-def test_the_two_lists_have_not_shrunk():
-    """The pin (Item 1): both name lists still hold exactly their pinned names.
+def test_the_pinned_lists_have_not_shrunk():
+    """The pin (Item 1): the three guard-input lists still hold exactly their pinned names.
 
-    Guard 1 and the controls take these two lists as *input*, so neither can
+    Guard 1 and the controls take these lists as *input*, so neither can
     report a shrink: narrow `GUI_PACKAGES` and `guard_script` narrows the blocker
     in step; trim `ENGINE_IMPORTS` and the per-module table prints all-GREEN rows
     for the shorter list. Both were reproduced at `71683e9` (4 -> 2 and 14 -> 1
@@ -371,8 +373,10 @@ def test_the_two_lists_have_not_shrunk():
 
     Since ruling R-T2-blockset this checks a third list too -- `RUN_CHILD_BLOCKED`,
     the block set of the *CLI-running* child, which `guard_script` now takes as a
-    parameter. The name still says "two lists" because the tools and plan prose cite
-    it; what it checks is every guard input in this file.
+    parameter. The name says "pinned lists" rather than counting them, because a
+    fourth pin (`PINNED_LINT_GLOBS`) lives in the sweep test above and a name that
+    states a number is a name that goes stale; what this one checks is every guard
+    input pinned in this file, which today is three.
     """
     assert frozenset(GUI_PACKAGES) == PINNED_GUI_PACKAGES, pin_drift(
         "GUI_PACKAGES", GUI_PACKAGES, PINNED_GUI_PACKAGES, "PINNED_GUI_PACKAGES")

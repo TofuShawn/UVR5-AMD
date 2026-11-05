@@ -25,6 +25,7 @@ import json
 import sys
 import time
 import weakref
+from dataclasses import dataclass
 from pathlib import Path
 
 import backends
@@ -830,27 +831,84 @@ def _engine_param_keys() -> set[str]:
     return keys
 
 
-def _popup_collected_keys(function_name: str) -> set[str]:
-    """The keys one `UVR.py` popup writes into its JSON, read as text with `ast`.
+#: One row of the frozen popup evidence: what one `UVR.py` popup collected, and where it
+#: lived. `frozen` on purpose -- see `POPUP_EVIDENCE`'s provenance block for why this
+#: table exists instead of the AST reader that produced it.
+@dataclass(frozen=True)
+class PopupEvidence:
+    arch: str
+    popup: str
+    def_line: int
+    collect_line: int
+    keys: frozenset[str]
+    yaml_suffix: str | None = None
+    yaml_line: int | None = None
 
-    `UVR.py` cannot be imported on this machine (it dies at `import pyglet`), and its
-    bodies go away in Task 8, so the source is the last evidence available.
+
+#: Upstream's tier-3 popups, frozen. This is *the last copy* of the evidence that
+#: `app/dialogs.py`'s `PARAM_FIELDS` was verified against, kept as a committed table with
+#: its provenance rather than deleted along with the tkinter bodies it was read from
+#: (ruling R-T8-popupfreeze).
+#:
+#: PROVENANCE, the same for every row: read on 2026-11-06 from `UVR.py` at commit
+#: `720ca46` -- blob `789b2b9d2d57ef7ce10eaaf1bb226a11ded788b4`, byte-identical to the
+#: copy Task 8 deleted -- by walking that file with `ast` (the module cannot be imported
+#: here; it dies at `import pyglet`, several hundred lines above any of this). `def_line`
+#: is the popup's own line in that copy; `collect_line` is the line of the dict literal
+#: that wrote the popup's JSON answer; `keys` is every string key of that dict, resolved
+#: through `gui_data.constants` for the interpolated names exactly as
+#: `_engine_param_keys` still does for the engine side; `yaml_suffix` is the *name*
+#: interpolated last in the `config_yaml` f-string, resolved against
+#: `gui_data/constants.py:128` at read time.
+#:
+#: Re-derivable while git has the file:
+#:   `git show 720ca46:UVR.py | sed -n '4852,4900p'`
+#:
+#: Every other `UVR.py:NNNN` citation in this file's docstrings (`:4560`, `:4572-4585`,
+#: `:4750`, `:4802`, `:4808`, `:4868-4897`) is a line number in that same deleted copy:
+#: Task 8 removed those bodies from the working file, so from here on they resolve only
+#: through `git show 720ca46:UVR.py`, and `GONE_POPUPS` in
+#: `tests/test_model_data_retired.py` is what keeps a reader from assuming otherwise.
+#:
+#: Nothing after this commit's deletion can re-verify it, which is the whole reason the
+#: table is frozen here instead of read live: an unjustifiable `PARAM_FIELDS` and a
+#: reviewer who cannot tell whether that is because it is right or because the evidence
+#: was thrown away is the worse outcome. `tests/test_model_data_retired.py` now asserts
+#: these popups are *gone*, so a reader always knows which copy is in front of them.
+POPUP_EVIDENCE: dict[str, PopupEvidence] = {
+    row.popup: row for row in (
+        PopupEvidence("vr", "pop_up_vr_param", 4852, 4874, frozenset({
+            "vr_model_param", "primary_stem", "nout", "nout_lstm", "is_karaoke",
+            "is_bv_model", "is_bv_model_rebalanced"})),
+        PopupEvidence("mdx", "pop_up_mdx_model", 4560, 4706, frozenset({
+            "compensate", "mdx_dim_f_set", "mdx_dim_t_set", "mdx_n_fft_scale_set",
+            "primary_stem", "is_karaoke", "is_bv_model",
+            "is_bv_model_rebalanced"})),
+        PopupEvidence("mdx_c", "pop_up_mdx_c_param", 4738, 4749, frozenset({
+            "config_yaml", "is_roformer"}), ".yaml", 4750),
+        PopupEvidence("apollo", "pop_up_apollo_param", 4797, 4807, frozenset({
+            "config_yaml"}), ".yaml", 4808),
+    )
+}
+
+
+def _constants_yaml() -> str:
+    """`gui_data.constants.YAML` looked up by name, so a benign upstream *rename* answers
+    with this sentence instead of a bare `AttributeError`.
+
+    Same shape the AST readers already used (`getattr(const, name.id, None)`), for the
+    same reason: `YAML` is a GUI constant this suite quotes, and a reader of a failure
+    here needs to know which symbol was expected and where it came from.
     """
-    tree = ast.parse((REPO / "UVR.py").read_text(encoding="utf-8"))
-    funcs = [n for n in ast.walk(tree)
-             if isinstance(n, ast.FunctionDef) and n.name == function_name]
-    assert len(funcs) == 1, f"{function_name} found {len(funcs)} times in UVR.py"
-    keys: set[str] = set()
-    for node in ast.walk(funcs[0]):
-        if isinstance(node, ast.Dict):
-            for key in node.keys:
-                if isinstance(key, ast.Constant) and isinstance(key.value, str):
-                    keys.add(key.value)
-                elif isinstance(key, ast.Name):
-                    value = getattr(const, key.id, None)
-                    assert isinstance(value, str), f"{key.id} is not a string constant"
-                    keys.add(value)
-    return keys
+    value = getattr(const, "YAML", None)
+    assert isinstance(value, str), (
+        f"gui_data/constants.py has no string `YAML` constant -- getattr found "
+        f"{value!r}. The frozen popup evidence (POPUP_EVIDENCE) records that both "
+        f"`pop_up_mdx_c_param` (line 4750) and `pop_up_apollo_param` (line 4808) "
+        f"interpolated the bare name `YAML` into their `config_yaml` f-string, so if "
+        f"upstream renamed the constant the evidence row and this lookup move together; "
+        f"`app/dialogs.py:CONFIG_YAML_SUFFIX` is the copy the app actually appends.")
+    return value
 
 
 @pytest.mark.parametrize("arch, popup", (
@@ -860,14 +918,30 @@ def _popup_collected_keys(function_name: str) -> set[str]:
     ("apollo", "pop_up_apollo_param"),
 ))
 def test_the_rows_are_upstreams_own_keys_and_nothing_invented(arch, popup):
-    """Key *sets*, compared against the popup body that writes them.
+    """Key *sets*, compared against the frozen record of the popup that wrote them.
 
     There is no `pop_up_mdx_param` and no `pop_up_onnx_param` in `UVR.py`: the MDX popup
     is `pop_up_mdx_model` (:4560) and an `.onnx` model goes through that same body, which
     reads the graph at :4570-4575 and writes the mdx row -- so `onnx` has no row here.
+
+    Until Task 8 the other side of this equality was an `ast` walk of the live popup
+    body; now it is `POPUP_EVIDENCE`, which that walk produced and which
+    `test_the_popups_the_table_was_read_from_are_gone` pins as gone from the file. The
+    half of the contract that can still be checked live -- that every collected key is a
+    key the engine reads -- is `test_every_field_the_dialog_collects_is_a_key_the_engine_
+    reads`, over `plan.py` and `catalog.py`, and it is unchanged.
     """
-    assert _popup_collected_keys(popup) == {name for name, _type
-                                           in dialogs.PARAM_FIELDS[arch]}
+    assert POPUP_EVIDENCE[popup].arch == arch, (
+        f"the evidence row for {popup!r} is filed under {POPUP_EVIDENCE[popup].arch!r}, "
+        f"not {arch!r}; the parametrisation and the table disagree")
+    assert POPUP_EVIDENCE[popup].keys == frozenset(
+        name for name, _type in dialogs.PARAM_FIELDS[arch]), (
+        f"`app/dialogs.py` PARAM_FIELDS[{arch!r}] no longer collects the keys "
+        f"`{popup}` collected: table has "
+        f"{sorted(frozenset(name for name, _type in dialogs.PARAM_FIELDS[arch]))}, "
+        f"frozen evidence has {sorted(POPUP_EVIDENCE[popup].keys)}. Either the table "
+        f"moved away from upstream's popup, or the evidence row was transcribed wrong; "
+        f"re-read `git show 720ca46:UVR.py` before changing either side.")
 
 
 def test_every_field_the_dialog_collects_is_a_key_the_engine_reads():
@@ -962,7 +1036,7 @@ def test_a_typed_config_yaml_reaches_the_engine_with_its_extension(qapp, tmp_pat
     _fill(dlg, {"config_yaml": "apollo_base"})
     dlg.setResult(fluentqt.ContentDialog.ResultPrimary)
     params = dialogs.collected_params(dlg)
-    assert params == {"config_yaml": "apollo_base" + const.YAML}, (
+    assert params == {"config_yaml": "apollo_base" + _constants_yaml()}, (
         "the value must be the one upstream's popup would have written, with the suffix "
         "it appends -- not the stem the form was handed")
     assert params["config_yaml"] == "apollo_base.yaml"
@@ -1013,45 +1087,37 @@ def test_a_config_yaml_that_already_carries_the_extension_is_kept_as_typed(
 
 
 def _popup_yaml_suffix(function_name: str) -> str:
-    """What one popup's `config_yaml` value appends, resolved the way Python would.
+    """What one frozen popup row says its `config_yaml` value appended.
 
-    Same source of truth as `_popup_collected_keys`: `UVR.py` cannot be imported here, so
-    the body is read with `ast`, and the appended name is looked up in
-    `gui_data.constants` -- the module upstream itself imports.
+    Until Task 8 deleted the tkinter layer this resolved the same fact live: it parsed
+    the popup body, required the value to be an f-string, took the *name* interpolated
+    last and looked that name up in `gui_data.constants` -- the module upstream itself
+    imports. `POPUP_EVIDENCE` is the output of that walk, recorded with its provenance,
+    and `test_the_popups_the_table_was_read_from_are_gone` is what keeps this honest:
+    the body the table came from is gone, so the table is the copy.
     """
-    tree = ast.parse((REPO / "UVR.py").read_text(encoding="utf-8"))
-    funcs = [n for n in ast.walk(tree)
-             if isinstance(n, ast.FunctionDef) and n.name == function_name]
-    assert len(funcs) == 1, f"{function_name} found {len(funcs)} times in UVR.py"
-    for node in ast.walk(funcs[0]):
-        if not isinstance(node, ast.Dict):
-            continue
-        for key, value in zip(node.keys, node.values):
-            if not (isinstance(key, ast.Constant) and key.value == "config_yaml"):
-                continue
-            assert isinstance(value, ast.JoinedStr), (
-                f"{function_name} builds config_yaml as {type(value).__name__}, not an "
-                f"f-string; re-read the body before trusting the suffix")
-            last = value.values[-1]
-            assert isinstance(last, ast.FormattedValue), ast.dump(value)
-            name = last.value
-            assert isinstance(name, ast.Name), ast.dump(name)
-            suffix = getattr(const, name.id, None)
-            assert isinstance(suffix, str), f"{name.id} is not a string constant"
-            return suffix
-    raise AssertionError(f"{function_name} writes no config_yaml")
+    row = POPUP_EVIDENCE[function_name]
+    assert row.yaml_suffix is not None, (
+        f"{function_name} has no frozen config_yaml suffix -- the evidence row says it "
+        f"never wrote one, which contradicts the test asking for it")
+    return row.yaml_suffix
 
 
 @pytest.mark.parametrize("popup", ("pop_up_apollo_param", "pop_up_mdx_c_param"))
 def test_the_config_yaml_suffix_is_the_one_upstreams_popup_appends(popup):
-    """.yaml is read out of the two sources that decide it, not assumed by this file: the
-    f-string in the popup body that writes the value, and the constant that f-string
-    interpolates. If either moves, `app/dialogs.py`'s copy has to move with it -- which is
-    the only way this GUI can still be said to write what upstream's popup wrote."""
+    """.yaml is not assumed by this file: it is the value the frozen evidence row records
+    the popup's f-string interpolating, checked against the constant that interpolation
+    named and against the copy `app/dialogs.py` actually appends.
+
+    If upstream renames `gui_data.constants.YAML`, the second assertion below fires with
+    `_constants_yaml`'s message rather than an `AttributeError`, and the same sentence
+    tells the reader that `POPUP_EVIDENCE`'s `yaml_line` is where the name was read.
+    """
     suffix = _popup_yaml_suffix(popup)
-    assert suffix == const.YAML, (
+    yaml_constant = _constants_yaml()
+    assert suffix == yaml_constant, (
         f"{popup} appends a constant that resolves to {suffix!r} while "
-        f"gui_data.constants.YAML is {const.YAML!r}")
+        f"gui_data.constants.YAML is {yaml_constant!r}")
     assert dialogs.CONFIG_YAML_SUFFIX == suffix, (
         f"app/dialogs.py appends {dialogs.CONFIG_YAML_SUFFIX!r} but upstream's popup "
         f"appends {suffix!r}; the engine reads the path the value names")

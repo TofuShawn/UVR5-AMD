@@ -260,7 +260,7 @@ def blocked_child_source(argv: list[str]) -> str:
     would make it refuse the shared assembly package, i.e. refuse the design (ruling
     R-T2-blockset). `RUN_CHILD_BLOCKED` drops exactly one name, `app`, and keeps the
     whole GUI stack the claim is about -- the tkinter four *plus* `PySide6` and
-    `fluentqt` -- pinned in `test_engine_purity.py::test_the_two_lists_have_not_shrunk`
+    `fluentqt` -- pinned in `test_engine_purity.py::test_the_pinned_lists_have_not_shrunk`
     against both its own frozen copy and `PINNED_GUI_PACKAGES - {"app"}`. Nothing the
     Qt-freedom of `app` used to imply is lost: guard 1 still blocks `app` for its 16
     import-time modules, and `tests/test_session.py::test_importing_session_pulls_in_no_qt`

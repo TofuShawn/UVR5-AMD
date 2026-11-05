@@ -19,13 +19,25 @@ path; both are composition roots, neither is a catalog internal.
 Two properties the rest of the fork depends on and which this module owns:
 
 * **No GUI, and no import of one.** Nothing here imports `tkinter`,
-  `gui_data.*` or `PIL.ImageTk`, and `separate.py` -- which pulls torch, and so is
-  by far the slowest import in the fork -- is imported *lazily*, only on the path
-  that actually separates. `--list-models` and `--dry-run` therefore answer without
-  touching torch, which keeps them usable on a machine whose venv is not the ROCm
-  one. `tests/test_engine_purity.py` imports this module under the armed tkinter
-  blocker, so the claim is executed and not asserted; `tests/test_separate_cli.py`
-  then runs a real separation in a child where `tkinter` raises `ImportError`.
+  `gui_data.*` or `PIL.ImageTk`, and `separate.py` -- the module that loads the model
+  classes and the whole ROCm-side import graph, and so by far the slowest import in the
+  fork -- is imported *lazily*, only on the path that actually separates. What that buys
+  is one property, and it is narrower than the wording this bullet carried until Plan 2
+  Task 8 measured it: **neither `--list-models` nor `--dry-run` reaches `separate`** --
+  `tests/test_separate_cli.py::test_the_cli_imports_no_network_module_at_all` pins it
+  statically (`separate` is not an eager import of this file) and
+  `tests/test_session.py::test_dry_run_never_imports_the_engine` pins the dry-run half
+  in a child process. The claim they used to make -- that both "answer without touching
+  torch" -- is true of `--list-models` (measured here: `torch` absent from
+  `sys.modules`, exit 0) and **false of `--dry-run`**, because the `compute device:`
+  line is pinned output: `describe_compute_device` below opens with `import torch`, and
+  `run()` calls it before the dry-run return. With no `--device` flag
+  `backends._hip_version()` has imported torch before that line is even reached. So what
+  keeps the no-run commands usable on a venv that is not the ROCm one is that they never
+  need the *model* import graph, not that they never need torch. The GUI half is executed
+  and not asserted -- `tests/test_engine_purity.py` imports this module under the armed
+  tkinter blocker -- and `tests/test_separate_cli.py` runs a real separation in a child
+  where `tkinter` raises `ImportError`.
 * **No network, and no import of a network module.** The AST of this file contains
   no `urllib`, `socket` or `requests` (pinned by test). `model_refresh` is imported
   lazily, inside the one command that asks for it, and it is called through its own
@@ -334,7 +346,10 @@ def describe_compute_device(is_gpu_conversion: int, backend: backends.Backend,
     turn the GPU on from the command line is `--device`, which
     `effective_settings()` already maps onto `gpu_conversion`.
     """
-    import torch  # lazy: the no-run commands never reach this line
+    import torch  # lazy, and NOT skipped by --dry-run: the device line is pinned
+    # output, so this statement runs for every command that gets as far as an
+    # assembled plan. `--list-models` returns before `run()` reaches here, which is the
+    # one no-run command that really does stay torch-free (see the module docstring).
 
     hip = getattr(torch.version, "hip", None)
 

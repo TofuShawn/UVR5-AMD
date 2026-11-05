@@ -2,9 +2,9 @@
 the user asked for.
 
 Why every assertion here is scoped to *which constant is loaded* rather than to *which
-network syscall appears*: this fork keeps three kinds of network use on purpose, and a
-grep for `urlopen` / `download` cannot tell them apart from the update channel it is
-supposed to kill.
+network syscall appears*: this fork kept network use of three kinds on purpose, and a
+grep for `urlopen` / `download` cannot tell them apart from the update channel this task
+is supposed to kill.
 
 * `wget.download` at `UVR.py:5490` / `:5496` — user-initiated weight downloads from the
   Download Center. This is how a machine without a given model gets it.
@@ -20,7 +20,7 @@ would additionally flag the very prose that replaces the removed behaviour ("thi
 has no auto-update"). So: AST `Name` loads and `Call` argument identities, never
 substrings over the whole file.
 
-`UVR.py` is a dead GUI (its `__main__` raises, and it was never importable on this
+`UVR.py` is inert now (its `__main__` raises, and it was never importable on this
 machine), so like `tests/test_model_data_retired.py` this file parses the source instead
 of importing it. Every line number quoted here or in an assertion message is the
 controller's measurement at HEAD 7140156 (the state Task 12 started from); the file is
@@ -29,6 +29,19 @@ not line-stable, which is why all five tests match on AST nodes, never on a line
 The fifth test is the other half of the contract and is not decoration: the first four
 are satisfied by an over-deletion that also removes the user's downloader, and only the
 survivor assertions notice.
+
+PLAN 2 TASK 8 CHANGED WHICH SURVIVORS EXIST, and test 5 is the only place that feels it:
+every call site in the three bullets lived inside the tkinter layer that commit deleted.
+In the copy it deleted — `UVR.py` at commit 720ca46, 7,342 lines — they were
+`wget.download` at :5437/:5443, `urlopen(config_link)` at :4242/:5284 and the two
+app-restart `Popen`s at :7226/:7228; the numbers in the bullets above are Task 12's
+measurement at 7140156, and the file is 358 lines now. What still survives, and what
+test 5 therefore still asserts, is the part of the contract that was never about the GUI
+— `NORMAL_REPO` and `MDX23_CONFIG_CHECKS` in `gui_data/constants.py`, `OPEN_FILE_func`'s
+two `Popen`s, and `model_refresh.py` as the one module in the fork that fetches, behind
+its `confirm=True` rule. The user-facing downloader is gone with the Download Center
+that hosted it; a weight is installed by putting the file in the model root, and the
+baked tables refresh through `separate_cli.py --refresh-model-tables --confirm`.
 """
 import ast
 import pathlib
@@ -209,30 +222,69 @@ def test_user_invoked_network_paths_survive():
 
     Names and counts measured at HEAD 7140156; the `wget.download` count is the one that
     changes by design (3 -> 2, because :5480 is the application update).
+
+    Plan 2 Task 8 is the second such change, and it is why this function no longer reads
+    the way Task 12 wrote it. Six of the call sites named above lived inside the tkinter
+    layer -- `pop_up_*`/Download Center `wget.download`, the user-requested
+    `urlopen(config_link)`, and the two app-restart `Popen`s. In the copy that commit
+    deleted (`UVR.py` at 720ca46, 7,342 lines) they were :5437/:5443, :4242/:5284 and
+    :7226/:7228 -- they are gone with 7,001 lines of dead GUI, not with a policy
+    reversal. Asserting their survival would have been asserting a property
+    of a file that no longer has them, so the assertion is re-scoped rather than dropped,
+    and the re-scoping is *stronger* on the axis Task 12 cared about: after Task 8,
+    `UVR.py` contains no network call of any kind, and the only module in this fork that
+    fetches is `model_refresh.py`, behind its `confirm=True` rule. What must still
+    survive -- the constants that were user-requested fetching and never an update
+    channel, and the "open this folder for me" exec -- is asserted below, in the files
+    that still hold them.
     """
-    downloads = _calls_named(UVR_TREE, "download")
-    update_fetches = [n for n in downloads if "download_update_link" in ast.unparse(n)]
-    assert len(downloads) - len(update_fetches) >= 2, (
-        f"the user-initiated weight downloads are gone: wget.download call nodes are "
-        f"{[n.lineno for n in downloads]}. :5490 and :5496 must survive.")
+    # 1. Nothing in UVR.py reaches the network any more, in either direction: no
+    #    downloader, no config fetch, no installer exec, no restart. This is the
+    #    over-deletion guard's replacement -- a call node class that must now be empty.
+    for attr in ("download", "urlopen", "Popen", "urlretrieve"):
+        offenders = [n.lineno for n in _calls_named(UVR_TREE, attr)
+                     if not _is_open_file_func(n)]
+        assert not offenders, (
+            f"UVR.py still calls .{attr} at {offenders}. Task 12 removed the app's own "
+            f"network and Task 8 removed the GUI that held the user's; a fetch or exec "
+            f"reappearing here means the front end is reaching for the network again "
+            f"from a module nothing is supposed to import. `model_refresh.py` is that "
+            f"path and `separate_cli.py --refresh-model-tables --confirm` is the command.")
 
-    config_fetches = [n for n in _calls_named(UVR_TREE, "urlopen")
-                      if n.args and isinstance(n.args[0], ast.Name)
-                      and n.args[0].id == "config_link"]
-    assert len(config_fetches) == 2, (
-        f"the user-requested MDX-C/Roformer config fetches changed: "
-        f"{[n.lineno for n in config_fetches]} (want the two at :4212 and :5311).")
-    assert [n.id for n in ast.walk(CONSTANTS_TREE)
-            if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)
-            and n.id == "MDX23_CONFIG_CHECKS"], (
-        "MDX23_CONFIG_CHECKS was deleted; it builds config_link and is not an update URL.")
-
+    # 2. `OPEN_FILE_func` is the exception above and it is still a Popen: "open this
+    #    folder for me" is not a fetch, and Task 12's brief named it as such.
     popens = [ast.unparse(n) for n in _calls_named(UVR_TREE, "Popen")]
-    assert any("UVR_Launcher.exe" in p for p in popens), f"restart exec gone: {popens}"
-    assert any('python "' in p for p in popens), f"restart fallback exec gone: {popens}"
     assert any('"open"' in p or "'open'" in p for p in popens), f"OPEN_FILE_func (macOS) gone: {popens}"
     assert any("xdg-open" in p for p in popens), f"OPEN_FILE_func (Linux) gone: {popens}"
 
+    # 3. The two constants that were user-requested fetching and never an update
+    #    channel still exist in gui_data/constants.py -- deleting *them* is the
+    #    over-deletion this test was written to catch.
+    assert any(n.id == "MDX23_CONFIG_CHECKS" for n in ast.walk(CONSTANTS_TREE)
+               if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)), (
+        "MDX23_CONFIG_CHECKS was deleted; it builds config_link and is not an update URL.")
     defined = {n.id for n in ast.walk(CONSTANTS_TREE)
                if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)}
     assert "NORMAL_REPO" in defined, "NORMAL_REPO (model weights) deleted by mistake."
+
+    # 4. The live fetching path exists and is the confirmed one. `urllib.request` in the
+    #    import list is the shape; tests/test_model_refresh.py holds the refusal rule,
+    #    and test_retained_refresh_lives_outside_uvr_py above holds the wiring.
+    refresh_tree = _tree(REFRESH_PATH)
+    fetches = _calls_named(refresh_tree, "urlopen")
+    assert fetches, (
+        f"{REFRESH_PATH} no longer calls urlopen: with the GUI gone this module is the "
+        f"fork's only user-requested fetch, and the user's model tables would have "
+        f"silently stopped being refreshable.")
+
+
+def _is_open_file_func(node: ast.Call) -> bool:
+    """True for the two `Popen` calls that only open a folder for the user.
+
+    Recognised by argument identity (`"open"` / `"xdg-open"` / `input_string`), not by
+    line number: those three names are `OPEN_FILE_func`'s whole signature and they are
+    what distinguishes "reveal in file manager" from "run a program we downloaded".
+    """
+    text = ast.unparse(node)
+    return ('"open"' in text or "'open'" in text or "xdg-open" in text
+            or "input_string" in text)

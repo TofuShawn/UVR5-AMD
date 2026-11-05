@@ -1,5 +1,12 @@
 """Launch the app: QApplication, theme, window, work page.
 
+Run it as `python -m app.main` from the repository root -- the package form, because the
+engine surface this app calls (`backends`, `catalog`, `separate_cli`, `plan`) lives at
+the root and `-m` puts the working directory on `sys.path`. `python app/main.py` does
+not: it puts `app/` there instead, and this module used to patch that with a `sys.path`
+insert. Plan 2 Task 8 standardised on the package form and deleted the patch, so the
+launch command and the import path now agree (R-T8-launch).
+
 Theme follows the system (spec §5.3, ruling A: zero token overrides). Reading it is a
 registry lookup on Windows and a palette guess elsewhere; `set_theme` is the only
 call, and no `apply_theme_overrides` happens anywhere in this app.
@@ -7,7 +14,6 @@ call, and no `apply_theme_overrides` happens anywhere in this app.
 from __future__ import annotations
 
 import sys
-from pathlib import Path
 
 import fluentqt
 from PySide6.QtCore import QSettings
@@ -74,9 +80,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    # `python app/main.py` puts `app/` on sys.path, not the repository root, and the
-    # engine surface this app calls (`backends`, `catalog`, `separate_cli`, `plan`) lives
-    # at the root. The launch step in the plan is that exact command, so the script path
-    # is made to match the package path rather than asking users for `-m app.main`.
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     raise SystemExit(main())
