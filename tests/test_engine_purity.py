@@ -1,14 +1,18 @@
 """Task 8: the engine purity ratchet.
 
 `separate.py`, `backends.py` and every `lib_v5/**/*.py`, `demucs/**/*.py` file
-must be importable with the tkinter GUI packages unavailable -- but read that
+must be importable with the full `GUI_PACKAGES` block set unavailable -- but read that
 sentence against the split below, because it spans both guards: guard 1 imports the
 **16** modules named in `ENGINE_IMPORTS` and nothing else, and the
 **38-file** "every file" claim belongs to guard 2, which *lints* all of them and
 imports none. Note the scope:
-that is a *tkinter*-freedom claim, not a GUI-freedom one -- PySide6/Qt are
-deliberately not blocked here (Task 13 owns that), so nothing in this file
-proves the engine is GUI-free. Two guards, split deliberately, and each one is
+that is now a *module-level GUI*-freedom claim, not merely a tkinter one: guard 1
+blocks the tkinter four *plus* `PySide6`/`fluentqt`/`app`, so it does prove the 16
+named imports reach no GUI at import time. What it still cannot see is a GUI import
+deferred into a function body -- a case `app` in the block set makes live, because
+`separate_cli.run()` pulls `app.session` in from inside its body -- and a later
+task's test is what closes it, not this guard. Two guards, split deliberately, and
+each one is
 blind to exactly what the other sees. The names after `plan` -- `plan` (15th, Task
 11b) and `separate_cli` (16th, Task 13) -- are composition layers rather than part of
 `engine`, and they joined on purpose: Task 13's GUI-free CLI is the thing that must
@@ -84,7 +88,9 @@ ENGINE_IMPORTS = ["separate", "backends", "plan", "separate_cli", "lib_v5.mdxnet
 
 # The block set: what the child's finder refuses. Pinned by `PINNED_GUI_PACKAGES`
 # for the same reason -- the controls loop over this tuple, so a narrower tuple
-# audits less and still passes.
+# audits less and still passes. Task 1 added `PySide6`/`fluentqt`/`app` to the four
+# tkinter names, so guard 1 blocks the whole GUI stack, not tkinter alone (see the
+# module docstring).
 GUI_PACKAGES = ("tkinter", "gui_data.tkinterdnd2", "gui_data.sv_ttk", "PIL.ImageTk",
                 "PySide6", "fluentqt", "app")
 
