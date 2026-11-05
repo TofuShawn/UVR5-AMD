@@ -486,6 +486,41 @@ def test_shutdown_reports_false_when_the_cancel_cannot_land(qapp, tmp_path):
     assert len(errs) == 1, errs                         # nothing beyond the one refusal
 
 
+def test_wait_on_an_idle_job_does_not_disarm_the_current_generation(qapp, tmp_path):
+    """R-T4-wait (controller-authorised into Task 5, because Task 5 is the first consumer).
+
+    `QThread::wait()` answers **True** for a thread that never started -- Qt even warns
+    `QThread: Waiting on thread before it starts` -- so returning its raw result let an idle
+    `Job` report a drain it had not performed. `wait()` never wrote `_started` itself; the
+    damage is in the answer a caller acts on: a close handler that reaches for `wait()`
+    instead of `shutdown()` is handed a True it cannot honour, and anything it releases on
+    that basis is released without a thread having been drained -- the generation stamp the
+    next `start()` applies then has no live worker behind it, later terminals read as stale,
+    and the GUI sits busy with no job.
+
+    Three assertions, the third being the symptom that matters: after an idle `wait()` the
+    *next* job's terminal is still honoured, so the page's START/STOP pairing keeps working.
+    """
+    worker = job.Job()
+    done = []
+    worker.succeeded.connect(done.append)
+    worker.start(_request(tmp_path))
+    assert worker.wait(10_000)
+    _deliver(qapp)
+    assert len(done) == 1, done                      # the stamp matched: a real terminal
+
+    assert worker.wait(50) is False, "an idle Job has no live thread to drain"
+    assert worker.is_running() is False
+    assert worker._generation == 1 and worker._started is False, (
+        "an idle wait() disarmed the current generation")
+
+    worker.start(_request(tmp_path))                 # job 2, stamped generation 2
+    assert worker.wait(10_000)
+    _deliver(qapp)
+    assert len(done) == 2, f"job 2's terminal was ignored as stale: {done}"
+    assert worker._generation == 2, worker._generation
+
+
 def test_one_real_job_on_the_worker_thread(qapp, tmp_path, monkeypatch):
     """The fakes prove the plumbing, not the path. This runs the real VR engine on the
     golden crop through Job and asserts the stems landed. It is the only test in Plan 2

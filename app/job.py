@@ -230,17 +230,35 @@ class Job(QObject):
         return ok
 
     def wait(self, ms: int = 1000) -> bool:
-        """Test/dev helper: block until the worker thread finishes.
+        """Test/dev helper: block until a *live* worker thread finishes.
 
-        It does not run the main thread's event loop, so the terminal signal the body
-        posted is still in the queue when this returns True -- a caller that wants to
-        observe it has to process events afterwards. That is exactly the distinction
-        this suite's `_deliver()` helper exists for, and the reason a real GUI must
-        never call this from a slot.
+        R-T4-wait: this used to return the raw `QThread::wait()`, and that answer is **True
+        for a thread that never started** -- Qt even warns `QThread: Waiting on thread before
+        it starts`. An idle `Job` therefore reported a drain it had not performed. `wait()`
+        never wrote `_started` itself, but a caller that reads a True as "the thread is gone,
+        the guard may be released" and clears or re-stamps on that basis disarms the
+        generation the next `start()` applies: every later terminal then reads as stale and
+        the GUI sits busy with no job. A helper may not hand out a guarantee it did not earn,
+        which is what Task 5's close path and its tests would have reached for first.
+
+        It now mirrors `shutdown()`'s discipline: ask the thread, and touch `_started` only
+        when it really finished. So True means *this call watched a live worker reach its
+        end*, and False means there was no live worker to drain (no job accepted right now).
+        The destroy-safety question is a different one and stays with `shutdown()` -- which
+        answers True when no thread was ever built -- or with `is_running()`, a report on the
+        thread that is safe to ask at any time.
+
+        It does not run the main thread's event loop, so a True return leaves the terminal
+        signal the body posted still in the queue -- a caller that wants to observe it has to
+        process events afterwards. That is exactly the distinction this suite's `_deliver()`
+        helper exists for, and the reason a real GUI must never call this from a slot.
         """
-        if self._worker is None:
-            return True
-        return self._worker.wait(ms)
+        if not self._started or self._worker is None:
+            return False
+        ok = self._worker.wait(ms)
+        if ok:
+            self._started = False
+        return ok
 
 
 class _Worker(QThread):
