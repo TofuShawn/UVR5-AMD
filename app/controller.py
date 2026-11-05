@@ -187,23 +187,27 @@ class Controller:
         `load()` read at start-up. `apply(path)` takes the destination precisely so a test
         can point the page somewhere else; nothing here writes a second format.
 
-        A refusal means the file was not touched and the dialog stays open with the
-        message in the console, because the user has to be able to fix the field. On
-        success the controller's two objects become the page's: the next START assembles
-        from *these*, so a saved change takes effect on the next run rather than after a
-        restart. The work page's reference follows, but `refresh_models()` is deliberately
-        **not** called: the Model combo is a per-run pick that may legitimately differ
-        from the persisted `*_model` selection, and re-populating it here would discard a
-        model the user chose and has not run yet.
+        A refusal means the dialog stays open with the message in the console, because the
+        user has to be able to act on it. `SettingsPage.apply` reports both ways a save can
+        fail -- a value the type system refused (nothing was written) and a file that
+        refused to be written (a `settings.json` open in an editor is the everyday Windows
+        case) -- and its message says which half reached the disk, so this line does not
+        have to guess. On success the controller's two objects become the page's: the next
+        START assembles from *these*, so a saved change takes effect on the next run rather
+        than after a restart. The work page's reference follows, but `refresh_models()` is
+        deliberately **not** called: the Model combo is a per-run pick that may legitimately
+        differ from the persisted `*_model` selection, and re-populating it here would
+        discard a model the user chose and has not run yet.
         """
         messages = page.apply(settings_module.config_file())
         console = self.work_page.console.appendPlainText
         if messages:
-            # One line per message -- `apply` reports the first value the type system
-            # refused, and it names the field, which is what the user has to act on.
+            # One line per message -- `apply` names the field it refused or the half it
+            # could not write, and that is what the user has to act on.
             for line in messages:
                 console(line)
-            console("settings not saved: fix the field above and press Save again")
+            console("settings not applied: see the line above, fix it, and press Save "
+                    "again -- the dialog stayed open for that")
             return messages
         self.settings, self.selections = page.st, page.sel
         self.work_page.selections = self.selections

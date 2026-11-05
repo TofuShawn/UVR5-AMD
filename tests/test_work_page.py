@@ -5,14 +5,19 @@ suite. The path fields are set directly, which is the same state a chosen file l
 """
 from __future__ import annotations
 
+import ast
+import collections
 import threading
 import time
+from pathlib import Path
 
 import backends
 import catalog
+import fluentqt
 import pytest
 import selections as selections_module
 import settings as settings_module
+from PySide6.QtGui import QColor, QFontMetrics, QImage, QPainter, QPen
 
 from app import controller, job, main, session, work_page
 
@@ -328,30 +333,177 @@ def test_stop_pressing_cancel_is_the_job_that_owns_the_flag(qapp, tmp_path, monk
 
 
 # -- ruling R-T6-archtabs: the arch row has to be readable at the default size -- #
+#
+# What this section guards is the *paint*, not the layout. The first version of this test
+# compared `itemHeaderGeometry(i).width()` with `fontMetrics().horizontalAdvance()` and
+# called the difference proof. It is not proof: the header rect is *defined* as the painted
+# advance plus the control's own padding -- measured on the shipped `Pivot` at the default
+# window, rect vs paint-font advance came back 72/40, 85/53, 60/28, 48/13 for `apollo`,
+# `demucs`, `mdx`, `vr`, i.e. ~32 px of slack on every one of them -- so `given >= required`
+# holds by construction for any label the control has not squeezed into overflow, and a
+# `SelectorBar` hands back the *same* 72/85/60/48 rects while painting `apollo demucs m… vr`.
+# What follows measures the ink the widget put on the screen instead, and
+# `test_the_ink_check_rejects_the_selector_bar_the_ruling_replaced` keeps that measurement
+# honest by running it against the control the ruling rejected.
+#
+# Why the comparison is against a *rendered reference* and not against `horizontalAdvance`,
+# which is the shape this review asked for: both labels disagree with the paint, in opposite
+# directions, and were measured here (see the report for the table).
+#   * `bar.fontMetrics()` is 9 pt and the control paints at 14 px, so the advances it
+#     reports (34/44/23/10) are ~18 % below every item's real ink width (40/52/27/13). Every
+#     leg passes with slack, and the elided `mdx` still passes: its ink is 23 px wide and
+#     the number to beat is 23. That is the reviewer's own case, and it is a pass.
+#   * the paint font's advances (40/53/28/13) are *above* the ink the good control lays
+#     down, because an advance carries the trailing side bearing: `demucs` paints 52 px of
+#     ink for a 53 px advance and `mdx` 27 for 28. Asserting `ink >= advance` fails the
+#     shipped, correct `Pivot`.
+# Comparing the item's ink with the same string rendered in the same font and colour has
+# neither problem: the widths come out equal to the pixel and the elided item falls 4 px and
+# 52 ink pixels short. No pixel constant appears anywhere.
+#
+# Both numbers come from the paint itself:
+#
+#   * `bg`   -- the most common colour *inside that one header rect*, which is the bar's
+#     own background as it was painted there (measured #2c2c2c under the dark theme);
+#   * `ink`  -- every pixel of the rect that is not `bg`, less the selection indicator,
+#     whose rect the control publishes (`selectedIndicatorGeometry(index)`, measured at
+#     y=37..39 inside a header rect that runs to y=40, i.e. overlapping). The indicator
+#     is the selected item's own accent bar, 40x3 px, and counting it as ink would credit
+#     the item with pixels that are not its text;
+#   * the *reference* -- the same label painted by `QPainter.drawText` with the font the
+#     control uses for its items (`fluentqt.font_for_role(bar.itemFontRole())`; measured
+#     `FontRole.Body` -> "FluentQt UI Text" 14 px) in the colour the item actually painted,
+#     on a field of the colour the item actually painted behind it.
+#
+# Measured for the four real arch labels on the shipped `Pivot`, item vs reference:
+# `apollo` 40x14/260 px against 40x14/260, `demucs` 52x12/296 against 52x12/295, `mdx`
+# 27x12/157 against 27x12/154, `vr` 13x8/65 against 13x8/62 -- same width to the pixel,
+# mass within 3 px and always in the item's favour. The same measurement on a
+# `SelectorBar` gives `mdx` 23x9/85 against a reference 27x12/137: the ellipsis is
+# shorter *and* lighter than the label it replaced, which is exactly what a user reads
+# as an unreadable tab, and what the geometry version scored as a pass.
 
-def test_every_arch_label_is_given_its_full_text_width_at_the_default_window(qapp,
-                                                                            monkeypatch):
-    """Task 5's launch photograph showed the third tab ellipsized to `m…` and the bar
-    claiming a band of empty card. Both are geometry, so both are asserted as geometry,
-    and no number in here is a pixel constant: the required width is the binding's own
-    `fontMetrics` advance for the label, the given width is the binding's own
-    `itemHeaderGeometry`, and the window width is the one `build_app` resizes to.
+#: The arch labels the ruling photographed, used by the negative control.
+ARCH_PROBE_LABELS = ("apollo", "demucs", "mdx", "vr")
 
-    The control is a `Pivot`, chosen over `SelectorBar` by measurement (see
-    `app/work_page.py`): `SelectorBar` ellipsizes `mdx` to `m…` at every width and its
-    `itemGeometry` lies about it (reports 60 px for a 23 px label and still clips), so a
-    `SelectorBar` could never pass a geometry test honestly. `Pivot`'s
-    `itemHeaderGeometry` matches what it paints -- verified offscreen against the actual
-    pixels -- which is what makes required-vs-given a real proof here rather than a
-    rubber stamp.
 
-    Three separate failures this catches, each one a different mechanism:
-      * an item whose header rect is narrower than its text -- the ellipsis in the
-        photograph;
-      * a bar whose floor is below the sum of its labels, which is what lets a squeeze
-        drop an item into overflow at all;
-      * a bar taller than its own content row, i.e. the page's slack parked in the
-        navigation instead of in the form.
+def _ink_of_rect(image, x0, y0, w, h, exclude=()):
+    """The pixels this header rect actually paints, plus the two colours that calibrate
+    the measurement. `exclude` drops the selection indicator's own rect (see above)."""
+    seen = collections.Counter()
+    points = []
+    for y in range(y0, min(y0 + h, image.height())):
+        for x in range(x0, min(x0 + w, image.width())):
+            px, py = x - x0, y - y0
+            if any(ex0 <= px < ex0 + ew and ey0 <= py < ey0 + eh
+                   for ex0, ey0, ew, eh in exclude):
+                continue
+            colour = image.pixel(x, y)
+            seen[colour] += 1
+            points.append((px, py, colour))
+    if not points:
+        return set(), 0, 0
+    bg = seen.most_common(1)[0][0]
+    ink = [(px, py, colour) for px, py, colour in points if colour != bg]
+    if not ink:
+        return set(), bg, 0
+    ink_colour = collections.Counter(c for _, _, c in ink).most_common(1)[0][0]
+    return {(px, py) for px, py, _ in ink}, bg, ink_colour
+
+
+def _span(points):
+    """(width, height, pixel count) of an ink point set."""
+    if not points:
+        return 0, 0, 0
+    xs = [x for x, _ in points]
+    ys = [y for _, y in points]
+    return max(xs) - min(xs) + 1, max(ys) - min(ys) + 1, len(points)
+
+
+def _reference_span(text, font, bg_rgb, ink_rgb):
+    """What `text` looks like when this font paints it in this ink on this field."""
+    image = QImage(400, 120, QImage.Format_RGB888)
+    image.fill(QColor.fromRgb(bg_rgb))
+    painter = QPainter(image)
+    painter.setFont(font)
+    painter.setPen(QPen(QColor.fromRgb(ink_rgb)))
+    painter.drawText(8, 8 + QFontMetrics(font).ascent(), text)
+    painter.end()
+    points, _, _ = _ink_of_rect(image, 0, 0, image.width(), image.height())
+    return _span(points)
+
+
+def _header_rect(bar, index):
+    """The rect the bar reserves for item `index`'s header. Both controls publish one,
+    under different names, and each name exists only on its own class (measured)."""
+    if hasattr(bar, "itemHeaderGeometry"):
+        return bar.itemHeaderGeometry(index)
+    return bar.itemGeometry(index)
+
+
+def _legibility_deficits(bar, labels):
+    """One message per label the bar does not paint in full; empty means every item's
+    ink is at least the ink its own text produces.
+
+    Two legs, because elision shows up two ways and a single one can be fooled. An item
+    ellipsized to `m…` loses the ascender row of the `d`, so it is *shorter* (23 px of
+    ink against a 27 px reference); an item whose tail is clipped loses only width; an
+    item painted in a lighter colour than the reference would lose mass but not width.
+    `width` is the tightest of the two on real elisions (exact equality for a full
+    label, a 15 % shortfall for the ellipsized one) and `mass` is the one that cannot be
+    satisfied by drawing fewer, taller strokes.
+    """
+    pixmap = bar.grab()
+    image = pixmap.toImage().convertToFormat(QImage.Format_RGB888)
+    scale = image.width() / max(bar.width(), 1)
+    font = fluentqt.font_for_role(bar.itemFontRole())
+    deficits = []
+    for index, text in enumerate(labels):
+        rect = _header_rect(bar, index)
+        x0, y0 = round(rect.x() * scale), round(rect.y() * scale)
+        w, h = round(rect.width() * scale), round(rect.height() * scale)
+        exclude = ()
+        if index == bar.selectedIndex():
+            indicator = bar.selectedIndicatorGeometry(index)
+            exclude = ((round((indicator.x() - rect.x()) * scale),
+                        round((indicator.y() - rect.y()) * scale),
+                        round(indicator.width() * scale),
+                        round(indicator.height() * scale)),)
+        points, bg, ink_rgb = _ink_of_rect(image, x0, y0, w, h, exclude)
+        got = _span(points)
+        want = _reference_span(text, font, bg, ink_rgb)
+        if got[2] == 0:
+            deficits.append(f"{text!r}: the bar painted no ink at all in its "
+                            f"{w}x{h} header rect")
+            continue
+        if got[0] < want[0]:
+            deficits.append(f"{text!r}: the bar paints {got[0]}px of ink for a label that "
+                            f"is {want[0]}px wide in this font -- the tail is elided or "
+                            f"clipped (rect {_header_rect(bar, index).width()}px)")
+        if got[2] < want[2]:
+            deficits.append(f"{text!r}: the bar paints {got[2]} ink pixels for a label "
+                            f"that needs {want[2]} in this font and colour")
+    return deficits
+
+
+def test_every_arch_label_is_painted_in_full_at_the_default_window(qapp, monkeypatch):
+    """Task 5's launch photograph showed the third tab ellipsized to `m…`, and the
+    geometry test Task 6 shipped with could not see it (see the block comment above for
+    the measurements). So this test grabs the bar and measures what it painted.
+
+    Nothing here is a pixel constant: the ink is compared with the same text painted by
+    the same font, and the two colours the comparison is calibrated against are read out
+    of the paint itself. The legs, each a different mechanism:
+
+      * the bar's labels are the catalog's own arch strings, in the order the page
+        offered them -- a guard renamed or filtered would not be the thing measured;
+      * nothing is in overflow (`hiddenItemIndexes`), which is the *squeeze* failure,
+        and a real one: under a hard squeeze the header rects do go to 0;
+      * every item's painted ink is at least its own label's ink -- the *intrinsic*
+        elision the ruling exists to prevent, invisible to the first two legs;
+      * plus the two layout legs geometry can honestly answer: the bar cannot be
+        squeezed below the width its own labels need, and it cannot be taller than its
+        content (Task 5's photograph also showed the page's slack parked in the nav row).
     """
     monkeypatch.setattr(backends, "resolve", lambda force=None: _cpu_backend())
     app_obj, window = main.build_app([])
@@ -361,23 +513,84 @@ def test_every_arch_label_is_given_its_full_text_width_at_the_default_window(qap
 
     page = window.controller.work_page
     bar = page.arch_bar
-    fm = bar.fontMetrics()
     texts = [item.header for item in bar.items()]
     assert texts == page.arch_names(), (
         "the bar's labels are the catalog's own arch strings, in the order the page "
         "offered them -- no invented names, no abbreviation, no filtering")
     assert not bar.hiddenItemIndexes(), (
         "an arch is in overflow, so the user cannot see or reach it at the default width")
+    deficits = _legibility_deficits(bar, texts)
+    assert not deficits, f"an arch label is not fully painted: {deficits}"
 
-    for index, text in enumerate(texts):
-        required = fm.horizontalAdvance(text)
-        given = bar.itemHeaderGeometry(index).width()
-        assert given >= required, f"{text!r} needs {required}px of text, the bar gives {given}px"
+    fm = QFontMetrics(fluentqt.font_for_role(bar.itemFontRole()))
     assert bar.minimumWidth() >= sum(fm.horizontalAdvance(t) for t in texts), (
-        "the bar may be squeezed below the width its own labels need")
+        "the bar may be squeezed below the width its own labels need -- that is what "
+        "lets a resize drop an item into overflow at all")
     assert bar.height() == bar.sizeHint().height(), (
         f"the bar is {bar.height()}px tall but only needs {bar.sizeHint().height()}px; "
         f"the page's slack is landing in the navigation row")
+
+
+def test_the_ink_check_rejects_the_selector_bar_the_ruling_replaced(qapp, monkeypatch):
+    """The negative control, and the reason the test above is a guard rather than a
+    ceremony: the same measurement, the same four labels and the same header rects run
+    against the control R-T6-archtabs removed.
+
+    Ruling R-T6-archtabs replaced this page's `SelectorBar` with a `Pivot` after
+    measuring that the former ellipsizes `mdx` to `m…` at 520, 728, 1200 and 2000 px
+    alike -- its item rects do not depend on the bar's width, so no resize can rescue
+    it. `SelectorBar` passes every *geometry* test (the reviewer's numbers, reproduced
+    below: the same 72/85/60/48 rects, each wider than the label it reserves) while
+    painting a shortened label, which is exactly the blind spot the old assertion had.
+    So this asserts two things about one measurement: that it reports the elision, and
+    that the width proxy it replaced does not.
+
+    Like `tests/test_fluent_binding.test_the_measured_binding_holes_are_still_holes`,
+    this pins a defect of the pinned wheel rather than of the app: if a future Fluent-Qt
+    stops eliding here, this test fails and the answer is to re-take the measurement,
+    not to delete the ink check the ruling depends on.
+
+    It is measured in the same initialised theme as the shipped bar, and that is not
+    cosmetic: in a process where `fluentqt.initialize_resources()` has never run this
+    control picks different rects for itself -- measured, 116/116/74/60 for the first three
+    labels instead of 72/85/60 -- and the elision disappears. The ruling was taken on the
+    app's own conditions, so the control that defends it has to be taken there too.
+    """
+    monkeypatch.setattr(backends, "resolve", lambda force=None: _cpu_backend())
+    app_obj, window = main.build_app([])
+    window.show()
+    for _ in range(3):
+        qapp.processEvents()
+    pivot = window.controller.work_page.arch_bar
+    labels = [item.header for item in pivot.items()]
+    assert labels == list(ARCH_PROBE_LABELS), (
+        "the two controls must be measured over the same labels, or this compares "
+        "nothing -- re-read the arch list the catalog publishes")
+
+    bar = fluentqt.SelectorBar()
+    for text in labels:
+        bar.addItem(fluentqt.SelectorBarItem(text))
+    bar.resize(pivot.width(), bar.sizeHint().height())
+    bar.show()
+    for _ in range(3):
+        qapp.processEvents()
+
+    # The proxy the ruling replaced: on this control it is satisfied by construction --
+    # every header rect is wider than the label inside it, because the rect is *defined*
+    # as the advance plus the control's padding -- and the third label is still elided.
+    # The advance is taken from the font the item is painted with, so this is the
+    # friendliest possible reading of the geometry test, not the widget's own 9 pt font.
+    fm = QFontMetrics(fluentqt.font_for_role(bar.itemFontRole()))
+    for index, text in enumerate(labels):
+        assert _header_rect(bar, index).width() > fm.horizontalAdvance(text), (
+            "the geometry proxy started biting; re-read the ruling before trusting a "
+            "rect-vs-advance comparison again")
+
+    deficits = _legibility_deficits(bar, labels)
+    assert any("mdx" in line for line in deficits), (
+        f"the ink check no longer rejects the control the ruling rejected: {deficits}")
+    assert _legibility_deficits(pivot, labels) == [], (
+        "the same measurement must pass for the control the app actually ships")
 
 
 # -- the settings dialog (Task 6) --------------------------------------------- #
@@ -454,8 +667,42 @@ def test_a_refused_save_writes_nothing_and_keeps_the_dialog_open(qapp, tmp_path,
     assert "save_format" in pg.console.toPlainText(), pg.console.toPlainText()
 
 
-def test_the_settings_dialog_reaches_the_controller_only_through_a_weakref(qapp, tmp_path,
-                                                                           monkeypatch):
+def test_a_locked_settings_file_is_reported_in_the_console_and_keeps_the_dialog_open(
+        qapp, tmp_path, monkeypatch, appdata):
+    """The I/O half of the save path, seen from the button -- the case Task 6 left silent.
+
+    A `settings.json` open in an editor is the ordinary way this fails on Windows, and
+    before `apply()` caught `OSError` it disappeared the way the refresh refusal did:
+    PySide6 prints an exception that escapes a slot and carries on, so the dialog stayed
+    open, the console stayed empty, and the user could only press Save again. Here the same
+    click has to leave a line that names the file's problem, keep the dialog open, and not
+    adopt what never reached the disk.
+    """
+    import sys
+
+    escapes = []
+    monkeypatch.setattr(sys, "excepthook",
+                        lambda exc_type, value, tb: escapes.append(value))
+    ctrl, pg, page = _settings_page(qapp, tmp_path, monkeypatch)
+    before = ctrl.settings.window_size
+    page.set_field_value("window_size", 999)
+
+    def locked(self, target=None):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(settings_module.Settings, "save", locked)
+    ctrl.settings_dialog.save_button.click()
+
+    assert not escapes, f"the save error escaped the slot again: {escapes!r}"
+    text = pg.console.toPlainText()
+    assert "could not be written" in text and "PermissionError" in text, text
+    assert ctrl.settings_dialog.isVisible() is True, (
+        "a save that failed closed the dialog -- the user has nowhere to press again")
+    assert (appdata / "settings.json").exists() is False
+    assert ctrl.settings.window_size == before, "the controller adopted an unwritten value"
+
+
+def test_the_settings_dialog_is_collected_once_the_test_lets_go(qapp, tmp_path, monkeypatch):
     """The crash this pins is heap corruption (`0xc0000374`) during pytest's forced
     `gc_collect_harder()` at unconfigure, *after* every test had passed. The controller
     holds the dialog in `settings_dialog`, and the dialog had held the controller back
@@ -463,21 +710,102 @@ def test_the_settings_dialog_reaches_the_controller_only_through_a_weakref(qapp,
     free -- and it freed the dialog's Qt-child page behind Qt's own back. Measured on the
     pinned wheel: with four dialogs accumulated, 6 crashes out of 6; a single dialog was
     clean, which is exactly why it hid from a one-test run and only bit the full suite.
-    Held weakly the dialog's lifetime is the Qt parent chain's alone and no cycle forms.
 
-    Asserted structurally, not by `gc.collect()`: the dialog is a live child of the work
-    page, so it is not collectable while the page is, and a collectability assertion
-    would pass for the wrong reason. What has to be true is that nothing on the dialog
-    *is* the controller by strong reference.
+    The fix has two halves and the assertion has to cover both, which is why there are
+    two checks here rather than one:
+
+      * `SettingsDialog._ctrl_ref` is a weakref, so the dialog never closes a cycle with
+        the controller that owns it;
+      * the save button is connected through `settings_page._weak_slot`, not to a
+        callable that captures the dialog. That half is invisible to any inspection of
+        `vars(dialog)`: it puts the cycle *inside* the dialog, and `vars(dialog)` still
+        names no controller.
+
+    Measured on this wheel, and the two halves split along an unexpected line, so each
+    gets its own guard:
+      * `connect(lambda: self.save())` -- the dialog is **still alive after
+        `gc.collect()`** and the lifetime assertion below fails (PySide stores a plain
+        callable strongly, so the C++ button holds the lambda, the lambda holds the
+        dialog, and a top-level dialog is never deleted while Qt lives). On that same
+        mutation everything Task 6's test inspected still looked clean:
+        `isinstance(_ctrl_ref, ReferenceType)` True, `_ctrl_ref() is ctrl` True, no
+        controller among `vars(dialog)`'s values -- measured, not argued, and exactly the
+        gap this finding named.
+      * `connect(self.save)` -- a *bound method*: the dialog really is collected
+        (measured: the lifetime assertion passes), because the binding keeps the receiver
+        of a method slot weakly. So this half is caught by the AST guard below, which
+        rejects both forms, and the `isinstance` leg above stays for the controller
+        back-reference, which is collectable either way and so invisible to the drop.
+
+    So: built with `parent=None` (no Qt parent can keep it alive), every reference the
+    test held dropped, `gc.collect()`, and the object must be gone. Same shape as
+    `tests/test_settings_page.py:270-291` for the page, and the shape Tasks 7 and 8 copy
+    for every dialog they add.
     """
+    import gc
     import weakref
 
-    ctrl, pg, page = _settings_page(qapp, tmp_path, monkeypatch)
-    dialog = ctrl.settings_dialog
-    assert isinstance(dialog._ctrl_ref, weakref.ReferenceType)
-    assert dialog._ctrl_ref() is ctrl
-    strong = [name for name, value in vars(dialog).items() if value is ctrl]
-    assert not strong, f"the dialog strongly references the controller via {strong}"
+    ctrl, pg = _vr_page(qapp, tmp_path, monkeypatch)
+    dialog = controller.SettingsDialog(ctrl, settings_obj=settings_module.Settings(),
+                                       selections_obj=selections_module.Selections())
+    assert isinstance(dialog._ctrl_ref, weakref.ReferenceType), (
+        "half one of the fix: the dialog reaches the controller through a weak reference")
+
+    held = weakref.ref(dialog)
+    controller_held = weakref.ref(ctrl)
+    del dialog, ctrl, pg
+    gc.collect()
+
+    assert held() is None, (
+        "the dialog survived its own last reference: something inside it holds a strong "
+        "reference back -- the save button must connect through "
+        "`settings_page._weak_slot`, exactly as `SettingsPage` connects its own buttons")
+    assert controller_held() is None, (
+        "the controller outlived the test: the dialog keeps it alive, so `_ctrl_ref` is "
+        "not a weak reference after all")
+
+
+def test_no_dialog_in_the_app_holds_itself_in_a_slot_connection():
+    """The lifetime rule above, made mechanical for every dialog the app will have.
+
+    Tasks 7 and 8 add dialogs, and the one-line mistake that reintroduces the crash is a
+    bound method handed to `connect()`. `WorkPage` and `Job` may keep theirs -- they are
+    alive for the whole session, so their cycles never finalise behind Qt's back -- but a
+    dialog is built, shown, closed and dropped, which is precisely the object whose cycle
+    kills the process. Ruling: inside a `class *Dialog`, a slot is either a module-level
+    function, a signal's `emit`, or a wrapper built from a weak reference
+    (`settings_page._weak_slot` / `_deferred_slot`).
+
+    AST rather than introspection so it says *where*: a structural scan of a live dialog
+    cannot see the difference between `connect(self.save)` and `connect(_weak_slot(...))`
+    until the process is already dying.
+    """
+    repo_root = Path(__file__).resolve().parents[1]
+    offenders = []
+    for path in sorted((repo_root / "app").glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.ClassDef) and node.name.endswith("Dialog")):
+                continue
+            for call in ast.walk(node):
+                if not (isinstance(call, ast.Call)
+                        and isinstance(call.func, ast.Attribute)
+                        and call.func.attr == "connect"):
+                    continue
+                for arg in list(call.args) + [kw.value for kw in call.keywords]:
+                    if isinstance(arg, ast.Lambda) and any(
+                            isinstance(n, ast.Name) and n.id == "self"
+                            for n in ast.walk(arg)):
+                        offenders.append(f"{path.name}:{arg.lineno} {node.name} "
+                                         f"connects a lambda over `self`")
+                    elif (isinstance(arg, ast.Attribute)
+                          and isinstance(arg.value, ast.Name) and arg.value.id == "self"):
+                        offenders.append(f"{path.name}:{arg.lineno} {node.name} "
+                                         f"connects the bound method `self.{arg.attr}`")
+    assert not offenders, (
+        "a dialog holds one of its own widgets through a strong self-reference, which is "
+        "the reference cycle that takes the process down at shutdown -- connect through "
+        "`settings_page._weak_slot` instead:\n" + "\n".join(offenders))
 
 
 # -- teardown: ruling R-T4-shutdown ------------------------------------------- #

@@ -42,12 +42,48 @@ FLUENT_INTERNALS: dict[str, set[str]] = {
     "Expander": {"QWidget"},
     "ComboBox": {"QWidget", "QFrame", "QListView", "QScrollBar"},
     "TextEdit": {"QWidget", "QScrollBar", "QTextEdit"},
-    # Task 6's settings page scrolls 83 fields through one of these. Measured at
-    # FluentQt 1.11.2 with every section expanded: 4 `QWidget`s (the
-    # `qt_scrollarea_viewport` plus the binding's own bar hosts) and no `QScrollBar`
-    # class of Qt's at all, because the wheel paints its own.
-    "ScrollView": {"QWidget"},
 }
+
+#: The `ScrollView` Task 6 scrolls the settings body through needs a **name**-keyed
+#: licence, not a class-keyed one. Its internals are `QWidget`s (measured offscreen on
+#: the built dialog, every section expanded: `qt_scrollarea_viewport`,
+#: `qt_scrollarea_hcontainer`, `qt_scrollarea_vcontainer` -- Qt's own scroll-area parts --
+#: and `FluentScrollViewTransparentCorner`, the binding's corner host; and no
+#: `QScrollBar` class of Qt's at all, because the wheel paints its own), and `QWidget` is
+#: exactly the class this guard exists to refuse. Licensing the *class* would license the
+#: mistake the docstring above says it catches: `SettingsPage._body` sits at
+#: body -> viewport(`QWidget`) -> `ScrollView`, so swapping the `Card` for a bare
+#: `QWidget` reads as "ScrollView owns a QWidget" and the suite stays green. Naming each
+#: host means an app-authored widget -- which is never named `qt_scrollarea_*` -- cannot
+#: pass for one.
+SCROLLAREA_INTERNALS = frozenset({
+    "qt_scrollarea_viewport",
+    "qt_scrollarea_hcontainer",
+    "qt_scrollarea_vcontainer",
+    "FluentScrollViewTransparentCorner",
+})
+
+
+def _is_licensed_internal(widget) -> bool:
+    """True when the wheel, not the app, built this Qt part inside the control that owns
+    it. A `ScrollView` only licenses its four named hosts; every other owner is licensed
+    by class, as measured."""
+    owner = _owner(widget) or ""
+    klass = type(widget).__name__
+    if klass in FLUENT_INTERNALS.get(owner, ()):
+        return True
+    return (owner == "ScrollView" and klass == "QWidget"
+            and widget.objectName() in SCROLLAREA_INTERNALS)
+
+
+def _offenders(widgets) -> list[str]:
+    """The bare surfaces in this subtree that neither the Fluent ancestry, the dialog
+    allowance, nor the wheel's own measured internals explain."""
+    return [f"{_owner(w)} owns a {type(w).__name__} "
+            f"({w.objectName() or '<unnamed>'}) that is not Fluent"
+            for w in widgets
+            if not (_is_fluent(w) or isinstance(w, QDialog) or _is_licensed_internal(w))]
+
 
 #: Module-level `fluentqt` names that are functions or enums rather than widget
 #: classes. Anything outside `UI_CLASSES` and this set is not a reviewed surface.
@@ -89,13 +125,7 @@ def _owner(widget) -> str | None:
 
 def test_every_widget_in_the_tree_is_fluent_or_a_known_container(qapp):
     app_obj, window = main.build_app([])
-    offenders = []
-    for widget in window.findChildren(QWidget):
-        if _is_fluent(widget) or isinstance(widget, QDialog):
-            continue
-        if type(widget).__name__ not in FLUENT_INTERNALS.get(_owner(widget) or "", ()):
-            offenders.append(f"{_owner(widget)} owns a {type(widget).__name__} "
-                             f"({widget.objectName() or '<unnamed>'}) that is not Fluent")
+    offenders = _offenders(window.findChildren(QWidget))
     assert not offenders, "\n".join(offenders)
 
 
@@ -114,18 +144,31 @@ def test_the_settings_page_adds_no_bare_surface_of_its_own(qapp):
     """Task 6 puts 83 fields behind a `ScrollView` and five `Expander`s inside a dialog.
     The dialog is opened here rather than assumed: the table above licenses only the
     wheel's own internals, and this is what makes an app-authored bare `QWidget` in the
-    scrollable body -- the one place the page could hide one -- fail the commit."""
+    scrollable body -- the one place the page could hide one -- fail the commit.
+
+    The two direct assertions are the part the licence cannot do. `ScrollView` hosts its
+    content in `qt_scrollarea_viewport`, a `QWidget`, so the body's nearest Fluent
+    ancestor is the `ScrollView` itself -- which means "the body is a bare QWidget"
+    arrives here as "ScrollView owns a QWidget" and would be licensed by class if the
+    licence were by class. It is by name (see `SCROLLAREA_INTERNALS`), and these two
+    lines ask about the body directly instead of through the owner chain: the widget the
+    page put in the scroll area, and whatever the scroll area reports as its content,
+    must both be Fluent surfaces. Measured with a bare `QWidget` substituted for the
+    `Card`: both fail, and the census below names it too.
+    """
     app_obj, window = main.build_app([])
     window.controller.work_page.settings_requested.emit()
     dialog = window.controller.settings_dialog
-    assert _is_fluent(dialog.page), f"the settings page is a {type(dialog.page).__name__}"
-    offenders = []
-    for widget in dialog.findChildren(QWidget):
-        if _is_fluent(widget) or isinstance(widget, QDialog):
-            continue
-        if type(widget).__name__ not in FLUENT_INTERNALS.get(_owner(widget) or "", ()):
-            offenders.append(f"{_owner(widget)} owns a {type(widget).__name__} "
-                             f"({widget.objectName() or '<unnamed>'}) that is not Fluent")
+    page = dialog.page
+    assert _is_fluent(page), f"the settings page is a {type(page).__name__}"
+    assert _is_fluent(page._body), (
+        f"the scrollable body of the settings page is a {type(page._body).__name__}, "
+        f"not a Fluent surface -- it is the largest painted rectangle on the page")
+    content = page._scroller.contentWidget()
+    assert _is_fluent(content), (
+        f"the ScrollView's content widget is a {type(content).__name__}, so the page's "
+        f"body is not the Card `setContentWidget` was given")
+    offenders = _offenders(dialog.findChildren(QWidget))
     assert not offenders, "\n".join(offenders)
 
 

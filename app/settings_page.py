@@ -45,6 +45,7 @@ import typing
 import weakref
 from pathlib import Path
 
+import catalog
 import fluentqt
 import model_refresh
 import selections as selections_module
@@ -278,8 +279,33 @@ class SettingsPage(fluentqt.Card):
     # -- reading and writing one field ----------------------------------------- #
 
     def _on_refresh_clicked(self) -> None:
-        """The button's meaning, in one word: ask. Confirmation stays `refresh`'s rule."""
-        self.refresh_tables(confirmed=False)
+        """The button's meaning, in one word: ask. Confirmation stays `refresh`'s rule.
+
+        And the refusal has to be *said*. This was `self.refresh_tables(confirmed=False)`
+        on one line, which let the exception out of a Qt slot -- and on this wheel
+        (PySide6 6.9.3, measured) an exception that escapes a slot does not reach the
+        user: the binding prints the traceback to stderr and the event loop carries on, so
+        pressing "Refresh model tables" looked exactly like a button that did nothing.
+        Three ways this call fails, and each one is the user's to act on:
+
+        * `RefreshError` -- what `confirmed=False` always raises (R-T10-refresh), and the
+          only reason a click has ever had in this app;
+        * `OSError` -- a stalled or refused fetch (`urllib.error.URLError` is an `OSError`
+          subclass, and `fetch_json` lets it through) or a catalog directory that will not
+          take a write;
+        * `catalog.CatalogError` -- the writable dir resolving inside a version-controlled
+          root, which is `Catalog.write_table`'s refusal, not this page's.
+
+        All three land in the status box that was built for exactly this. Nothing here
+        weakens the confirmation rule: the page still passes `confirmed=False`, and a real
+        refresh still needs the CLI flag or Task 7's confirm dialog.
+        """
+        try:
+            self.refresh_tables(confirmed=False)
+        except model_refresh.RefreshError as exc:
+            self._log(f"refresh refused: {exc}")
+        except (OSError, catalog.CatalogError) as exc:
+            self._log(f"refresh failed: {type(exc).__name__}: {exc}")
 
     def _fit_body(self) -> None:
         """Give every section the height it now reports, and the body the height that
@@ -390,10 +416,12 @@ class SettingsPage(fluentqt.Card):
     def apply(self, path: Path | str) -> list[str]:
         """Validate through the type system, then write both halves; return the messages.
 
-        Empty means the file now holds what the page showed. Non-empty means **nothing
-        was written**: the two dataclasses are constructed before either `save()` runs,
-        because a `settings.json` carrying one new half and one old half is a config the
-        next load cannot explain.
+        Empty means the file now holds what the page showed. Non-empty from a *refused
+        value* means **nothing was written**: the two dataclasses are constructed before
+        either `save()` runs, because a `settings.json` carrying one new half and one old
+        half is a config the next load cannot explain. Non-empty from a *refused write*
+        says which half got through -- see the note below the two `save` calls, because
+        that is the one case this promise cannot keep.
 
         The validator is `Settings(**values)` / `Selections(**values)` themselves. Both
         re-parse every field through their `_coerce` in `__post_init__`, so the page owns
@@ -405,6 +433,12 @@ class SettingsPage(fluentqt.Card):
         `ValueError` would let a settings-page save escape as a traceback through a
         button. The message comes from the coercion itself, which names the field, so the
         user is told *which* value to fix.
+
+        An `OSError` is the third way out, and it is caught for the same reason as the
+        other two: `apply()` runs inside the save button's slot, on this wheel an exception
+        that escapes a slot is printed to stderr and the app carries on, and a locked
+        `settings.json` is the ordinary Windows case rather than an exotic one. The dialog
+        stays open either way; what changes is whether the user is told.
         """
         target = Path(path)
         values = {name: self._read(name) for name in self._types}
@@ -414,8 +448,34 @@ class SettingsPage(fluentqt.Card):
             sel = selections_module.Selections(**svalues)
         except (TypeError, ValueError) as exc:
             return [f"not saved: {exc}"]
-        st.save(target)
-        selections_module.save(sel, target)
+        # Two writers, one file, and the second can fail after the first succeeded --
+        # `Settings.save` and `selections.save` are both read-modify-write merges of the
+        # same `settings.json`, and on Windows a file open in an editor makes
+        # `PermissionError` (an `OSError`) the *normal* case, not the exotic one. Neither
+        # of them may escape: this runs inside the save button's slot, and an exception
+        # that leaves a Qt slot prints to stderr and carries on, which is how a refused
+        # save reached the user as silence. `ValueError` is in the catch for the other way
+        # the shared file can fight back -- `Settings.save` re-reads it first, so a
+        # truncated file raises `JSONDecodeError`, and its `allow_nan=False` raises
+        # `ValueError` for a value `_coerce` was never shown.
+        #
+        # This is the one window where "write nothing on failure" is not airtight, and it
+        # is I/O-sized, not validation-sized: validation is finished above, so the only
+        # way to land in it is a disk that says no between the two writes. It is reported
+        # rather than papered over -- the message says which half is on disk -- and the
+        # two writers are not folded into a transaction, which would be more mechanism
+        # than a settings file needs.
+        try:
+            st.save(target)
+        except (OSError, ValueError) as exc:
+            return [f"not saved: {target} could not be written "
+                    f"({type(exc).__name__}: {exc})"]
+        try:
+            selections_module.save(sel, target)
+        except (OSError, ValueError) as exc:
+            return [f"only half saved: the 50 settings are on disk in {target} and the "
+                    f"33 selections are not ({type(exc).__name__}: {exc}) -- fix the file "
+                    f"and press Save again"]
         self.st, self.sel = st, sel
         self._raw.clear()
         return []

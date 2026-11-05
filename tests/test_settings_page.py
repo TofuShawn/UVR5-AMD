@@ -164,6 +164,67 @@ def test_apply_validates_both_halves_before_writing_either(qapp, tmp_path):
     assert not (tmp_path / "settings.json").is_file()
 
 
+def test_a_file_that_refuses_to_be_written_is_reported_as_a_message(qapp, tmp_path):
+    """`OSError` out of a save is the everyday Windows case -- a `settings.json` open in an
+    editor, a share that went away, a directory where the file should be -- and until this
+    catch it escaped the page the same way the refresh refusal did: printed by the binding,
+    swallowed by the event loop, with the dialog still open and nothing on screen to say
+    why. The target here is a directory, which makes `Settings.save`'s own read-modify-write
+    raise a real `OSError` rather than a patched one, and the whole of the assertion is that
+    `apply` comes back with a message instead of with that exception (a test that let it
+    propagate would show as an error, not a failure).
+
+    `test_a_locked_settings_file_is_reported_in_the_console_...` in
+    `tests/test_work_page.py` is the same failure taken through the button, where it really
+    does cross a slot boundary.
+    """
+    page = _page(qapp)
+    page.set_field_value("window_size", 1337)
+
+    messages = page.apply(tmp_path)          # a directory, so the write cannot land
+
+    assert messages, "a refused write came back as the empty 'all saved' list"
+    assert len(messages) == 1, messages
+    assert "not saved" in messages[0] and "could not be written" in messages[0], messages[0]
+    assert any(name in messages[0] for name in ("PermissionError", "IsADirectoryError",
+                                                "NotADirectoryError")), messages[0]
+    assert page.st.window_size != 1337, (
+        "a save that failed still adopted its values into the page's state")
+
+
+def test_a_failure_between_the_two_writes_says_which_half_is_on_disk(qapp, tmp_path,
+                                                                    monkeypatch):
+    """The one place `apply`'s "write nothing on failure" promise cannot hold, and the
+    reason it is *reported* instead of hidden: the settings half goes in, then the
+    selections writer raises. Validation is finished by then, so only I/O can land here.
+
+    The message has to name the split -- what is on disk and what is not -- because a file
+    with one new half and one old half is the config the next load cannot explain, and a
+    user who is told "not saved" would look for a field to fix rather than for a locked
+    file. And the page must not adopt the values it could not write: `st` / `sel` stay the
+    objects the file agrees with, which is what keeps the controller from assembling a run
+    from settings that never reached the disk.
+    """
+    def refuse_selections(sel, target):
+        raise PermissionError(13, "Permission denied: settings.json")
+
+    page = _page(qapp)
+    before = page.sel
+    page.set_field_value("window_size", 1337)
+    target = tmp_path / "settings.json"
+    monkeypatch.setattr(selections_module, "save", refuse_selections)
+
+    messages = page.apply(target)
+
+    assert messages and messages[0].startswith("only half saved"), messages
+    assert "selections" in messages[0] and "settings" in messages[0], messages[0]
+    assert target.is_file(), "the settings half was written but the test says it was not"
+    assert settings_module.load(target).window_size == 1337
+    assert selections_module.load(target) == before, (
+        "the selections block on disk changed while its writer was refused")
+    assert page.st.window_size != 1337 and page.sel is before
+
+
 def test_load_from_pushes_a_new_state_into_every_widget(qapp, tmp_path):
     """The reverse of `apply`: the controller hands the page the state it should show,
     and every field has to arrive in its widget -- not just the ones a user can see."""
@@ -229,6 +290,41 @@ def test_the_refresh_button_is_the_only_way_in_to_the_refresh(qapp, monkeypatch)
                         lambda *, confirmed: seen.update(confirmed=confirmed) or [])
     page.refresh_button.click()
     assert seen == {"confirmed": False}, seen
+
+
+def test_clicking_refresh_says_no_to_the_user_instead_of_to_the_console(qapp, monkeypatch):
+    """The app's only network button, and the whole of what a click does today: `refresh`
+    refuses an unconfirmed refresh with `RefreshError` (R-T10-refresh) and the page has to
+    turn that refusal into a line in its own status box.
+
+    It did not. `_on_refresh_clicked` called `refresh_tables(confirmed=False)` and let the
+    exception leave the Qt slot, and on this wheel that is not a crash and not an error the
+    user sees -- PySide6 6.9.3 prints the traceback to stderr and the event loop carries on,
+    so the press looked like a button with nothing on it. Measured, not assumed: with the
+    catch removed the two assertions below fail in exactly that shape (the status box stays
+    empty and the exception lands in `sys.excepthook`), which is what they are for.
+
+    The catch is not a softening of the rule: nothing is fetched here, `confirmed=False`
+    still travels to `refresh`, and the message is `model_refresh`'s own words.
+    """
+    import sys
+
+    fetched = []
+    monkeypatch.setattr(model_refresh, "fetch_json", lambda url: fetched.append(url) or {})
+    escapes = []
+    monkeypatch.setattr(sys, "excepthook",
+                        lambda exc_type, value, tb: escapes.append(value))
+
+    page = _page(qapp)
+    page.refresh_button.click()
+
+    assert not escapes, f"the refusal left the slot again: {escapes!r}"
+    assert not fetched, "a refresh that was refused must still fetch nothing"
+    status = page.status.toPlainText()
+    assert "refresh refused" in status, status
+    assert "confirm" in status, status
+    assert "RefreshError" not in status, (
+        f"the user gets a class name, not a reason: {status}")
 
 
 def test_an_opened_section_pushes_everything_below_it_down(qapp):
