@@ -36,26 +36,47 @@ class _Rp:
         self.n = n
 
 
-class FakeEngine:
-    """Two coarse iteration points and a VR-shaped ramp: `set_progress_bar(0.1, 0.8/n*i)`
-    is the call `separate.py:1383` makes per batch, and `process_iteration()` is what
-    `separate.py:1456`/`:1482` make."""
+class PrimaryOnlyEngine:
+    """The default single-model run: a VR-shaped `set_progress_bar(0.1, 0.8/8*i)` ramp
+    (`separate.py:1383`, once per batch) and two stems -- and no `process_iteration` call,
+    because the primary pass never fires it (`separate.py:1455-1456`/`:1481-1482` call it
+    only for secondary/chain models, `:1082`/`:1085` only in a Demucs pre-proc pass). Pair
+    it with `model_count == 1`: this is the run a user gets when they change nothing.
+    """
 
     def __init__(self, rp, process_data):
         self.pd = process_data
 
-    def seperate(self):
-        self.pd["process_iteration"]()
+    def _ramp(self):
         for i in range(8):
             self.pd["set_progress_bar"](0.1, 0.8 / 8 * (i + 1))
+
+    def _write_stems(self):
         out = Path(self.pd["export_path"])
         for stem in ("Vocals", "Instrumental"):
             (out / f"song_({stem}).wav").write_bytes(b"RIFF")
 
-
-class SlowEngine(FakeEngine):
     def seperate(self):
+        self._ramp()
+        self._write_stems()
+
+
+class FakeEngine(PrimaryOnlyEngine):
+    """A two-model run: the primary ramp, then `process_iteration()` when the second model
+    starts (`separate.py:1455-1456`/`:1481-1482`, never the primary pass), then the
+    secondary ramp. Pair it with `model_count >= 2` -- a single-model plan firing this
+    hook would be a story the shipped code never tells, which is exactly the pairing the
+    review found the earlier draft getting backwards."""
+
+    def seperate(self):
+        self._ramp()
         self.pd["process_iteration"]()
+        self._ramp()
+        self._write_stems()
+
+
+class SlowEngine(PrimaryOnlyEngine):
+    def seperate(self):
         for _ in range(50):
             self.pd["set_progress_bar"](0.02, 0.0)
             time.sleep(0.01)
@@ -87,40 +108,59 @@ def _deliver(qapp):
         qapp.processEvents()
 
 
-def _session(engine=FakeEngine):
-    return session.Session(spec=None, backend=None, rp=_Rp(1),
+def _session(engine=PrimaryOnlyEngine, n=1):
+    return session.Session(spec=None, backend=None, rp=_Rp(n),
                            engine_class=engine, compute_lines=())
 
 
-def _request(tmp_path, engine=FakeEngine):
-    return job.JobRequest(session=_session(engine), audio=tmp_path / "in.wav",
+def _request(tmp_path, engine=PrimaryOnlyEngine, n=1):
+    return job.JobRequest(session=_session(engine, n), audio=tmp_path / "in.wav",
                           export_path=tmp_path / "out")
 
 
-@pytest.mark.parametrize("completed,count,step,inf,expected", [
-    (1, 1, 0.1, 0.0, 10.0),
-    (1, 1, 0.1, 0.8, 90.0),
-    (1, 2, 0.5, 0.0, 25.0),
-    (2, 2, 0.0, 1.0, 100.0),
-    (0, 1, 0.25, 0.0, 0.0),      # negative before the clamp
-    (3, 2, 1.0, 0.0, 100.0),     # 150 before the clamp
+@pytest.mark.parametrize("started,count,step,inf,expected", [
+    (1, 1, 0.1, 0.0, 10.0),      # primary of one model: base*step
+    (1, 1, 0.1, 0.8, 90.0),      # last batch of a single-model run
+    (1, 2, 0.5, 0.0, 25.0),      # primary of two: 0 -> 50 band
+    (2, 2, 0.0, 1.0, 100.0),     # secondary of two, one step in: 50 -> 100 band
+    (0, 1, 0.25, 0.0, 0.0),      # below the seeded range: negative -> clamp to 0
+    (3, 2, 1.0, 0.0, 100.0),     # 150 before the upper clamp
 ])
-def test_progress_percent_is_upstreams_formula_exactly(completed, count, step, inf, expected):
-    assert session.progress_percent(completed_models=completed, model_count=count,
+def test_progress_percent_is_upstreams_formula_exactly(started, count, step, inf, expected):
+    assert session.progress_percent(models_started=started, model_count=count,
                                     step=step, inference_iterations=inf) == pytest.approx(expected)
 
 
 def test_run_job_reports_percentages_monotonically(tmp_path):
+    """The default single-model path (`_session()` -> `PrimaryOnlyEngine`, `model_count`
+    1): the bar rises with the batch ramp from 20 to 90, never clamped to 0."""
     seen: list[float] = []
     written = session.run_job(_session(), audio=tmp_path / "in.wav",
                               export_path=tmp_path / "out",
                               progress=lambda pct: seen.append(pct))
     assert len(written) == 2
+    assert seen == pytest.approx([20, 30, 40, 50, 60, 70, 80, 90]), seen
     assert seen == sorted(seen), seen
     assert all(0.0 <= v <= 100.0 for v in seen), seen
     assert seen[-1] == pytest.approx(90.0), seen      # 0.1 + 0.8 at the last batch
-    assert seen[0] > 0.0, seen                       # nothing clamped to zero means the
-                                                    # iteration hook fired before the ramp
+    assert seen[0] > 0.0, seen                       # seeded at 1, so the primary pass is
+                                                    # never clamped to zero
+
+
+def test_a_two_model_run_walks_the_primary_then_secondary_band(tmp_path):
+    """Ruling R-T4-iteration's two-model claim, exercised end to end (`FakeEngine` fires
+    `process_iteration` once, so it is paired with `model_count` 2, never 1): the primary
+    ramp lives in the 0->50 band, and after the second model starts the bar moves into
+    the 50->100 band. That is upstream's shape (`UVR.py:6632-6633` bumps `iteration` at
+    each model's head), not a smoothing trick."""
+    seen: list[float] = []
+    session.run_job(_session(FakeEngine, n=2), audio=tmp_path / "in.wav",
+                    export_path=tmp_path / "out", progress=lambda pct: seen.append(pct))
+    assert seen == sorted(seen), seen
+    primary, secondary = seen[:8], seen[8:]
+    assert len(primary) == len(secondary) == 8, seen
+    assert all(0.0 <= v < 50.0 for v in primary), primary    # base*1 - base + base*step
+    assert all(50.0 < v <= 100.0 for v in secondary), secondary  # base*2 - base + base*step
 
 
 def test_cancel_is_polled_at_every_progress_hook(tmp_path):
@@ -216,7 +256,7 @@ def test_the_work_does_not_run_on_the_main_thread(qapp, tmp_path):
     """
     threads = []
 
-    class WhereEngine(FakeEngine):
+    class WhereEngine(PrimaryOnlyEngine):
         def seperate(self):
             threads.append(QThread.currentThread())
             super().seperate()
@@ -262,7 +302,7 @@ def test_console_lines_reach_the_job_signal(qapp, tmp_path):
     than cleaned up here, because Task 5 owns the console widget and the presentation
     question with it.
     """
-    class Chatty(FakeEngine):
+    class Chatty(PrimaryOnlyEngine):
         def seperate(self):
             self.pd["write_to_console"]("loading 1_HP-UVR", base_text="vr")
             super().seperate()
@@ -282,7 +322,8 @@ def test_console_lines_reach_the_job_signal(qapp, tmp_path):
 def test_progress_signal_carries_a_percentage_not_a_fraction(qapp, tmp_path):
     """`Signal(int)` on the far side of a float percentage: the GUI bar reads 0-100 and
     the engine hands over a fraction, so the conversion happens once, in `run_job`.
-    Same ramp as the fake above -> 20, 30, ... 90 per batch."""
+    Same ramp as `PrimaryOnlyEngine` (the default, single model) -> 20, 30, ... 90 per
+    batch, i.e. `int(progress_percent)` of the fraction, not the fraction itself."""
     worker = job.Job()
     pct, done = [], []
     worker.progress.connect(pct.append)
@@ -295,42 +336,26 @@ def test_progress_signal_carries_a_percentage_not_a_fraction(qapp, tmp_path):
     assert len(done) == 1 and len(done[0]) == 2, done
 
 
-def test_a_primary_pass_that_never_calls_process_iteration_reports_zero(qapp, tmp_path):
-    """A measured gap, pinned so it cannot be shipped by accident -- not a target.
-
-    `run_job`'s `completed_models` only advances when the engine calls
-    `process_iteration`, and `separate.py` calls it for secondary models
-    (`:1456`/`:1482`) and one Demucs pre-proc branch (`:1082`/`:1085`) -- never for the
-    primary pass. So on the default single-model VR run the counter stays 0 and
-    upstream's `base*iteration - base` term is `-100`, which the clamp turns into a bar
-    that reads 0% for the whole separation. Measured on the real engine: 14 progress
-    hooks, every one of them 0, job succeeded (see task-4-report.md). Upstream's GUI
-    does not show this because it advances `self.iteration` once per *file*
-    (`UVR.py:6451`) before the separator runs, and `run_job` handles one file per call.
-    The fix belongs to `session.run_job`, not to this worker, so this test documents
-    the shape rather than repairing it; Task 5's bar needs to know either way.
-    """
-    class PrimaryOnlyEngine:
-        """The real VR primary pass: batches and console, no `process_iteration`."""
-
-        def __init__(self, rp, process_data):
-            self.pd = process_data
-
-        def seperate(self):
-            for i in range(8):
-                self.pd["set_progress_bar"](0.1, 0.8 / 8 * (i + 1))
-            out = Path(self.pd["export_path"])
-            for stem in ("Vocals", "Instrumental"):
-                (out / f"song_({stem}).wav").write_bytes(b"RIFF")
-
+def test_the_default_single_model_path_fills_the_bar(qapp, tmp_path):
+    """Ruling R-T4-iteration, inverted from what this used to be. It previously asserted
+    `[0]*8` (as `test_a_primary_pass_that_never_calls_process_iteration_reports_zero`) to
+    pin a *measured gap*: `run_job` seeded its model counter at 0 and waited for a
+    `process_iteration` hook the primary VR pass never fires (`separate.py:1455-1456`/
+    `:1481-1482` fire it only for secondary/chain models), so `base*iteration - base` was
+    -100 and the whole bar clamped to 0%. That seed was wrong -- `UVR.py:6632-6633` bumps
+    `self.iteration` the instant each model *starts* (single model => 1 for the whole run).
+    With the counter seeded at 1 this positive assertion is the honest default-path shape:
+    a strictly rising bar reaching `int(step*100)`, i.e. 90 at the last batch, not zeros."""
     worker = job.Job()
     pct, done = [], []
     worker.progress.connect(pct.append)
     worker.succeeded.connect(done.append)
-    worker.start(_request(tmp_path, PrimaryOnlyEngine))
+    worker.start(_request(tmp_path, PrimaryOnlyEngine))          # _Rp(1): model_count == 1
     assert worker.wait(10_000)
     _deliver(qapp)
-    assert pct == [0] * 8, pct
+    assert pct == [20, 30, 40, 50, 60, 70, 80, 90], pct
+    assert len(set(pct)) == len(pct) and pct == sorted(pct), "not strictly rising"
+    assert pct[-1] == int(0.9 * 100), pct                        # base*(step+inf) last batch
     assert len(done) == 1, done
 
 
@@ -348,6 +373,54 @@ def test_a_started_job_can_be_run_again_after_it_finishes(qapp, tmp_path):
     _deliver(qapp)
     assert len(results) == 2, results
     assert not worker.is_running()
+
+
+def test_a_stale_terminal_does_not_disarm_the_overlap_guard(qapp, tmp_path):
+    """Finding 1 (generation stamp). `is_running()` releases at `isFinished()`, which
+    flips the instant `run()` returns -- so a job-1 terminal can still be sitting in the
+    queue when `start()` accepts job 2, and a button click's order against that queued
+    event within one dispatcher pass is not specified. Without a stamp job 1's `_on_done`
+    would then clear `_started` mid-job-2: the guard is gone, the page's `succeeded` fires
+    for the old job, and a later `start()` calls `QThread::start()` on a live thread (a
+    no-op that strands it -- no progress, no terminal). Here job 2 starts *without*
+    pumping the loop, then the stale terminal is delivered, and the guard survives."""
+    worker = job.Job()
+    succeeded = []
+    worker.succeeded.connect(succeeded.append)
+
+    worker.start(_request(tmp_path, PrimaryOnlyEngine))     # job 1: fast, loop NOT pumped
+    assert worker.wait(10_000)                              # run() returned; done still queued
+    assert worker.is_running() is False                     # isFinished released the gate
+
+    worker.start(_request(tmp_path, SlowEngine))            # job 2 accepted; still running
+    assert worker.is_running() is True
+    _deliver(qapp)                                          # now hand job 1's stale done over
+    assert worker.is_running() is True, "a stale terminal disarmed the guard"
+    assert succeeded == [], succeeded                       # job 1's succeeded ignored
+
+    worker.request_cancel()                                 # clean up job 2
+    assert worker.wait(10_000)
+    _deliver(qapp)
+    assert succeeded == [], succeeded                       # job 2 cancelled, never succeeded
+
+
+def test_shutdown_stops_a_running_job(qapp, tmp_path):
+    """Finding 4 (R-T4-shutdown). The `QThread` is a child of the `Job` and its destructor
+    hard-aborts the process while the thread runs, so the window-close handler must drain
+    the job before the `Job` dies -- the reachable case is closing the window mid-separation.
+    `shutdown()` requests cancellation, waits for the cooperative STOP, and reports not
+    running so the object can be destroyed safely; the cancelled terminal still arrives."""
+    worker = job.Job()
+    got, errs = [], []
+    worker.cancelled.connect(got.append)
+    worker.failed.connect(errs.append)
+    worker.start(_request(tmp_path, SlowEngine))
+    assert worker.is_running() is True
+    worker.shutdown(10_000)
+    assert worker.is_running() is False, "shutdown must leave the job not running"
+    _deliver(qapp)
+    assert got == ["stopped by the user"], got
+    assert errs == [], errs
 
 
 def test_one_real_job_on_the_worker_thread(qapp, tmp_path, monkeypatch):

@@ -114,23 +114,40 @@ def model_count(rp: plan.RunPlan) -> int:
     return base + four_stem + pre_proc + splitter
 
 
-def progress_percent(*, completed_models: int, model_count: int, step: float,
+def progress_percent(*, models_started: int, model_count: int, step: float,
                      inference_iterations: float = 0.0, total_files: int = 1) -> float:
     """Upstream's percentage, ported term by term -- not re-derived.
 
     `UVR.py:6271-6274`: `base = 100 / (true_model_count * total_files)`,
     `progress = base*iteration - base + base*step`. The `step` it receives is already
-    the sum: `UVR.py:6457` wraps the engine callback as
+    the sum: `UVR.py:6641` wraps the engine callback as
     `lambda step, inference_iterations=0: process_update_progress(total_files=total_files,
     step=(step + inference_iterations))`, so the engine's second positional argument is
-    an *offset to step*, not the model counter. `completed_models` is the GUI's own
-    counter, incremented by `process_iteration` (upstream's `self.iteration`,
-    `UVR.py:1418`) -- for a single-model run it reaches 1 at `separate.py:1456`, and
-    with `iteration=0` the formula is negative, which is why the clamp is part of the
-    port and not a convenience.
+    an *offset to step*, not the model counter.
+
+    `models_started` is the port's name for upstream's `self.iteration` (`UVR.py:1308`,
+    `:6273`), renamed from the old `completed_models` because it is the number of models
+    that have *started*, not finished -- which is exactly what upstream counts.
+    `UVR.py:6632-6633` advances it at the head of each model's loop
+    (`for current_model_num, current_model in enumerate(model, start=1): self.iteration += 1`),
+    so during model *k* it equals *k*: a single-model plan sits at `1` for the whole run,
+    and `base*1 - base + base*step = base*step` fills 0 -> 100 across that one model. For
+    two models the primary is `base*1 - base + base*step = base*step` (0 -> 50) and the
+    secondary `base*2 - base + base*step` (50 -> 100) -- upstream's shape, not a smoothing
+    trick. `run_job` seeds the counter at 1 for that reason and `process_iteration` is the
+    bump for every model after the primary: `separate.py:1455-1456` and `:1481-1482` call
+    it at the head of `process_secondary_model`/`process_chain_model` (guarded by
+    `if not is_pre_proc_model`), and `:1082`/`:1085` in a Demucs pre-proc pass -- never for
+    the primary VR pass. With the counter at 0 the primary would report `base*0 - base`,
+    negative and clamped to 0 for the whole run, which is what the clamp is here to catch,
+    not to present as progress.
+
+    `UVR.py:6617` also adds `self.true_model_count` when a file fails verification
+    (`self.iteration += self.true_model_count`); that is multi-file accounting and is out
+    of scope while `total_files == 1`.
     """
     base = 100.0 / max(1, model_count * total_files)
-    progress = base * completed_models - base + base * (step + inference_iterations)
+    progress = base * models_started - base + base * (step + inference_iterations)
     return max(0.0, min(100.0, progress))
 
 
@@ -163,14 +180,20 @@ def run_job(session: Session, *, audio: Path | str, export_path: Path | str,
         raw_progress = process_data["set_progress_bar"]
         raw_iteration = process_data["process_iteration"]
         count = model_count(session.rp)
-        state = {"iteration": 0}
+        # Seed at 1, not 0: `run_job` runs one file and `assemble` builds one primary
+        # model, so the primary model has *started* the instant the engine begins -- which
+        # is exactly what upstream's `self.iteration` holds at `UVR.py:6633` before the
+        # first batch. The secondary/chain bump that `separate.py` fires below then walks
+        # 2..N. An earlier draft seeded 0 and waited for a `process_iteration` hook the
+        # primary pass never fires, so the whole single-model run clamped to 0%.
+        state = {"iteration": 1}
 
         def set_progress_bar(step, inference_iterations=0):
             if cancel is not None and cancel():
                 raise Cancelled("stopped by the user")
             raw_progress(step, inference_iterations=inference_iterations)
             if progress is not None:
-                progress(progress_percent(completed_models=state["iteration"],
+                progress(progress_percent(models_started=state["iteration"],
                                           model_count=count, step=step,
                                           inference_iterations=inference_iterations))
 

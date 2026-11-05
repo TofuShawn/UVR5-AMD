@@ -48,7 +48,13 @@ class JobRequest:
 
 
 class Job(QObject):
-    """The GUI-facing half of one job: five signals, one `start()`, one STOP."""
+    """The GUI-facing half of one job: five signals, one `start()`, one STOP.
+
+    Teardown: this object owns a `QThread` child, and `QThread`'s destructor hard-aborts
+    the process when its thread is still running. A window-close handler that lets the
+    `Job` die mid-separation therefore kills the app, so it must call `shutdown()` first
+    -- that is the path `closeEvent` takes (Task 5's window owns the close handler).
+    """
 
     progress = Signal(int)
     console = Signal(str)
@@ -61,12 +67,17 @@ class Job(QObject):
         self._worker: _Worker | None = None
         self._started = False
         self._cancel = False
+        # Bumped by every accepted `start()`. A terminal event still sitting in the
+        # queue when the next job starts carries the generation it ran under, so the
+        # `_on_*` handlers can tell a stale job-1 report from job-2's real one -- see
+        # `start()` and the handlers below.
+        self._generation = 0
 
     # -- state --------------------------------------------------------------- #
 
     def is_running(self) -> bool:
-        """True from the moment `start()` accepts a job until that job has finished and
-        its terminal signal has been handled.
+        """True from the moment `start()` accepts a job until that job's worker thread
+        finishes -- releasing on `isFinished()`, before the queued terminal handler runs.
 
         Measured at PySide6 6.9.3, because each half earns its place: a thread that was
         built but never started reports `isRunning()` False *and* `isFinished()` False,
@@ -75,6 +86,9 @@ class Job(QObject):
         body returns, so a flag whose queued terminal handler has not run yet cannot
         strand the GUI on the other side -- a `BaseException` that walked out of the
         body without emitting anything would otherwise refuse every later job forever.
+        Releasing here, while the terminal is still in the queue, is deliberate: what
+        keeps a stale job's terminal from wrongly disarming this guard is the generation
+        stamp `start()` applies and the `_on_*` handlers check, not a later release.
         """
         if not self._started or self._worker is None:
             return False
@@ -92,14 +106,32 @@ class Job(QObject):
     # -- drive --------------------------------------------------------------- #
 
     def start(self, request: JobRequest) -> None:
-        """Begin one job. Refuses to overlap: two concurrent runs share the export
-        directory and the VRAM, and the 76 MiB leak measured in Plan 1 makes a second
-        live job a reporting problem as well as a correctness one."""
+        """Begin one job, refusing to overlap the one *this object* is already running.
+
+        The guard is `is_running()` on this single `Job`: it stops two runs from one
+        instance, not two `Job` instances. Two live runs would share the export directory
+        and the VRAM (Plan 1 measured a 76 MiB leak per separation), and worse,
+        `run_job` decides which files it wrote by diffing a pre-run snapshot of that
+        directory (`session.py:187`), so a second run into the same directory would
+        attribute the first's files to itself -- a reporting bug, not only a resource one.
+
+        Deliberately not process-wide (ruling R-T4-onejob): no registry or lock is added,
+        because a second `Job` bypasses this guard and nothing here stops two threads. What
+        makes "one job at a time" true in the shipped app is that the composition root
+        (Task 5's controller) owns exactly one `Job`; Task 5 must keep to that one instance.
+        """
         if self.is_running():
             self.failed.emit("a job is already running; wait for it or press STOP")
             return
         worker = self._ensure_worker()
+        # `is_running()` releases on `isFinished()`, so a previous job's terminal can still
+        # be queued here. Stamping the new generation before `start()` lets the `_on_*`
+        # handlers ignore that stale report instead of clearing `_started` mid-job (which
+        # would disarm this guard, fire the page's handler for the old job, and let a third
+        # `start()` call `QThread::start()` on a live thread -- a no-op that strands it).
+        self._generation += 1
         self._cancel, self._started = False, True
+        worker.generation = self._generation
         worker.request = request
         worker.start()
 
@@ -123,22 +155,49 @@ class Job(QObject):
         return self._worker
 
     # These three run as *queued* slots on the main thread, which is what marshals the
-    # worker's reports into something a widget may touch. Clearing `_started` here is
-    # safe against the one ordering question this raises -- a terminal event still in the
-    # queue when `start()` is called again -- because Qt delivers same-priority events in
-    # post order, so the older job's report is always delivered before the click that
-    # starts a newer one.
-    def _on_done(self, written: list) -> None:
+    # worker's reports into something a widget may touch. Each carries the generation its
+    # job was started under and ignores a report whose generation is stale: a terminal can
+    # still be in the queue when `start()` accepts the next job, and the ordering of that
+    # queued terminal against the button-click that starts the next one is *not* guaranteed
+    # (a click arrives as a window-system event, whose order against `sendPostedEvents` in
+    # one dispatcher pass is unspecified). Without the stamp a stale job-1 terminal would
+    # clear `_started` mid-job-2 and fire the page's handler for the wrong job.
+    def _on_done(self, written: list, generation: int) -> None:
+        if generation != self._generation:
+            return
         self._started = False
         self.succeeded.emit(written)
 
-    def _on_fail(self, text: str) -> None:
+    def _on_fail(self, text: str, generation: int) -> None:
+        if generation != self._generation:
+            return
         self._started = False
         self.failed.emit(text)
 
-    def _on_cancel(self, text: str) -> None:
+    def _on_cancel(self, text: str, generation: int) -> None:
+        if generation != self._generation:
+            return
         self._started = False
         self.cancelled.emit(text)
+
+    def shutdown(self, ms: int = 5000) -> None:
+        """Teardown path: request cancellation, wait for the worker, and report not running.
+
+        The window-close handler must call this before the `Job` is destroyed: the `QThread`
+        is a child of the `Job`, and `QThread`'s destructor hard-aborts the process when its
+        thread is still running -- the reachable sequence is the user closing the window
+        during a long separation, which otherwise takes the whole app down.
+
+        Cancellation is still cooperative: `request_cancel()` only lands at the next engine
+        progress hook (`separate.py:1383`), so this blocks up to `ms` for the STOP to take
+        effect, then clears `_started` so `is_running()` is False on return. The terminal
+        signal (cancelled/failed) is still queued -- a close handler that is leaving the
+        event loop should not wait for it to be delivered.
+        """
+        self.request_cancel()
+        if self._worker is not None:
+            self._worker.wait(ms)
+        self._started = False
 
     def wait(self, ms: int = 1000) -> bool:
         """Test/dev helper: block until the worker thread finishes.
@@ -171,16 +230,21 @@ class _Worker(QThread):
 
     progress = Signal(int)
     line = Signal(str)
-    done = Signal(list)
-    fail = Signal(str)
-    cancel = Signal(str)
+    done = Signal(list, int)
+    fail = Signal(str, int)
+    cancel = Signal(str, int)
 
     def __init__(self, cancel_flag, parent=None):
         super().__init__(parent)
         self.cancel_flag = cancel_flag
         self.request: JobRequest | None = None
+        # The generation the `Job` stamped onto the current request; `run()` captures it at
+        # entry so a terminal always reports the job it actually ran, never the one that
+        # happens to be current when the queued event is finally delivered.
+        self.generation = 0
 
     def run(self) -> None:
+        generation = self.generation
         try:
             written = session.run_job(
                 self.request.session,
@@ -192,9 +256,10 @@ class _Worker(QThread):
                 cancel=self.cancel_flag,
             )
         except session.Cancelled as exc:
-            self.cancel.emit(str(exc))
+            self.cancel.emit(str(exc), generation)
             return
         except Exception as exc:                              # noqa: BLE001 - report it
-            self.fail.emit(f"{type(exc).__name__}: {exc}\n{traceback.format_exc(limit=4)}")
+            self.fail.emit(f"{type(exc).__name__}: {exc}\n{traceback.format_exc(limit=4)}",
+                           generation)
             return
-        self.done.emit([Path(p) for p in written])
+        self.done.emit([Path(p) for p in written], generation)
