@@ -949,10 +949,10 @@ def test_a_typed_config_yaml_reaches_the_engine_with_its_extension(qapp, tmp_pat
     """The bug this round fixes: upstream's popup never writes what the user typed --
     `UVR.py:4808` (apollo) and `:4750` (mdx_c) both write `f"{var.get()}{YAML}"`, with
     `YAML` = `gui_data/constants.py:128` -- because the value is a *stem*: the dropdown
-    that fills that variable is built with `os.path.splitext(x)[0]` (`UVR.py:4803`).
+    that fills that variable is built with `os.path.splitext(x)[0]` (`UVR.py:4802`).
     Collected verbatim, the engine reads a stem as if it were a file name:
     `catalog.py:651-652` turns it into `config_path` (apollo's consumer, and the one this
-    test measures) and `plan.py:516-519` does the same for the mdx_c row, whose `:521-526`
+    test measures) and `plan.py:516-519` does the same for the mdx_c row, whose `:521-525`
     `PlanError` names a yaml the user had spelled correctly apart from the extension
     nobody showed them."""
     spec, cat = _apollo_tier3(tmp_path)

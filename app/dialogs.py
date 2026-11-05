@@ -64,7 +64,7 @@ PARAM_FIELDS: dict[str, tuple[tuple[str, type], ...]] = {
             ("is_bv_model_rebalanced", float)),
     # `pop_up_mdx_c_param.pull_data` (`UVR.py:4749-4751`). Engine reads: `config_yaml`
     # (`plan.py:516`, which puts it straight into a path at `:519` and raises `PlanError`
-    # at `:521-526` when that path is not a file; `catalog.py:651-652` builds
+    # at `:521-525` when that path is not a file; `catalog.py:651-652` builds
     # `config_path` the same way), `is_roformer` (`plan.py:592`). Unreachable in
     # this fork -- `mdx_c` is a blocked arch (`catalog.py:104`, refused at `:427`), so no
     # spec can carry it; kept because this is the last copy of the body.
@@ -98,10 +98,11 @@ PARAM_FIELDS: dict[str, tuple[tuple[str, type], ...]] = {
 #: `'.yaml'`, read from the file rather than assumed, and pinned against both sources by
 #: `tests/test_dialogs.py::test_the_config_yaml_suffix_is_the_one_upstreams_popup_appends`.
 #: The name arrives bare because the dropdowns that feed upstream's variables are built
-#: with `os.path.splitext(x)[0]` (`UVR.py:4803`), while `catalog.py:651-652` puts the
-#: value straight into `config_path` and `plan.py:516-519` into an `mdx_c_configs` path
-#: that `:521-526` refuses with `PlanError` when the file is not there. Collecting it
-#: verbatim therefore writes a JSON whose config nobody can find.
+#: with `os.path.splitext(x)[0]` (the lambda at `UVR.py:4802`, called with `YAML` at
+#: `:4803`), while `catalog.py:651-652` puts the value straight into `config_path` and
+#: `plan.py:516-519` into an `mdx_c_configs` path that `:521-525` refuses with
+#: `PlanError` when the file is not there. Collecting it verbatim therefore writes a
+#: JSON whose config nobody can find.
 CONFIG_YAML_SUFFIX = ".yaml"
 
 #: Values upstream's own popup pre-sets, so a box the tkinter dialog also pre-sets is not
@@ -394,8 +395,8 @@ def _config_yaml(value: str) -> str:
     popup pre-selects from stems, but nothing stops a person writing `apollo_base.yaml`,
     and appending again would hand the engine `apollo_base.yaml.yaml`. The test is the
     same case-sensitive `endswith` upstream's own list filter uses
-    (`UVR.py:4803`, `x.endswith(YAML)`), so a config named `X.YAML` on disk keeps the
-    behaviour the engine's directory listing would have it.
+    (`UVR.py:4802`, `x.endswith(ext)`, fed with `YAML` at `:4803`), so a config named
+    `X.YAML` on disk keeps the behaviour the engine's directory listing would have it.
     """
     return value if value.endswith(CONFIG_YAML_SUFFIX) else f"{value}{CONFIG_YAML_SUFFIX}"
 
