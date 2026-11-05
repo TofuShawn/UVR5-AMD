@@ -54,6 +54,9 @@ class Job(QObject):
     the process when its thread is still running. A window-close handler that lets the
     `Job` die mid-separation therefore kills the app, so it must call `shutdown()` first
     -- that is the path `closeEvent` takes (Task 5's window owns the close handler).
+    `shutdown()` returns whether the drain actually happened, though: the guarantee is paid
+    by a True, not by the call (cancellation is cooperative, so a short bound can time out
+    with the thread still live). Read the return; see `shutdown()`.
     """
 
     progress = Signal(int)
@@ -89,6 +92,13 @@ class Job(QObject):
         Releasing here, while the terminal is still in the queue, is deliberate: what
         keeps a stale job's terminal from wrongly disarming this guard is the generation
         stamp `start()` applies and the `_on_*` handlers check, not a later release.
+
+        The same two halves make this stay honest after a `shutdown()` whose bound expired:
+        that path leaves `_started` up, so while the thread is still live this answers True
+        and `start()` keeps refusing; the instant the engine finally wakes and returns from
+        `run()`, `isFinished()` releases it even if the queued terminal is never delivered
+        (a close handler that has already left the event loop). It is therefore a report on
+        the thread, not on `shutdown()`'s return value.
         """
         if not self._started or self._worker is None:
             return False
@@ -180,24 +190,44 @@ class Job(QObject):
         self._started = False
         self.cancelled.emit(text)
 
-    def shutdown(self, ms: int = 5000) -> None:
-        """Teardown path: request cancellation, wait for the worker, and report not running.
+    def shutdown(self, ms: int = 5000) -> bool:
+        """Teardown path: request cancellation, block up to `ms` for it to land, and report
+        whether the worker thread is actually drained.
 
-        The window-close handler must call this before the `Job` is destroyed: the `QThread`
-        is a child of the `Job`, and `QThread`'s destructor hard-aborts the process when its
-        thread is still running -- the reachable sequence is the user closing the window
-        during a long separation, which otherwise takes the whole app down.
+        True is the guarantee the class docstring advertises: the thread has finished, so
+        this object may now be destroyed -- the `QThread` is a child of the `Job`, and
+        `QThread`'s destructor hard-aborts the process when its thread is still running,
+        which is why the reachable sequence (the user closing the window during a long
+        separation) has to come through here at all.
 
-        Cancellation is still cooperative: `request_cancel()` only lands at the next engine
-        progress hook (`separate.py:1383`), so this blocks up to `ms` for the STOP to take
-        effect, then clears `_started` so `is_running()` is False on return. The terminal
-        signal (cancelled/failed) is still queued -- a close handler that is leaving the
-        event loop should not wait for it to be delivered.
+        False means the bound expired with the thread still running, the `Job` is **not**
+        drained, and destroying it now is exactly the abort this method exists to avoid --
+        so the caller's only honest moves are to retry with a longer bound or to refuse the
+        close and tell the user the run is still winding down, and it must not let this
+        object die until some call returns True. Which of the two Task 5's `closeEvent`
+        does is Task 5's call; what it may not do is assume the drain from the call alone.
+        On False `_started` is deliberately left set, so `is_running()` keeps answering True
+        and `start()` keeps refusing -- see that method's docstring.
+
+        Why a timeout is a real possibility and not a formality: cancellation is cooperative
+        at the engine's own granularity, never instant -- `request_cancel()` only lands when
+        the wrapped `set_progress_bar` next fires (`separate.py:1383`, once per batch on the
+        VR path) -- so an engine parked mid model-load or inside one long batch is unreachable
+        for the whole `ms`, and `ms=5000` is a bound, not a promise. Pinned both ways by
+        `tests/test_job.py`: the happy path and `StuckEngine`, whose hook-less sleep makes the
+        False branch provable.
+
+        The terminal signal (cancelled/failed) is still queued either way -- a close handler
+        that is leaving the event loop should not wait for it to be delivered.
         """
         self.request_cancel()
-        if self._worker is not None:
-            self._worker.wait(ms)
-        self._started = False
+        ok = self._worker.wait(ms) if self._worker is not None else True
+        if ok:
+            self._started = False
+        # On False the flag stays up on purpose: clearing it here would make `is_running()`
+        # lie about a live thread, hand Task 5 a "safe to destroy" it cannot honour, and let
+        # `start()` call `QThread::start()` on a running thread -- the no-op that strands it.
+        return ok
 
     def wait(self, ms: int = 1000) -> bool:
         """Test/dev helper: block until the worker thread finishes.

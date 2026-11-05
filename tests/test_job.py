@@ -1,10 +1,10 @@
-"""The worker thread -- 23 tests without torch, and one real separation with it.
+"""The worker thread -- 27 tests without torch, and one real separation with it.
 
 Three properties matter most here and all three come from Plan 1's review lesson or
 from the callbacks' real contract: the progress signal must carry a *percentage*
 (the engine passes a fraction), cancellation must actually leave the engine, and the
 default path -- what happens when the user changes nothing -- has to be exercised.
-The last test is the one that pays for the other 23: the real VR engine on the golden
+The last test is the one that pays for the other 27: the real VR engine on the golden
 crop, on the thread, end to end.
 
 `session.run_job` is called with a fake `engine_class`, so the wrapper that does the
@@ -22,6 +22,7 @@ the GUI depends on, so the tests pump the loop instead.
 """
 from __future__ import annotations
 
+import threading
 import time
 from pathlib import Path
 
@@ -80,6 +81,26 @@ class SlowEngine(PrimaryOnlyEngine):
         for _ in range(50):
             self.pd["set_progress_bar"](0.02, 0.0)
             time.sleep(0.01)
+        super().seperate()
+
+
+class StuckEngine(PrimaryOnlyEngine):
+    """A job whose cancel provably cannot land inside a few milliseconds: it parks in a
+    sleep that fires *no* progress hook, and only reaches `PrimaryOnlyEngine`'s ramp -- the
+    first polling point, `separate.py:1383` -- once it wakes. That is the shape of the real
+    hazard `shutdown()`'s timeout branch is about (mid model-load, or one long batch, with
+    the bound already elapsed): the cooperative STOP has nowhere to be noticed.
+
+    `entered` lets the test prove the thread is already inside `seperate()` before it calls
+    `shutdown()`, so a False return can only be the timeout, never a thread that had not
+    started yet.
+    """
+
+    entered = threading.Event()
+
+    def seperate(self):
+        self.entered.set()
+        time.sleep(0.25)
         super().seperate()
 
 
@@ -409,18 +430,60 @@ def test_shutdown_stops_a_running_job(qapp, tmp_path):
     hard-aborts the process while the thread runs, so the window-close handler must drain
     the job before the `Job` dies -- the reachable case is closing the window mid-separation.
     `shutdown()` requests cancellation, waits for the cooperative STOP, and reports not
-    running so the object can be destroyed safely; the cancelled terminal still arrives."""
+    running so the object can be destroyed safely; the cancelled terminal still arrives.
+    The True return is the drain guarantee, and it is what the timeout case below takes away."""
     worker = job.Job()
     got, errs = [], []
     worker.cancelled.connect(got.append)
     worker.failed.connect(errs.append)
     worker.start(_request(tmp_path, SlowEngine))
     assert worker.is_running() is True
-    worker.shutdown(10_000)
+    assert worker.shutdown(10_000) is True, "a landed STOP must report the thread drained"
     assert worker.is_running() is False, "shutdown must leave the job not running"
     _deliver(qapp)
     assert got == ["stopped by the user"], got
     assert errs == [], errs
+
+
+def test_shutdown_reports_false_when_the_cancel_cannot_land(qapp, tmp_path):
+    """Fix round 2, finding 1 (the timeout branch round 1 left unproven).
+
+    `shutdown(ms)`'s "the object can be destroyed safely" is only paid when it returns True.
+    An engine parked inside a hook-less sleep cannot see the STOP at all until it wakes
+    (`separate.py:1383` is the only polling point), so with a 5 ms bound `QThread::wait(ms)`
+    times out with the thread still running -- and round 1 cleared `_started` regardless,
+    which made `is_running()` lie, let Task 5's `closeEvent` destroy a live `QThread` child
+    (the very abort finding 4 was raised to prevent) and let a later `start()` reach
+    `QThread::start()` on a running thread (a silent no-op that strands the GUI).
+
+    Option A: a failed `shutdown()` leaves the flag set, so `is_running()` keeps answering
+    True, `start()` keeps refusing, and the guard releases on its own via `isFinished()` the
+    moment the engine wakes -- which is then exercised here as the caller's second option:
+    retry with a longer bound."""
+    StuckEngine.entered.clear()
+    worker = job.Job()
+    got, errs = [], []
+    worker.cancelled.connect(got.append)
+    worker.failed.connect(errs.append)
+
+    worker.start(_request(tmp_path, StuckEngine))
+    assert StuckEngine.entered.wait(5.0), "the engine never reached the worker thread"
+    assert worker.is_running() is True
+
+    assert worker.shutdown(5) is False, "the bound must expire inside the hook-less sleep"
+    assert worker.is_running() is True, "a failed shutdown must not report the job as over"
+
+    worker.start(_request(tmp_path))                    # the gate still holds -> refused
+    assert len(errs) == 1 and "already running" in errs[0], errs
+    assert worker.is_running() is True, "the refused start must not replace the live job"
+
+    # The docstring's instruction to the caller, exercised: retry with a longer bound, and
+    # only a True return means the thread is drained and the `Job` may be destroyed.
+    assert worker.shutdown(10_000) is True, "the retry must drain the thread"
+    assert worker.is_running() is False
+    _deliver(qapp)
+    assert got == ["stopped by the user"], got          # the STOP landed at the next hook
+    assert len(errs) == 1, errs                         # nothing beyond the one refusal
 
 
 def test_one_real_job_on_the_worker_thread(qapp, tmp_path, monkeypatch):
