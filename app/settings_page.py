@@ -53,6 +53,101 @@ import settings as settings_module
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout
 
+from app import session
+
+#: The str fields whose legal values the engine itself publishes, and those values as
+#: the *text* the field holds (ruling R-T9-types: these are the strings the tkinter var
+#: stored, so `'0.25'` and not `0.25`).
+#:
+#: WHY A COMBO AND NOT A CHECK. The page used to render every str field as a `LineEdit`
+#: and said so at `:266-273` -- "a combo needs a value list and this page is not allowed
+#: to invent one". That excuse covers fields whose domain the engine derives at run time
+#: (model names from `Catalog`, `mdxnet_stems` from a checkpoint,
+#: `chosen_process_method` from the resolved spec) and does not cover these: their lists
+#: already exist in `gui_data/constants.py`, and upstream's own widgets were built from
+#: exactly those constants. A value the engine compares by exact text is a *domain*, and
+#: a widget that cannot hold anything else beats a validator that rejects one afterwards
+#: -- the unchecked path (`'mp3'`, `'WAV '`, `''`, a cleared deverb box) is what C1 and
+#: I3 found reaching the engine and either deleting the run's own output or raising a
+#: `KeyError` out of a Qt slot.
+#:
+#: Each entry is the app's own copy, and every one is pinned against the constant it
+#: came from by `tests/test_settings_page.py::ENUM_SOURCES` -- the `R-T7-suffixchoice`
+#: shape (`app/dialogs.py:111-128`), so a rename upstream that changes no behaviour does
+#: not turn this page red while a real change in the domain cannot pass unnoticed. The
+#: provenance after each `#` is the widget upstream built the list into, read from
+#: `UVR.py` at commit `720ca46` -- the copy Plan 2 Task 8 deleted, so those line numbers
+#: are only checkable in git (`app/dialogs.py:39-41`).
+ENUM_FIELDS: dict[str, tuple[str, ...]] = {
+    # one source for the output-format domain: `separate.py` writes exactly these
+    "save_format": session.SAVE_FORMATS,                    # UVR.py:1546/1550/1554 radios
+    "mp3_bit_set": ("32k", "48k", "64k", "96k", "128k", "160k", "224k", "256k", "320k"),
+                                                            # UVR.py:3244 MP3_BIT_RATES
+    "wav_type_set": ("PCM_U8", "PCM_16", "PCM_24", "PCM_32", "32-bit Float",
+                     "64-bit Float"),                       # UVR.py:3238 WAV_TYPE
+    "device_set": ("Default", "0", "1", "2", "3", "4", "5", "6", "7", "8"),
+                                                            # UVR.py:3289 GPU_DEVICE_NUM_OPTS
+    "denoise_option": ("None", "Standard", "Denoise Model"),  # UVR.py:3599 MDX_DENOISE_OPTION
+    "deverb_vocal_opt": ("Main Vocals Only", "Lead Vocals Only", "Backing Vocals Only",
+                         "All Vocal Types"),                # UVR.py:4534 DEVERB_MAPPER keys
+    "compensate": ("Auto", "1.035", "1.08"),                # UVR.py:3568 VOL_COMPENSATION
+    "batch_size": ("Default", "2", "3", "4", "5", "6", "7", "8", "9", "10"),
+                                                            # UVR.py:3631-adjacent BATCH_SIZE
+    "mdx_batch_size": ("Default", "2", "3", "4", "5", "6", "7", "8", "9", "10"),
+                                                            # UVR.py:3631 BATCH_SIZE
+    "segment": ("Default", "1", "5", "10", "15", "20", "25", "30", "35", "40", "45",
+               "50", "55", "60", "65", "70", "75", "80", "85", "90", "95", "100"),
+                                                            # UVR.py:3498 DEMUCS_SEGMENTS
+    "overlap": ("0.25", "0.5", "0.75", "0.99"),             # UVR.py:3510 DEMUCS_OVERLAP
+    "overlap_mdx": ("Default", "0.25", "0.5", "0.75", "0.99"),  # UVR.py:3580 MDX_OVERLAP
+    # `MDX23_OVERLAP` is `range(2, 51)`; the bounds are the engine's, spelled here.
+    "overlap_mdx23": tuple(str(n) for n in range(2, 51)),   # UVR.py:1590/3637
+    "semitone_shift": tuple(str(n) for n in range(-12, 13)),  # UVR.py:3516 SEMITONE_SEL
+    # the union of the three stem lists upstream swaps in per demucs model
+    # (`UVR.py:5805`, fed by DEMUCS_2/4/6_STEM_OPTIONS at `gui_data/constants.py:297-299`).
+    "demucs_stems": ("All Stems", "Vocals", "Other", "Bass", "Drums", "Guitar", "Piano",
+                     "Instrumental"),
+    # I7(a): the two strings `plan.py:467-475` matches against, so the splitter's
+    # save-filter branch is reachable from this GUI for the first time. `''` is "no
+    # filter", which is what the field's default and `plan.py:456`'s `or ""` both mean.
+    "vocal_splitter_primary_label": ("", "Vocals Only", "Instrumental Only"),
+    "vocal_splitter_secondary_label": ("", "Vocals Only", "Instrumental Only"),
+}
+
+#: The twelve blend weights, by their real domain. Nothing in the engine bounds them --
+#: `plan.py` passes the number straight to the model -- so this range is the only guard
+#: that can be put there, and `setRange(-1e6, 1e6)` was not it.
+BLEND_SCALE_FIELDS: tuple[str, ...] = tuple(
+    name for name in typing.get_type_hints(selections_module.Selections)
+    if name.endswith("_secondary_model_scale"))
+
+
+def _check_enum_table() -> None:
+    """Import-time self-check of the table above, so a name here that is not a str field
+    is a crash on import rather than a widget that silently refuses to appear.
+
+    The same argument as `_MISSING` below: this page's invariants are checkable, so they
+    are checked.
+    """
+    types = {**typing.get_type_hints(settings_module.Settings),
+             **typing.get_type_hints(selections_module.Selections)}
+    unknown = sorted(set(ENUM_FIELDS) - set(types))
+    if unknown:
+        raise RuntimeError(f"ENUM_FIELDS names no field of Settings/Selections: {unknown}")
+    not_text = sorted(n for n in ENUM_FIELDS if types[n] is not str)
+    if not_text:
+        raise RuntimeError(
+            f"ENUM_FIELDS holds non-str fields {not_text}: a combo offers text, and a "
+            f"number-shaped field already has a NumberBox with the honest range")
+    if len(BLEND_SCALE_FIELDS) != 12:
+        raise RuntimeError(
+            f"BLEND_SCALE_FIELDS has {len(BLEND_SCALE_FIELDS)} entries, not 12 -- the "
+            f"0..1 bound is derived from the *_secondary_model_scale suffix, so a rename "
+            f"has to be looked at, not silently skipped")
+
+
+_check_enum_table()
+
 ARCH_FIELD_GROUPS: dict[str, tuple[str, ...]] = {
     # read on the VR branch (plan.py, UVR.py:1621/1628 + 3421-3451)
     "vr": ("aggression_setting", "window_size", "batch_size", "post_process_threshold",
@@ -246,32 +341,60 @@ class SettingsPage(fluentqt.Card):
         return group
 
     def _field(self, name: str, typ: type, value):
-        """The one widget this field has, chosen by its declared type and nothing else."""
-        kind = widget_kind(typ)
-        if kind is _BOOL:
-            w = fluentqt.CheckBox(name, self)
-            w.setChecked(bool(value))
-        elif kind in (_INT, _FLOAT):
-            # NumberBox is a LineEdit subclass in this binding, not a spin box: it
-            # takes floats natively (setValue(0.5) -> value() == 0.5) and has no
-            # setSingleStep. Float fields therefore need display precision rather than a
-            # second widget type -- `post_process_threshold` and the twelve scales.
-            w = fluentqt.NumberBox(self)
-            if kind is _INT:
-                w.setRange(-2_147_483_648, 2_147_483_647)
-            else:
-                w.setRange(-1e6, 1e6)
-                w.setDisplayPrecision(6)
-            w.setValue(value)
+        """The one widget this field has, chosen by its declared type and nothing else.
+
+        The order of the three cases is the page's whole policy: a field the engine
+        lists values for gets a combo (`ENUM_FIELDS`), a number gets a bounded box, and
+        only what is left -- a value whose domain the engine *derives* rather than
+        publishes -- is free text. That is the honest version of the note this method
+        used to open with ("a combo needs a value list and this page is not allowed to
+        invent one"), which was true of model names and quietly untrue of `save_format`,
+        `deverb_vocal_opt` and the eleven sentinel fields.
+        """
+        legal = ENUM_FIELDS.get(name)
+        if legal is not None:
+            w = fluentqt.ComboBox(self)
+            w.addItems(list(legal))
+            text = str(value)
+            if text not in legal:
+                # The value came from the file, not from a keyboard. Keeping it as an
+                # extra item is what stops the page from *silently* replacing an intent
+                # it cannot express -- the failure `test_no_default_value_falls_outside_
+                # its_own_enum_list` guards against for defaults -- and run time is where
+                # it gets refused (`app/session.py::check_save_format`, and the
+                # controller's trailing `except Exception` for the `DEVERB_MAPPER` keys).
+                w.addItem(text)
+            w.setCurrentIndex(w.findText(text))
+            w.setEditable(False)
         else:
-            # A `LineEdit` and not a `ComboBox`, because a combo needs a value list and
-            # this page is not allowed to invent one: `Catalog` knows model *names*, not
-            # the `save_format` / `mp3_bit_set` / stems tokens, and the sentinel-or-number
-            # fields (`batch_size`, `overlap`, `compensate`, ...) are stored as the text
-            # the tkinter var held (ruling R-T9-types), which no list here could be
-            # authoritative about. What the field type refuses, `apply()` reports.
-            w = fluentqt.LineEdit(self)
-            w.setText(str(value))
+            kind = widget_kind(typ)
+            if kind is _BOOL:
+                w = fluentqt.CheckBox(name, self)
+                w.setChecked(bool(value))
+            elif kind in (_INT, _FLOAT):
+                # NumberBox is a LineEdit subclass in this binding, not a spin box: it
+                # takes floats natively (setValue(0.5) -> value() == 0.5) and has no
+                # setSingleStep. Float fields therefore need display precision rather than
+                # a second widget type -- `post_process_threshold` and the twelve scales.
+                w = fluentqt.NumberBox(self)
+                if kind is _INT:
+                    w.setRange(-2_147_483_648, 2_147_483_647)
+                else:
+                    if name in BLEND_SCALE_FIELDS:
+                        w.setRange(0.0, 1.0)               # I7(c): a blend weight
+                    else:
+                        w.setRange(-1e6, 1e6)
+                    w.setDisplayPrecision(6)
+                w.setValue(value)
+            else:
+                # Free text: a field whose legal values the engine works out at run time
+                # (model names from `Catalog`, `mdxnet_stems` from a checkpoint,
+                # `chosen_process_method` from the resolved spec), so no list here could
+                # be authoritative about it. What the field type refuses, `apply()`
+                # reports -- and for the fields that *do* have a domain, that refusal is
+                # now a combo.
+                w = fluentqt.LineEdit(self)
+                w.setText(str(value))
         w.setObjectName(name)
         self._widgets[name] = w
         return w
@@ -358,6 +481,10 @@ class SettingsPage(fluentqt.Card):
             return self._raw[name]
         if isinstance(widget, fluentqt.CheckBox):
             return widget.isChecked()
+        if isinstance(widget, fluentqt.ComboBox):
+            # A combo has no text to mis-read: `currentText()` is one of its items, which
+            # is the whole point of `ENUM_FIELDS`.
+            return widget.currentText()
         if isinstance(widget, fluentqt.NumberBox):
             # Two readings, and the choice matters. `value()` is the only lossless one of
             # what the box displays: with `setDisplayPrecision(6)` the *text* of
@@ -378,6 +505,14 @@ class SettingsPage(fluentqt.Card):
         self._raw.pop(name, None)
         if isinstance(widget, fluentqt.CheckBox):
             widget.setChecked(bool(value))
+        elif isinstance(widget, fluentqt.ComboBox):
+            text = str(value)
+            index = widget.findText(text)
+            if index < 0:
+                # see `_field`: a value that arrives from a file is shown, not swallowed
+                widget.addItem(text)
+                index = widget.count() - 1
+            widget.setCurrentIndex(index)
         elif isinstance(widget, fluentqt.NumberBox):
             widget.setValue(float(value))
         else:
@@ -399,6 +534,16 @@ class SettingsPage(fluentqt.Card):
         widget = self._widgets[name]
         if isinstance(widget, (fluentqt.NumberBox, fluentqt.LineEdit)):
             widget.setText(str(value))
+        elif isinstance(widget, fluentqt.ComboBox):
+            # Not `set_field_value`: that clears the raw entry it is about to display.
+            # The combo is given the refused text as an extra item so the screen matches
+            # what `apply()` is about to reject, while `_read` keeps reading `_raw`.
+            text = str(value)
+            index = widget.findText(text)
+            if index < 0:
+                widget.addItem(text)
+                index = widget.count() - 1
+            widget.setCurrentIndex(index)
 
     def load_from(self, settings_obj, selections_obj) -> None:
         """Push two state objects into every widget -- the reverse of `apply`.

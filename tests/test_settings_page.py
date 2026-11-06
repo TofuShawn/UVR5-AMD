@@ -109,7 +109,13 @@ def test_the_page_holds_exactly_one_widget_per_field_and_no_other_kind(qapp, tmp
     assert names == expected, (sorted(names - expected), sorted(expected - names))
     assert len(page._widgets) == len(names) == 83
     for name, widget in page._widgets.items():
-        assert isinstance(widget, (fluentqt.CheckBox, fluentqt.NumberBox, fluentqt.LineEdit))
+        # Four kinds, not three: I7 turned the fields the engine itself lists values for
+        # into non-editable `ComboBox`es, so a `LineEdit` is now only what is left for a
+        # field whose domain the engine derives (model names, `mdxnet_stems` from a
+        # checkpoint, `chosen_process_method` from the resolved spec).
+        assert isinstance(widget, (fluentqt.CheckBox, fluentqt.NumberBox,
+                                   fluentqt.LineEdit, fluentqt.ComboBox)), (
+            name, type(widget).__name__)
 
 
 def test_the_untouched_page_saves_every_field_back_as_it_was_loaded(qapp, tmp_path):
@@ -448,3 +454,169 @@ def test_the_page_writes_the_shared_file_it_was_given_and_nothing_else(qapp, tmp
     assert set(raw) - {"selections"} == {f.name for f in
                                          dataclasses.fields(settings_module.Settings)}
     assert set(raw["selections"]) == set(selections_module.SELECTION_FIELD_NAMES)
+
+
+# -- I7: the fields whose domain the engine already publishes ------------------ #
+
+#: Each enum field's legal values, computed *here* from `gui_data.constants` so the
+#: assertion below is "the app's copy moved", not "both copies say the same literal".
+#: This is the `R-T7-suffixchoice` shape (`app/dialogs.py:111-128`: the app keeps its own
+#: literal and the *test* resolves the engine's constant, as
+#: `tests/test_dialogs.py::test_the_config_yaml_suffix_is_the_one_upstreams_popup_appends`
+#: does), for the same reason -- and with the same lookup helper, so an upstream rename
+#: that changes no behaviour answers with the guard's own sentence instead of a bare
+#: `AttributeError` that takes the whole GUI half of the suite red for the wrong reason.
+#:
+#: The `str()` on the numeric lists is not a convenience: these fields are stored as the
+#: *text* the tkinter var held (ruling R-T9-types), so the page's domain is the text form
+#: of the engine's numbers -- and `str()` is the conversion the combobox itself performed
+#: when it wrote a picked value back out.
+def _engine_const(const, name: str):
+    """One named value of `gui_data.constants`, looked up by name and never guessed."""
+    value = getattr(const, name, None)
+    assert value is not None, (
+        f"gui_data/constants.py has no `{name}` -- this table reads the engine's own "
+        f"domain from it and `app/settings_page.py::ENUM_FIELDS` is the app's copy of "
+        f"what that name held, so if upstream renamed it the copy and this lookup move "
+        f"together.")
+    return value
+
+
+ENUM_SOURCES = {
+    "save_format": lambda c: tuple(_engine_const(c, n) for n in ("WAV", "FLAC", "MP3")),
+    "mp3_bit_set": lambda c: tuple(_engine_const(c, "MP3_BIT_RATES")),
+    "wav_type_set": lambda c: tuple(_engine_const(c, "WAV_TYPE")),
+    "device_set": lambda c: tuple(str(v) for v in _engine_const(c, "GPU_DEVICE_NUM_OPTS")),
+    "denoise_option": lambda c: tuple(_engine_const(c, "MDX_DENOISE_OPTION")),
+    "deverb_vocal_opt": lambda c: tuple(_engine_const(c, "DEVERB_MAPPER")),
+    "compensate": lambda c: tuple(str(v) for v in _engine_const(c, "VOL_COMPENSATION")),
+    "batch_size": lambda c: tuple(str(v) for v in _engine_const(c, "BATCH_SIZE")),
+    "mdx_batch_size": lambda c: tuple(str(v) for v in _engine_const(c, "BATCH_SIZE")),
+    "segment": lambda c: tuple(str(v) for v in _engine_const(c, "DEMUCS_SEGMENTS")),
+    "overlap": lambda c: tuple(str(v) for v in _engine_const(c, "DEMUCS_OVERLAP")),
+    "overlap_mdx": lambda c: tuple(str(v) for v in _engine_const(c, "MDX_OVERLAP")),
+    "overlap_mdx23": lambda c: tuple(str(v) for v in _engine_const(c, "MDX23_OVERLAP")),
+    "semitone_shift": lambda c: tuple(str(v) for v in _engine_const(c, "SEMITONE_SEL")),
+    "demucs_stems": lambda c: tuple(dict.fromkeys(
+        (*_engine_const(c, "DEMUCS_4_STEM_OPTIONS"),
+         *_engine_const(c, "DEMUCS_6_STEM_OPTIONS"),
+         *_engine_const(c, "DEMUCS_2_STEM_OPTIONS")))),
+    "vocal_splitter_primary_label": lambda c: (
+        "", _engine_const(c, "VOCAL_STEM_ONLY"), _engine_const(c, "INST_STEM_ONLY")),
+    "vocal_splitter_secondary_label": lambda c: (
+        "", _engine_const(c, "VOCAL_STEM_ONLY"), _engine_const(c, "INST_STEM_ONLY")),
+}
+
+
+def test_the_enum_table_covers_exactly_the_fields_the_review_named():
+    """The key set is part of the fix: an engine-listed field that silently stays free
+    text is the drift this branch has been chasing all plan."""
+    assert set(settings_page.ENUM_FIELDS) == set(ENUM_SOURCES), (
+        sorted(set(settings_page.ENUM_FIELDS) ^ set(ENUM_SOURCES)))
+
+
+def test_every_enum_field_is_a_non_editable_combo_holding_the_engine_list(qapp):
+    """I7's point is the *widget*, not the validator: a box that cannot hold a wrong
+    value beats a check that rejects one afterwards, because the unchecked path (typed
+    text, `''`, `'WAV '`) is exactly what produced the no-output runs in C1."""
+    import gui_data.constants as const
+
+    page = _page(qapp)
+    for name, derive in ENUM_SOURCES.items():
+        widget = page._widgets[name]
+        assert isinstance(widget, fluentqt.ComboBox), (
+            f"{name} is still a {type(widget).__name__}: a free-text box for a field the "
+            f"engine lists values for is the bug I7 is about")
+        assert not widget.isEditable(), f"{name}: an editable combo can be typed into"
+        offered = {widget.itemText(i) for i in range(widget.count())}
+        assert offered == set(derive(const)), (
+            f"{name}: the combo offers {sorted(offered)}, the engine's constant holds "
+            f"{sorted(derive(const))}")
+        assert set(settings_page.ENUM_FIELDS[name]) == set(derive(const)), (
+            f"{name}: app/settings_page.py's own copy of the domain is "
+            f"{settings_page.ENUM_FIELDS[name]}, the engine's is {derive(const)}")
+
+
+def test_no_default_value_falls_outside_its_own_enum_list(qapp):
+    """A combo whose items do not contain the loaded default would show item 0 and save
+    item 0: the intent the file held is dropped, which is the same silent data loss the
+    `_MISSING` import guard refuses for a field with no widget at all."""
+    st, sel = settings_module.Settings(), selections_module.Selections()
+    page = settings_page.SettingsPage(settings_obj=st, selections_obj=sel)
+    for name in settings_page.ENUM_FIELDS:
+        holder = st if name in page._types else sel
+        value = str(getattr(holder, name))
+        assert value in settings_page.ENUM_FIELDS[name], (
+            f"{name}'s default {value!r} is not in {settings_page.ENUM_FIELDS[name]} -- "
+            f"the page would display and save a different value from the one it loaded")
+        assert page.field_value(name) == value, name
+
+
+def test_a_value_outside_the_domain_stays_visible_instead_of_being_silently_replaced(
+        qapp):
+    """The file is still a place a bad value can arrive from (hand-edited, or written by
+    an older build), and the page's rule is the one `apply()` already follows for a junk
+    number: show what is there, refuse to pretend. Run-time is where it gets refused --
+    `app/session.py`'s `check_save_format` for `save_format`, the controller's trailing
+    `except Exception` for the `DEVERB_MAPPER` key -- so the widget's job is only to stop
+    the value being *created* here."""
+    page = _page(qapp)
+    page.load_from(settings_module.Settings(save_format="mp3"),
+                   selections_module.Selections())
+    assert page.field_value("save_format") == "mp3", page.field_value("save_format")
+    widget = page._widgets["save_format"]
+    assert "mp3" in [widget.itemText(i) for i in range(widget.count())]
+
+
+def test_typing_a_wrong_value_is_not_an_option(qapp):
+    """The domain check the LineEdit used to rely on is in the widget now: a
+    non-editable `ComboBox` has no keyboard path to a value that is not one of its
+    items, so `setCurrentText` of a stranger leaves the selection inside the domain."""
+    page = _page(qapp)
+    widget = page._widgets["deverb_vocal_opt"]
+    assert isinstance(widget, fluentqt.ComboBox)
+    widget.setCurrentText("nope")                        # what a user typing would do
+    assert page.field_value("deverb_vocal_opt") in settings_page.ENUM_FIELDS[
+        "deverb_vocal_opt"], page.field_value("deverb_vocal_opt")
+
+
+def test_the_blend_scales_are_bounded_to_their_real_domain(qapp):
+    """I7(c): twelve blend weights between 0 and 1, bounded by `setRange(-1e6, 1e6)` --
+    a range no other guard backs up, because nothing in the engine bounds them either.
+    The names come from `Selections`' own fields, so a thirteenth scale inherits the
+    bound instead of being forgotten."""
+    page = _page(qapp)
+    assert len(settings_page.BLEND_SCALE_FIELDS) == 12, settings_page.BLEND_SCALE_FIELDS
+    for name in settings_page.BLEND_SCALE_FIELDS:
+        widget = page._widgets[name]
+        assert isinstance(widget, fluentqt.NumberBox), name
+        assert (widget.minimum(), widget.maximum()) == (0.0, 1.0), (
+            f"{name} is a blend weight; {widget.minimum()}..{widget.maximum()} is not "
+            f"its domain")
+    other = page._widgets["post_process_threshold"]
+    assert other.maximum() > 1.0, "the bound moved onto a field that is not a scale"
+
+
+def test_the_splitters_save_filter_is_reachable_from_the_page(qapp, tmp_path):
+    """I7(a): `plan.py:467-475` matches the two splitter labels against 'Vocals Only' /
+    'Instrumental Only' -- strings that appeared nowhere in `app/**`, so the engine's
+    save-filter branch was unreachable from this GUI however the user clicked. The combo
+    now offers exactly those two, and what the page saves is what the plan reads."""
+    import gui_data.constants as const
+
+    page = _page(qapp)
+    for name in ("vocal_splitter_primary_label", "vocal_splitter_secondary_label"):
+        offered = {page._widgets[name].itemText(i)
+                   for i in range(page._widgets[name].count())}
+        assert offered == {"", const.VOCAL_STEM_ONLY, const.INST_STEM_ONLY}, (name, offered)
+
+    page.set_field_value("vocal_splitter_primary_label", const.VOCAL_STEM_ONLY)
+    page.set_field_value("set_vocal_splitter", "UVR-BVE-458n")
+    page.set_field_value("is_set_vocal_splitter", True)
+    target = tmp_path / "settings.json"
+    messages = page.apply(target)
+    assert messages == [], messages
+    reloaded = selections_module.load(target)
+    assert reloaded.vocal_splitter_primary_label == const.VOCAL_STEM_ONLY
+    plan_dict = reloaded.to_plan_dict()
+    assert plan_dict["vocal_splitter"]["primary_stem_only_label"] == const.VOCAL_STEM_ONLY
