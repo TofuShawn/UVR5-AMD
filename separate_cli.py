@@ -507,7 +507,7 @@ def run(args: argparse.Namespace, *, out: TextIO = sys.stdout,
     if not audio.is_file():
         return failure(f"[cli] input audio not found: {audio}", EXIT_INPUT)
 
-    export_path = Path(args.out) if args.out else (audio.parent / "UVR_out")
+    export_path = Path(args.out) if args.out else session.default_export_path(audio)
     try:
         written = session.run_job(sess, audio=audio, export_path=export_path, printer=printer)
     except session.NoEngineClass as exc:
@@ -515,12 +515,15 @@ def run(args: argparse.Namespace, *, out: TextIO = sys.stdout,
         # "plan refused:" prefix. Ruling R-T2-noclass: keep those bytes, pin them with a
         # test -- the old code had none.
         return failure(f"[cli] {exc}", EXIT_PLAN)
+    except session.NoStemWritten as exc:
+        # The emptiness check moved into `session.run_job` so that the GUI cannot reach a
+        # different verdict from the same engine return (finding I2). Above the generic
+        # `except Exception`, because that one would wrap this sentence in
+        # "engine failed (NoStemWritten):" -- and these bytes are the CLI's contract:
+        # tests/test_session.py::test_the_empty_written_cli_bytes_do_not_move pins them.
+        return failure(f"[cli] {exc}", EXIT_ENGINE)
     except Exception as exc:                              # engine failures are reported
         return failure(f"[cli] engine failed ({type(exc).__name__}): {exc}", EXIT_ENGINE)
-    if not written:
-        return failure(f"[cli] the engine returned without writing any stem to "
-                       f"{export_path}; that is an engine failure, not a success.",
-                       EXIT_ENGINE)
     for path in written:
         printer(f"[cli] wrote {path} ({path.stat().st_size} bytes)")
     printer(f"[cli] done: {len(written)} file(s) in {export_path}")

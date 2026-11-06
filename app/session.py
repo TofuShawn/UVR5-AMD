@@ -32,6 +32,84 @@ class Cancelled(RuntimeError):
     """
 
 
+#: The output formats the engine can write, in the engine's own spelling.
+#: `gui_data/constants.py:521-523` defines exactly three -- `WAV`, `FLAC`, `MP3` -- and
+#: `separate.py:1541-1570`'s `save_format()` branches on nothing else. Pinned against
+#: both by `tests/test_session.py::test_output_suffixes_are_pinned_to_the_engines_own_
+#: literals`, in the shape `app/dialogs.py:111-128` established for `CONFIG_YAML_SUFFIX`:
+#: a local literal plus a comparison, so an upstream *rename* that changes no behaviour
+#: does not take the GUI red while a real change in the domain cannot pass unnoticed.
+SAVE_FORMATS: tuple[str, ...] = ("WAV", "FLAC", "MP3")
+
+#: The suffixes those formats end up on disk with, derived from `SAVE_FORMATS` rather
+#: than listed again: `save_format()` builds each name with
+#: `audio_path.replace(".wav", ".flac")` / `(".wav", ".mp3")`, so every format except
+#: WAV leaves exactly one file and deletes the intermediate. That is why `run_job`
+#: snapshots all three and not just the one the plan asked for -- a FLAC or MP3 run was
+#: invisible to a `rglob("*.wav")` diff and reported "0 file(s) written".
+OUTPUT_SUFFIXES: tuple[str, ...] = tuple("." + name.lower() for name in SAVE_FORMATS)
+
+#: The directory a run with no explicit output goes to, beside the input file. Spelled
+#: once, because `app/controller.py` and `separate_cli.py` both used to spell it and the
+#: comment above one of the two copies claimed that duplication prevented divergence.
+DEFAULT_EXPORT_DIR_NAME = "UVR_out"
+
+
+def default_export_path(audio: Path | str) -> Path:
+    """The export directory both front ends fall back to for one input file."""
+    return Path(audio).parent / DEFAULT_EXPORT_DIR_NAME
+
+
+@dataclasses.dataclass(frozen=True)
+class InvalidSaveFormat(ValueError):
+    """`Settings.save_format` holds something the engine has no branch for.
+
+    The field is free text on the settings page and its type is `str`, so `'mp3'`,
+    `'WAV '`, `'OGG'` or `''` all pass validation and then reach
+    `separate.py:save_format()`, which converts nothing for a value that is not `FLAC`
+    or `MP3` and **still removes the wav it was given** -- a run that writes no file at
+    all while both front ends say it finished. A `ValueError` subclass, so the CLI's
+    existing `except ValueError` (exit 2) and the GUI's existing
+    `except (CatalogError, ValueError, PlanError)` refusal both catch it with no new
+    plumbing, and the refusal lands before a thread exists.
+    """
+
+    save_format: str
+    legal: tuple[str, ...] = SAVE_FORMATS
+
+    def __str__(self) -> str:
+        return (f"settings.save_format is {self.save_format!r}, which the engine cannot "
+                f"write; it produces {', '.join(self.legal)} and nothing else -- with an "
+                f"unrecognised value separate.py's save_format() converts nothing and "
+                f"deletes the wav anyway, so the run would write no file at all")
+
+
+def check_save_format(save_format: str) -> None:
+    """Refuse a value outside `SAVE_FORMATS`; exact match, so `'wav '` and `'mp3'` fail."""
+    if save_format not in SAVE_FORMATS:
+        raise InvalidSaveFormat(save_format=save_format)
+
+
+@dataclasses.dataclass(frozen=True)
+class NoStemWritten(RuntimeError):
+    """The engine returned normally having written none of `OUTPUT_SUFFIXES`.
+
+    The check lived only in `separate_cli.run()` (`:520-523`), which let the two front
+    ends reach different verdicts from the same return value -- the CLI exited 1, the GUI
+    emitted `succeeded` and printed "Done -- 0 file(s) written". It belongs here because
+    this is the single assembly path whose existence is the answer to exactly that class
+    of disagreement (module docstring). `separate_cli.run()` re-prints this message with
+    its own `[cli] ` prefix and its own exit code, so the CLI bytes did not move;
+    `tests/test_session.py::test_the_empty_written_cli_bytes_do_not_move` pins that.
+    """
+
+    export_path: Path
+
+    def __str__(self) -> str:
+        return (f"the engine returned without writing any stem to {self.export_path}; "
+                f"that is an engine failure, not a success.")
+
+
 @dataclasses.dataclass(frozen=True)
 class NoEngineClass(RuntimeError):
     """The catalog knows an arch that `separate.py` has no class for.
@@ -68,9 +146,14 @@ def assemble(*, st: settings_module.Settings, cat: catalog.Catalog, model: str,
 
     Raises `catalog.UnknownModelParamsError` (tier 3 -- a GUI opens the params dialog,
     a CLI prints and exits 3), `catalog.CatalogError`, `ValueError` (bad device
-    request) and `plan.PlanError` without catching them: the caller's error surface is
-    the whole point of keeping these typed.
+    request, or a `save_format` the engine has no branch for) and `plan.PlanError`
+    without catching them: the caller's error surface is the whole point of keeping
+    these typed.
     """
+    # First, because it is the cheapest refusal here and the one with the worst
+    # consequence: an illegal `save_format` lets the run finish having deleted its own
+    # output (`check_save_format`).
+    check_save_format(st.save_format)
     spec = cat.resolve(model, arch, required=True)
     backend = backends.resolve(force=force_device)
     for line in separate_cli.describe_device(backend, force_device):
@@ -151,6 +234,23 @@ def progress_percent(*, models_started: int, model_count: int, step: float,
     return max(0.0, min(100.0, progress))
 
 
+def _stem_files(export_path: Path) -> dict[Path, int]:
+    """`(path -> mtime)` for every stem-shaped file in `export_path`.
+
+    All three of `OUTPUT_SUFFIXES`, not just `.wav`: `separate.py:1541-1570` exports
+    `…_(Stem).flac` / `.mp3` and then removes the wav it converted, so a diff on `.wav`
+    alone reported a legitimate FLAC or MP3 run as having written nothing (C1).
+    `"_(" in p.stem` is the engine's own stem naming (`audio_(Vocals).wav`), which keeps
+    a user's own `song_(live).flac` in the same directory out of the answer.
+    """
+    found: dict[Path, int] = {}
+    for suffix in OUTPUT_SUFFIXES:
+        for path in export_path.rglob(f"*{suffix}"):
+            if "_(" in path.stem:
+                found[path] = path.stat().st_mtime_ns
+    return found
+
+
 def run_job(session: Session, *, audio: Path | str, export_path: Path | str,
             printer: Callable[[str], None] = print,
             console_log: list[str] | None = None,
@@ -163,6 +263,11 @@ def run_job(session: Session, *, audio: Path | str, export_path: Path | str,
     a pre-run snapshot of (path -> mtime) rather than a post-run existence test,
     because re-running the same model overwrites the same two filenames and an engine
     that produced nothing must not exit 0 (`separate_cli.py:521-541`).
+
+    An empty result raises `NoStemWritten` rather than returning `[]`: the emptiness
+    check used to sit in `separate_cli.run()`, which is how one return value reached two
+    verdicts -- exit 1 on the CLI, "Done -- 0 file(s) written" in the GUI. Both callers
+    inherit this one.
     """
     audio, export_path = Path(audio), Path(export_path)
     engine_class = session.engine_class
@@ -207,8 +312,11 @@ def run_job(session: Session, *, audio: Path | str, export_path: Path | str,
         process_data["process_iteration"] = process_iteration
 
     export_path.mkdir(parents=True, exist_ok=True)
-    before = {p: p.stat().st_mtime_ns for p in export_path.rglob("*.wav") if "_(" in p.stem}
+    before = _stem_files(export_path)
     job = engine_class(session.rp, process_data)
     job.seperate()
-    return sorted(p for p in export_path.rglob("*.wav")
-                  if "_(" in p.stem and before.get(p) != p.stat().st_mtime_ns)
+    written = sorted(path for path, mtime in _stem_files(export_path).items()
+                     if before.get(path) != mtime)
+    if not written:
+        raise NoStemWritten(export_path)
+    return written

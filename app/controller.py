@@ -132,10 +132,11 @@ class Controller:
             self._refuse(f"not started: input audio not found: {audio}")
             return
 
-        # Empty output means the CLI's default: a folder next to the file. Two front ends
-        # choosing different places for the same run is the bug this line prevents.
+        # Empty output means the default beside the input file -- `session`'s, the one
+        # the CLI uses too. The two front ends choosing different places for the same run
+        # is the bug, and a second spelling of the path *was* the divergence.
         raw_output = page.output_edit.text().strip()
-        export = Path(raw_output) if raw_output else audio.parent / "UVR_out"
+        export = Path(raw_output) if raw_output else session.default_export_path(audio)
 
         try:
             sess = session.assemble(st=self.settings, cat=self.catalog, model=model,
@@ -152,6 +153,18 @@ class Controller:
             return
         except (catalog.CatalogError, ValueError, plan.PlanError) as exc:
             self._refuse(f"not started: {exc}")
+            return
+        except Exception as exc:                              # noqa: BLE001 - report it
+            # The last resort, and it is load-bearing rather than defensive. Two ways this
+            # slot used to be able to die quietly: a `Settings` value that `plan.build`
+            # subscripts raw -- `plan.py:368`'s `DEVERB_MAPPER[settings.deverb_vocal_opt]`,
+            # for which the settings page used to render a free-text box, so any other
+            # string raised `KeyError` -- and any engine-side surprise. Neither was in the
+            # tuple above; an exception that escapes a Qt slot on PySide6 6.9.3 prints to
+            # stderr and the event loop carries on, which `app/settings_page.py:281-291`
+            # already documents as "looked exactly like a button that did nothing". Naming
+            # the type keeps a real bug actionable instead of invisible.
+            self._refuse(f"not started: {type(exc).__name__}: {exc}")
             return
 
         page.show_compute(sess.compute_lines)

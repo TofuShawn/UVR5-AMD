@@ -20,10 +20,12 @@ the real engine, because neither ran:
 from __future__ import annotations
 
 import io
+from pathlib import Path
 
 import backends
 import catalog
 import plan
+import selections as selections_module
 import settings as settings_module
 import pytest
 
@@ -174,3 +176,298 @@ def test_no_engine_class_names_the_arch_and_the_known_list(tmp_path, monkeypatch
     text = str(excinfo.value)
     assert text.startswith("arch 'vr' has no engine class in separate.py; known:")
     assert "mdx" in text and "demucs" in text
+
+
+# -- C1: the formats the engine can write, and the ones it cannot -------------- #
+
+class _Plan:
+    """Just enough of a `RunPlan` for `run_job`: no field it reads is faked here, so
+    this stays the shape `model_count` and the progress wrapper already tolerate."""
+
+    is_secondary_model_activated = False
+    secondary_model_4_stem: list = []
+    pre_proc_model = None
+    vocal_split_model = None
+    save_format = "FLAC"
+
+
+def _sess(engine_class):
+    from app import session
+    return session.Session(spec=None, backend=None, rp=_Plan(),
+                           engine_class=engine_class, compute_lines=())
+
+
+def _converted_output_engine(suffix: str):
+    """An engine shaped like `separate.py:1541-1570`: it writes the wav, converts it to
+    `suffix`, and removes the wav unconditionally.
+    """
+
+    class Converted:
+        def __init__(self, rp, process_data):
+            self.pd = process_data
+
+        def seperate(self):
+            out = Path(self.pd["export_path"])
+            wav = out / "song_(Vocals).wav"
+            wav.write_bytes(b"RIFF")
+            (out / f"song_(Vocals){suffix}").write_bytes(b"data")
+            wav.unlink()                              # separate.py:1566-1570
+
+    return Converted
+
+
+@pytest.mark.parametrize("suffix", [".flac", ".mp3"])
+def test_run_job_sees_a_converted_stem_in_every_format_the_engine_can_write(
+        tmp_path, suffix):
+    """C1(a). A FLAC or MP3 run is legitimate -- both are engine-supported and both are
+    selectable on the shipped settings page -- but `run_job` diffed `rglob("*.wav")`
+    only, so it returned [] and the GUI said "Done - 0 file(s) written" over two files
+    on disk. The suffix list now comes from `session.OUTPUT_SUFFIXES` and covers all
+    three.
+    """
+    from app import session
+
+    written = session.run_job(_sess(_converted_output_engine(suffix)),
+                              audio=tmp_path / "in.wav", export_path=tmp_path / "out")
+    assert [p.name for p in written] == [f"song_(Vocals){suffix}"], written
+    assert written[0].is_file()
+
+
+def test_run_job_still_sees_the_plain_wav_output(tmp_path):
+    """The other half of the list: `save_format == 'WAV'` writes the wav and removes
+    nothing (`separate.py:1542` only converts when the format is not WAV)."""
+    from app import session
+
+    class WavOnly:
+        def __init__(self, rp, process_data):
+            self.pd = process_data
+
+        def seperate(self):
+            (Path(self.pd["export_path"]) / "song_(Vocals).wav").write_bytes(b"RIFF")
+
+    written = session.run_job(_sess(WavOnly), audio=tmp_path / "in.wav",
+                              export_path=tmp_path / "out")
+    assert [p.name for p in written] == ["song_(Vocals).wav"]
+
+
+class _NoOutputEngine:
+    """An engine that returns normally having written nothing -- the case I2 is about."""
+
+    def __init__(self, rp, process_data):
+        self.pd = process_data
+
+    def seperate(self):
+        return None
+
+
+def test_run_job_refuses_when_the_engine_returned_without_writing(tmp_path):
+    """I2: the emptiness check used to live only in `separate_cli.run()`, so the two
+    front ends reached *different verdicts from the same return value* -- the CLI exited
+    1, the GUI emitted `succeeded` and printed "Done - 0 file(s) written". One assembly
+    path now carries one verdict (`app/session.py:1-9`), inherited by both callers."""
+    from app import session
+
+    with pytest.raises(session.NoStemWritten) as excinfo:
+        session.run_job(_sess(_NoOutputEngine), audio=tmp_path / "in.wav",
+                        export_path=tmp_path / "out")
+    assert "without writing any stem" in str(excinfo.value)
+
+
+def test_the_empty_written_cli_bytes_do_not_move(tmp_path, monkeypatch):
+    """The CLI's refusal sentence is the one the finding says must not move:
+    `[cli] the engine returned without writing any stem to <dir>; that is an engine
+    failure, not a success.` on stderr with exit 1. It now arrives from
+    `session.NoStemWritten` rather than from `run()`'s own `if not written`, and the
+    `except` in `run()` re-prints it verbatim.
+    """
+    import separate_cli
+    from app import session
+
+    export = tmp_path / "UVR_out"
+
+    def raiser(*_args, **_kwargs):
+        raise session.NoStemWritten(export)
+
+    monkeypatch.setattr(session, "run_job", raiser)
+    audio = tmp_path / "in.wav"
+    audio.write_bytes(b"RIFF")
+    err = io.StringIO()
+    code = separate_cli.main(["--audio", str(audio), "--model", "1_HP-UVR", "--device",
+                              "cpu", "--writable-dir", str(tmp_path / "w")],
+                             out=io.StringIO(), err=err)
+    assert code == separate_cli.EXIT_ENGINE, code
+    assert err.getvalue() == (f"[cli] the engine returned without writing any stem to "
+                              f"{export}; that is an engine failure, not a success.\n"), \
+        err.getvalue()
+
+
+@pytest.mark.parametrize("bad", ["mp3", "WAV ", "OGG", "", "wav"])
+def test_assemble_refuses_a_save_format_the_engine_cannot_write(tmp_path, bad):
+    """C1(b). The engine's legal domain is three literals (`gui_data/constants.py:521-523`)
+    and `Settings.save_format` is a free-text field, so `'mp3'` took the
+    convert-nothing branch of `separate.py:save_format()` and deleted the wav anyway:
+    no output at all. Refuse before the run, in the one assembly path both front ends
+    use, and raise a `ValueError` subclass so the CLI's existing handler and the GUI's
+    existing `_refuse` both pick it up.
+
+    `'wav'` in lowercase and `'WAV '` are the two a hand-edited `settings.json` or a
+    mistyped box actually produces: the match is exact, because the engine's own
+    comparison is (`separate.py:1542` reads `if not save_format == WAV`).
+    """
+    import separate_cli
+    from app import session
+
+    st = settings_module.Settings(save_format=bad)
+    cat = separate_cli.make_catalog(tmp_path / "nope", tmp_path / "w")
+    with pytest.raises(session.InvalidSaveFormat) as excinfo:
+        session.assemble(st=st, cat=cat, model="1_HP-UVR", force_device="cpu",
+                         printer=lambda _line: None)
+    assert type(excinfo.value) is not ValueError
+    assert isinstance(excinfo.value, ValueError)
+    for token in session.SAVE_FORMATS:
+        assert token in str(excinfo.value), str(excinfo.value)
+    assert repr(bad) in str(excinfo.value) or bad == ""
+
+
+def test_assemble_accepts_every_format_it_lists(tmp_path):
+    """The refusal must not eat the legal values: a FLAC run is a real run."""
+    import separate_cli
+    from app import session
+
+    cat = separate_cli.make_catalog(None, tmp_path / "w")
+    for legal in session.SAVE_FORMATS:
+        st = settings_module.Settings(save_format=legal)
+        session.assemble(st=st, cat=cat, model="1_HP-UVR", force_device="cpu",
+                         printer=lambda _line: None)
+
+
+def test_a_bad_save_format_refuses_from_the_cli_too(tmp_path):
+    """Both front ends, one verdict: the CLI exits with the usage code and prints the
+    same sentence the GUI routes to its console."""
+    import separate_cli
+
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text('{"save_format": "mp3"}', encoding="utf-8")
+    out, err = io.StringIO(), io.StringIO()
+    code = separate_cli.main(["--audio", "in.wav", "--model", "1_HP-UVR", "--device",
+                              "cpu", "--settings", str(settings_path),
+                              "--writable-dir", str(tmp_path / "w")],
+                             out=out, err=err)
+    assert code == separate_cli.EXIT_USAGE, code
+    assert "save_format" in err.getvalue() and "mp3" in err.getvalue(), err.getvalue()
+
+
+def test_output_suffixes_are_pinned_to_the_engines_own_literals():
+    """The drift guard for `session.SAVE_FORMATS` / `OUTPUT_SUFFIXES`, in the shape
+    `app/dialogs.py:111-128` established: the app holds its own literals and a test
+    compares them against the engine's, so a rename upstream that changes no behaviour
+    cannot turn the GUI red while a real change in the domain cannot pass unnoticed.
+
+    Two sides are checked. `gui_data/constants.py` for the three format tokens, and
+    `separate.py`'s `save_format()` body for the three file suffixes it writes -- the
+    latter by `ast`, because importing `separate` pulls the whole ROCm graph (ruling
+    R-T2-lazy).
+    """
+    import ast
+
+    from app import session
+
+    import gui_data.constants as const
+    for token, value in (("WAV", const.WAV), ("FLAC", const.FLAC), ("MP3", const.MP3)):
+        assert token in session.SAVE_FORMATS, (
+            f"gui_data.constants.{token} is {value!r} but app/session.py does not offer "
+            f"it -- the app's copy of the output-format domain has drifted")
+    assert set(session.SAVE_FORMATS) == {const.WAV, const.FLAC, const.MP3}, (
+        f"the app lists {session.SAVE_FORMATS}, the engine defines "
+        f"{(const.WAV, const.FLAC, const.MP3)}")
+
+    tree = ast.parse((Path(__file__).resolve().parents[1] / "separate.py")
+                     .read_text(encoding="utf-8"))
+    body = next((node for node in ast.walk(tree)
+                 if isinstance(node, ast.FunctionDef) and node.name == "save_format"),
+                None)
+    assert body is not None, "separate.py no longer has a save_format() to diff against"
+    suffixes = {c.value for c in ast.walk(body)
+                if isinstance(c, ast.Constant) and isinstance(c.value, str)
+                and c.value.startswith(".")}
+    assert suffixes == set(session.OUTPUT_SUFFIXES), (
+        f"separate.py's save_format() writes {sorted(suffixes)} but app/session.py "
+        f"diffs {sorted(session.OUTPUT_SUFFIXES)} -- a fourth format would be "
+        f"invisibly dropped by run_job again")
+
+
+# -- I6: one default export directory for both front ends ---------------------- #
+
+def test_default_export_path_is_beside_the_input(tmp_path):
+    from app import session
+
+    assert session.default_export_path(tmp_path / "song.wav") == tmp_path / "UVR_out"
+    assert session.default_export_path(str(tmp_path / "song.wav")) == tmp_path / "UVR_out"
+
+
+def test_both_front_ends_default_to_the_same_export_directory(tmp_path, monkeypatch):
+    """Reviewer B: no test referenced `UVR_out` at all, while the default was spelled
+    twice -- `app/controller.py:138` and `separate_cli.py:510` -- which is the
+    divergence the comment above one of the two copies claimed to prevent."""
+    import separate_cli
+    from app import session
+
+    audio = tmp_path / "in.wav"
+    audio.write_bytes(b"RIFF")
+    seen = {}
+
+    def raiser(*_args, **kwargs):
+        seen.update(kwargs)
+        raise RuntimeError("stop after the path")
+
+    monkeypatch.setattr(session, "run_job", raiser)
+    err = io.StringIO()
+    separate_cli.main(["--audio", str(audio), "--model", "1_HP-UVR", "--device", "cpu",
+                       "--writable-dir", str(tmp_path / "w")],
+                      out=io.StringIO(), err=err)
+    assert seen["export_path"] == session.default_export_path(audio), seen
+    assert seen["export_path"].name == "UVR_out"
+
+
+# -- I3: a mis-typed saved value must not be a silent no-op -------------------- #
+
+def test_start_after_a_bad_deverb_setting_reports_instead_of_silently_doing_nothing(
+        qapp, tmp_path, monkeypatch):
+    """`plan.py:368` does a raw `DEVERB_MAPPER[settings.deverb_vocal_opt]` subscript on
+    every plan, so any other string -- including a cleared field -- raises `KeyError`,
+    which was not in the controller's `except` tuple. On PySide6 6.9.3 an exception that
+    escapes a Qt slot prints to stderr and the event loop carries on, which the codebase
+    itself documents as "looked exactly like a button that did nothing"
+    (`app/settings_page.py:281-291`). START must now *say* what happened."""
+    import separate_cli
+    from app import controller, session
+
+    monkeypatch.setattr(backends, "resolve",
+                        lambda force=None: backends.Backend(
+                            name="cpu", torch_device="cpu",
+                            ort_providers=["CPUExecutionProvider"]))
+    cat = separate_cli.make_catalog(tmp_path / "nope", tmp_path / "w")
+    (cat.writable_dir).mkdir(parents=True, exist_ok=True)
+
+    def explode(**_kwargs):
+        raise KeyError("nope")
+
+    monkeypatch.setattr(session, "assemble", explode)
+    ctrl = controller.Controller(cat=cat, st=settings_module.Settings(
+        deverb_vocal_opt="nope"), selections=selections_module.Selections())
+    pg = ctrl.work_page
+    audio = tmp_path / "in.wav"
+    audio.write_bytes(b"RIFF")
+    pg.model_combo.clear()
+    pg.model_combo.addItems(["1_HP-UVR"])
+    pg.input_edit.setText(str(audio))
+    pg.output_edit.setText(str(tmp_path / "out"))
+
+    pg.run_requested.emit()
+
+    text = pg.console.toPlainText()
+    assert "not started" in text, text
+    assert "KeyError" in text, text
+    assert pg.start_button.isEnabled(), "a refusal must not leave the page busy"
+    assert pg.compute_label.text() == "", (
+        "I5(a): a refusal may not leave the previous run's compute line on screen")

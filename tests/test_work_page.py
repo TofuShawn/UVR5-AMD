@@ -291,6 +291,37 @@ def test_an_assembly_refusal_is_shown_as_the_catalog_written_it(qapp, tmp_path, 
     assert pg.start_button.isEnabled() is True and pg.job.is_running() is False
 
 
+def test_a_save_format_the_engine_cannot_write_is_refused_before_the_run(
+        qapp, tmp_path, monkeypatch):
+    """C1(b) on the GUI side, through the *real* `assemble`. `save_format` was a free-text
+    box, so 'mp3' reached the engine, which converted nothing and deleted the wav it made:
+    the app printed "Done -- 0 file(s) written" over an empty folder. START now refuses and
+    says what the legal values are, and nothing is started."""
+    import separate_cli
+
+    monkeypatch.setattr(backends, "resolve", lambda force=None: _cpu_backend())
+    cat = separate_cli.make_catalog(tmp_path / "nope", tmp_path / "w")
+    started: list = []
+    ctrl = controller.Controller(cat=cat, st=settings_module.Settings(save_format="mp3"),
+                                 selections=selections_module.Selections())
+    pg = ctrl.work_page
+    monkeypatch.setattr(pg.job, "start", lambda request: started.append(request))
+    pg.model_combo.clear()
+    pg.model_combo.addItems(["1_HP-UVR"])
+    audio = tmp_path / "in.wav"
+    audio.write_bytes(b"RIFF")
+    pg.input_edit.setText(str(audio))
+
+    pg.run_requested.emit()
+
+    text = pg.console.toPlainText()
+    assert "not started" in text, text
+    assert "save_format" in text and "mp3" in text, text
+    assert "FLAC" in text, f"the refusal must name the legal values: {text}"
+    assert started == [], "a refusal may not hand a job to the worker"
+    assert pg.start_button.isEnabled() is True and pg.stop_button.isEnabled() is False
+
+
 def test_tier_three_hands_the_refusal_to_the_params_dialog(qapp, tmp_path, monkeypatch):
     """Tier 3 (a model with no params anywhere) is `app/dialogs.py`'s form now, so this
     pins the *handoff* rather than the dialog: the controller passes the spec it was
