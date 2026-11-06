@@ -97,16 +97,54 @@ def test_importing_session_pulls_in_no_qt():
     assembly path must be Qt-free, or the CLI stops being runnable headless the moment
     a wheel is missing. Checked in a child process, because this suite has already
     imported Qt by the time it gets here.
+
+    Item 10 (wave 2): this child used to run bare `[sys.executable, "-c", code]` with
+    pytest's inherited CWD and no PYTHONPATH, and used a single exit code (`sys.exit(1
+    if bad else 0)`). Two consequences, both measured: run the suite from `tests/` and
+    `import app` fails with `ModuleNotFoundError: No module named 'app'` in ~0.27 s --
+    the same rc 1 the Qt-leak path returns -- while the old assert text hard-coded
+    "app.session imported Qt modules", sending the reader to `app/session.py` for what
+    was really a sys.path problem. That is the branch's one unreproducible `2 failed in
+    1.43s` in the ledger. Fixed the way its sibling
+    `test_dry_run_never_imports_the_engine` below already is: pin `cwd=repo` and
+    `PYTHONPATH`, and split the child into distinct exit codes so a purity leak (rc 2)
+    can never be confused with an import/path failure (rc 3). No assertion weakened --
+    the Qt-free requirement is still rc 0, now with a message that tells you *which* of
+    the two failures you actually have.
     """
+    import os
     import subprocess
     import sys
+    from pathlib import Path
 
-    code = ("import sys; import app.session; "
-            "bad = [m for m in sys.modules if m == 'PySide6' or m.startswith('PySide6.')"
-            " or m == 'fluentqt' or m.startswith('fluentqt.')]; "
-            "sys.exit(1 if bad else 0)")
-    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
-    assert r.returncode == 0, f"app.session imported Qt modules: {r.stdout} {r.stderr}"
+    repo = Path(__file__).resolve().parents[1]
+    code = (
+        "import sys\n"
+        "try:\n"
+        "    import app.session\n"
+        "except BaseException as exc:\n"
+        "    sys.stdout.write('IMPORT-FAILED:' + type(exc).__name__ + ':' + str(exc))\n"
+        "    sys.exit(3)\n"
+        "bad = [m for m in sys.modules if m == 'PySide6' or m.startswith('PySide6.')\n"
+        "       or m == 'fluentqt' or m.startswith('fluentqt.')]\n"
+        "sys.stdout.write('QT-LEAK:' + ','.join(sorted(bad)) if bad else 'CLEAN')\n"
+        "sys.exit(2 if bad else 0)\n"
+    )
+    r = subprocess.run([sys.executable, "-c", code], cwd=repo, capture_output=True,
+                       text=True, env={**os.environ, "PYTHONPATH": str(repo)})
+    out = (r.stdout or "").strip()
+    assert r.returncode == 0, (
+        f"`import app.session` did not come back clean "
+        f"(rc={r.returncode}, stdout={out!r}, stderr={r.stderr!r}). Exactly two things "
+        f"can cause this and the child now tells them apart, so read its code before "
+        f"editing a file:\n"
+        f"  rc 2 / 'QT-LEAK:...'  -- the shared assembly path really did pull in a Qt "
+        f"module; app/session.py (or something it imports at module level) reaches "
+        f"PySide6/fluentqt, which is the regression this test exists to catch.\n"
+        f"  rc 3 / 'IMPORT-FAILED:...' -- the child could not import `app` at all; a "
+        f"sys.path/cwd problem, NOT a purity problem, and now impossible from inside "
+        f"the repo (cwd and PYTHONPATH are pinned to {repo}); if you still see it, "
+        f"something renamed the package.")
 
 
 def test_dry_run_never_imports_the_engine(tmp_path):

@@ -471,15 +471,35 @@ def test_refresh_without_confirmation_refuses_before_any_fetch(tmp_path):
 # 7. the README, as policy and not as prose
 # --------------------------------------------------------------------------- #
 
-#: A bare point-estimate headline for the healthy-CPU ratio: `5.90x`, `5.9×`,
-#: `5.90 ×` -- and only bare. The same digits inside a range (`5.24-5.90x`) are the
-#: sanctioned form, so the guard looks for a range marker on the same line.
-BARE_HEADLINE = re.compile(r"(?<![\d.])5[.,]9\s*0?\s*[x×]")
-RANGE_MARKER = re.compile(r"\d\s*[-–~]\s*\d|\bto\b|\brange\b|\bn\s*=", re.IGNORECASE)
+#: A *published speed figure*: a duration (`2.74 s`, `1.67–1.88 s`, `30 s`) or a ratio
+#: (`5.24–5.90×`, `4.05×`, `20×`). Item 13 (wave 2) replaced the old `5.9`-specific
+#: `BARE_HEADLINE` regex, which could only ever see one number: the README ships
+#: `htdemucs 2.74 s` and `4.05× (htdemucs, n=2)` as figures that regex was blind to, so a
+#: bare ratio escaping was one edit away. A duration is a run of digits (optionally a
+#: `a–b` range) immediately followed by a ` s` unit; a ratio the same followed by `×`.
+#: Crucially this is scoped to *speed* figures: catalog facts on the same page -- exit
+#: codes, `40 dB`, the 66,759,214-byte weight size -- are not published timing numbers
+#: and are gated by their own accuracy (item 4), not by the ratio policy. `\b` after the
+#: unit keeps `3 sessions`, `2.15.0+cpu` and `66,759,214-byte` from matching.
+_SPEED_DURATION = re.compile(r"\d[\d.,]*(?:\s*[–—-]\s*\d[\d.,]*)?\s*[sS]\b")
+_SPEED_RATIO = re.compile(r"\d[\d.,]*(?:\s*[–—-]\s*\d[\d.,]*)?\s*×")
+_N_COUNT = re.compile(r"\bn\s*=\s*\d", re.IGNORECASE)
+_TIMING_DRIVER = "tools/task7_timing"
+
+#: The old headline the ruling forbids standing alone: one session's ratio restated as a
+#: property of the box. `5.9` here is a *lowering* of the old regex, not a second copy --
+#: it is the standing "no bare 5.90× anywhere in the README; a range with its n is the
+#: permitted form" rule, now expressed as a property of §5 rather than of the whole file.
+_RATIO_TOP = re.compile(r"(?<![\d.])5[.,]9")
 
 
-def test_readme_states_the_three_policy_rules():
-    """Project policy, each one a substring a contributor would otherwise not find."""
+def test_readme_states_the_documented_policy_rules():
+    """Project policy, each one a substring a contributor would otherwise not find.
+
+    Minor item (wave 2): this was named `..._the_three_policy_rules` while the body
+    loops *six* needles; a name that states a count is a name that goes stale, so it now
+    names the policy, not a number.
+    """
     assert README.is_file(), "the README that stops this fork misleading its users is missing"
     text = README.read_text(encoding="utf-8")
     lowered = text.lower()
@@ -494,27 +514,91 @@ def test_readme_states_the_three_policy_rules():
             f"README.md is missing {needle!r} -- {why}")
 
 
-def test_readme_speed_claim_is_a_range_with_its_n_and_never_a_bare_5_90x():
-    """The published-number policy, machine-checked.
+def _section_5_bullets(text: str) -> list[str]:
+    """Each `## 5.` bullet as one logical string (continuation lines folded in).
 
-    `tools/task7_timing.py` is the only sanctioned source, and its own docstring
-    says why: the GPU warm times are stable to ~2%, the healthy-CPU ratio is not
-    stable across sessions (vr spans 5.24-5.90x), and the CPU divisor is external
-    history the repository cannot re-measure. A bare `5.90x` headline restates one
-    session as a property of the box -- a mistake already made twice in this
-    project -- so the rule is a regex and not a comment.
+    Item 13 asks the guard to iterate the bullet *lines*, but a bullet in the README wraps
+    across several physical lines, and its `n=` and driver live on a different physical
+    line than its figure. Folding each bullet back into one unit is what lets "the figure
+    and its n/driver must travel together" hold for a wrapped bullet -- the alternative
+    (per physical line) would either miss the figure or reject a correctly-wrapped one.
+    """
+    m = re.search(r"^## 5\..*?(?=^## |\Z)", text, re.MULTILINE | re.DOTALL)
+    if not m:
+        return []
+    block = m.group(0)
+    bullets, current = [], None
+    for line in block.splitlines():
+        if line.lstrip().startswith("* "):
+            if current is not None:
+                bullets.append(" ".join(current))
+            current = [line.strip()[2:]]
+        elif current is not None and line.strip():
+            current.append(line.strip())
+        elif line.strip() == "" and current is not None:
+            bullets.append(" ".join(current))
+            current = None
+    if current is not None:
+        bullets.append(" ".join(current))
+    return bullets
+
+
+def test_readme_speed_claim_is_a_range_with_its_n_and_never_a_bare_5_90x():
+    """The published-number policy, machine-checked per figure.
+
+    `tools/task7_timing.py` is the only sanctioned source, and its own docstring says
+    why: the GPU warm times are stable to ~2%, the healthy-CPU ratio is not stable across
+    sessions (vr spans 5.24-5.90x), and the CPU divisor is external history the
+    repository cannot re-measure. A bare `5.90x` headline restates one session as a
+    property of the box -- a mistake already made twice in this project.
+
+    Item 13 (wave 2): the old guard had one 5.9-specific regex plus three *file-wide*
+    substring checks (`5.24 in text`, `task7_timing in text`, `n= in text`) standing in
+    for per-number rules -- so `htdemucs 2.74 s` and `4.05×` shipped on lines the guard
+    never looked at, and adding a bare ratio was one edit away with all four still green.
+    This version walks §5's bullets and gates every speed figure it finds: a bullet that
+    carries a duration or a ratio must carry BOTH a sample count (`n=`) and the committed
+    driver's name. The 5.9-specific regex is gone from the per-figure loop; the only
+    place a bare top bound is still forbidden is the standing range rule below.
     """
     text = README.read_text(encoding="utf-8")
-    bare = [line.strip() for line in text.splitlines()
-            if BARE_HEADLINE.search(line) and not RANGE_MARKER.search(line)]
-    assert not bare, (
-        "README.md carries a bare 5.90x-style healthy-CPU headline. The ruling is a "
-        f"range with its n, sourced from tools/task7_timing.py: {bare}")
-    assert "5.90" not in text or "5.24" in text, (
-        "the point estimate may appear only inside its range, and the range's low "
-        "bound (5.24x) is what proves it is a range")
-    assert "task7_timing" in text, (
-        "every speed number in the README must name the committed driver that "
-        "re-derives it; none may cite a report or a log")
-    assert re.search(r"\bn\s*=\s*\d", text), (
-        "the healthy-CPU ratio must carry its sample count")
+    bullets = _section_5_bullets(text)
+    assert bullets, (
+        "the guard found no `## 5.` bullets in README.md -- either the section is gone or "
+        "the bullet-folding broke; either way the published-number rule is now unchecked.")
+
+    gated, ungated = 0, []
+    for b in bullets:
+        figures = _SPEED_DURATION.findall(b) + _SPEED_RATIO.findall(b)
+        if not figures:
+            continue
+        gated += len(figures)
+        problems = []
+        if not _N_COUNT.search(b):
+            problems.append("no `n=` sample count")
+        if _TIMING_DRIVER not in b:
+            problems.append(f"no committed driver `{_TIMING_DRIVER}` named")
+        if problems:
+            ungated.append(f"  [{'; '.join(problems)}] {b[:90]}...")
+    assert not ungated, (
+        "README §5 carries published speed figures on bullets that do not state both "
+        "their sample count and the committed driver that re-derives them -- the shape "
+        "item 13 exists to catch (a figure the guard previously could not see):\n"
+        + "\n".join(ungated))
+    # Non-vacuity: prove the loop actually gated real figures, not zero bullets.
+    assert gated >= 2, (
+        f"the per-figure loop matched only {gated} speed token(s) in §5; the README "
+        "ships at least the GPU times and the two ratios, so a smaller count means the "
+        "token regex stopped seeing them and the guard has silently narrowed.")
+
+    # The standing range rule, kept from the old guard but now a property of the §5
+    # ratio bullets rather than of the whole file: a `5.9`-style top bound may appear
+    # only inside a range that also carries its low bound and an `n`.
+    ratio_bullets = [b for b in bullets if _SPEED_RATIO.findall(b)]
+    for b in ratio_bullets:
+        if _RATIO_TOP.search(b):
+            assert "5.24" in b, (
+                "a `5.9`-style ratio top bound appears in a §5 ratio bullet without its "
+                f"range low bound `5.24`, i.e. as a bare point estimate: {b[:100]}...")
+            assert _N_COUNT.search(b), (
+                f"a ratio top bound without its sample count: {b[:100]}...")
