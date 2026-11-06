@@ -11,11 +11,15 @@ assembles from. Two rules live here and nowhere else:
   when the page is built, and this module is the only place that starts it. No second
   `Job` in a helper, no process-wide registry -- the one-instance rule holds because this
   root constructs one page, and a reviewer checks it by grep.
-* **One file per job.** A run is one audio file into one output directory, because that is
-  what `session.run_job()` does; the page's percentage is honest only in that shape.
+* **One file per `Job`, many files per run.** `session.run_job()` separates one audio file
+  into one output directory, so a batch is this root walking a queue of `JobRequest`s --
+  `_Batch`, advanced by the terminals the one `Job` already emits. The engine, `Job` and
+  `session` are untouched by it, which is the reason the rule above can stay true while the
+  page runs forty files.
 """
 from __future__ import annotations
 
+import dataclasses
 import weakref
 from pathlib import Path
 
@@ -29,6 +33,36 @@ import ui_prefs as ui_prefs_module
 from PySide6.QtWidgets import QDialog, QVBoxLayout
 
 from app import dialogs, job, session, settings_page, work_page
+
+
+@dataclasses.dataclass
+class _Batch:
+    """The queue, its position, and its tally. The root's business, all of it.
+
+    Deliberately not in `app/job.py`: `Job` is one file (`start()`'s guard at
+    `job.py:133-150` explains the three reasons -- a shared export directory, shared VRAM,
+    and `run_job`'s before/after snapshot of the former attributing one run's stems to
+    another), `session.run_job` is one file, and the engine is one file. The only change to
+    `job.py` for batch mode is nothing, and `tests/test_job.py` runs unmodified as the
+    evidence of that.
+
+    `request` is the last `JobRequest` handed out, kept so a mid-run reader can ask which
+    file the engine is on without re-deriving it from `files[index]` -- which is the same
+    path, but derived twice in two places is how a counter and a display start agreeing by
+    accident and then disagreeing.
+    """
+
+    sess: session.Session
+    files: list[Path]
+    index: int = 0
+    written: int = 0
+    failures: list[str] = dataclasses.field(default_factory=list)
+    stopping: bool = False
+    request: "job.JobRequest | None" = None
+
+    @property
+    def current(self) -> Path:
+        return self.files[self.index]
 
 
 class SettingsDialog(QDialog):
@@ -102,7 +136,22 @@ class Controller:
                                              selections_obj=self.selections,
                                              ui_obj=self.ui_prefs)
         self.work_page.run_requested.connect(self._on_run)
-        self.work_page.cancel_requested.connect(self.work_page.job.request_cancel)
+        # The root, not `job.request_cancel`, is what STOP now reaches: the mark that stops
+        # the *rest* of a batch has to be set by the button, because a cancellation lands
+        # when the engine's next progress hook fires and a STOP before that has no terminal
+        # to learn from. See `_on_cancel_requested`.
+        self.work_page.cancel_requested.connect(self._on_cancel_requested)
+        # The queue walks itself from the one `Job`'s terminals. Connected after the page
+        # built its own handlers, so Qt delivers the page's first and the root's second --
+        # the display knows about the file before the state machine moves past it.
+        self.work_page.job.succeeded.connect(self._on_file_done)
+        self.work_page.job.failed.connect(self._on_file_failed)
+        self.work_page.job.cancelled.connect(self._on_file_cancelled)
+        # The run in flight, or None. `None` is what makes the three slots above ignore the
+        # "a job is already running" report `Job.start` emits on a double click: that is not
+        # a file ending, and treating it as one would walk the queue on a run that never
+        # started.
+        self._batch: _Batch | None = None
         # The default output folder is the one setting the *work page* owns, and it comes
         # through this root for the same reason the other two objects do: this is the place
         # that knows where the settings file is and what a refused write means.
@@ -117,35 +166,28 @@ class Controller:
     # -- START ---------------------------------------------------------------- #
 
     def _on_run(self) -> None:
-        """Assemble, publish the compute line, hand the job to the one `Job`.
+        """Assemble once, then walk the queue one file at a time.
 
         Nothing here runs the engine: `job.start()` moves it to the worker thread, and the
         page's own handlers marshal the results back. Every refusal below happens *before*
         a thread exists, so the busy state is never left on by a failed start.
+
+        The plan is built once for the whole batch, because it does not depend on the
+        file: `session.assemble` reads settings, catalog, selections and the machine, and
+        `run_job` is the half that takes an audio path. Assembling per file would reload a
+        model table per file for no reason and could make two files of one batch disagree
+        about the plan they ran under.
         """
         page = self.work_page
+        blockers = page.blockers()
+        if blockers:
+            # The same list the reason label is showing, joined the same way -- which is
+            # why `WorkPage.blockers()` exists at all.
+            self._refuse("not started: " + "; ".join(blockers))
+            return
+        files = page.pending_files()
         model = page.selected_model()
-        if model == catalog.NO_MODEL:
-            self._refuse("not started: pick a model from the Model list first")
-            return
-
-        raw_input = page.input_edit.text().strip()
-        if not raw_input:
-            self._refuse("not started: choose an input audio file first")
-            return
-        audio = Path(raw_input)
-        if not audio.is_file():
-            # Same wording as the CLI's (`separate_cli.run()`), because the file really is
-            # the thing the user needs to see in order to fix it.
-            self._refuse(f"not started: input audio not found: {audio}")
-            return
-
-        # Where the stems go is one decision with three possible owners, and it lives in
-        # `export_for` so this slot cannot disagree with the label that promises the
-        # default. The third tier is `session.default_export_path` -- `UVR_out` beside the
-        # input, the rule the CLI uses with no flag -- and the two front ends choosing
-        # different places for the same run is the bug Plan 2's wave 1 named.
-        export = self.export_for(audio)
+        audio = files[0]
 
         try:
             sess = session.assemble(st=self.settings, cat=self.catalog, model=model,
@@ -177,8 +219,93 @@ class Controller:
             return
 
         page.show_compute(sess.compute_lines)
-        page.set_busy(True)
-        page.job.start(job.JobRequest(session=sess, audio=audio, export_path=export))
+        self._batch = _Batch(sess=sess, files=files)
+        page.begin_batch(len(files))
+        self._start_current_file()
+
+    # -- the batch ------------------------------------------------------------ #
+
+    def _start_current_file(self) -> None:
+        """Hand the queue's current file to the one `Job`.
+
+        `set_busy(True)` is here rather than in `_on_run` because it has to be true for
+        every file and released for none of them: the release is `end_batch`'s, and a busy
+        state that came off at file 1's terminal would let START overlap file 2 -- which
+        `Job.start` refuses with "a job is already running", and a refusal on a button the
+        user was told was enabled is exactly the thing this fork keeps being asked to fix.
+        """
+        batch = self._batch
+        if batch is None:
+            return
+        self.work_page.set_busy(True)
+        batch.request = job.JobRequest(session=batch.sess, audio=batch.current,
+                                       export_path=self.export_for(batch.current))
+        self.work_page.job.start(batch.request)
+
+    def _on_file_done(self, written: list) -> None:
+        if self._batch is None:
+            return                                  # the "a job is already running" report
+        self._batch.written += len(written)
+        self._advance()
+
+    def _on_file_failed(self, text: str) -> None:
+        """Continue on error, and name the file that errored.
+
+        5.6's batch does not stop on one bad file, and neither should this: the everyday
+        shape of a batch is forty files, one of which is corrupt, and a run that abandoned
+        the other thirty-nine on that would make the user find out which one by guessing.
+        The first line is what gets tallied -- `Job.failed`'s text carries four frames of
+        engine source after it, and the console above already has the whole thing.
+        """
+        batch = self._batch
+        if batch is None:
+            return
+        first = text.splitlines()[0] if text else "the engine gave no reason"
+        batch.failures.append(f"{batch.current.name}: {first}")
+        self._advance()
+
+    def _on_file_cancelled(self, text: str) -> None:
+        batch = self._batch
+        if batch is None:
+            return
+        batch.stopping = True                       # STOP stops the *rest*
+        self._advance()
+
+    def _advance(self) -> None:
+        """One file ended: move on, or end the run.
+
+        Reentrancy is the thing to look at here. `Job`'s terminals are *queued* when a
+        worker thread is running, so in the shipped app this walks the queue one event-loop
+        turn at a time; in a test, where `start` is replaced on the main thread, Qt delivers
+        directly and the whole batch runs inside `run_requested.emit()`. Both are the same
+        state machine, and neither is allowed to overlap two files: `_start_current_file`
+        is only ever reached from a terminal, at which point `Job.is_running()` has already
+        released on `isFinished()` (`app/job.py:96-120`).
+        """
+        batch, page = self._batch, self.work_page
+        if batch is None:
+            return
+        page.end_file()
+        batch.index += 1
+        if batch.stopping or batch.index >= len(batch.files):
+            self._batch = None
+            page.end_batch(written=batch.written, failures=batch.failures,
+                           stopped=batch.stopping)
+        else:
+            self._start_current_file()
+
+    def _on_cancel_requested(self) -> None:
+        """Mark the queue stopped, then ask the one `Job`.
+
+        The mark goes first, and it is the button that sets it rather than the terminal
+        that reports it: cancellation is cooperative at the engine's own batch granularity
+        (`separate.py:1383`), so a STOP pressed during a model load has no terminal to come
+        from yet -- and a queue that only learned about stopping from terminals would start
+        file 2 anyway.
+        """
+        if self._batch is not None:
+            self._batch.stopping = True
+        self.work_page.job.request_cancel()
 
     def export_for(self, audio: Path) -> Path:
         """Where this file's stems go, in the three places that can decide it.

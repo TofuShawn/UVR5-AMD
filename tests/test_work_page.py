@@ -86,6 +86,23 @@ def _deliver(qapp):
         qapp.processEvents()
 
 
+def _runnable(page, tmp_path, monkeypatch, name="song.wav"):
+    """Give the page something it could actually start: a model and a file that exists.
+
+    Plan 3 Task 2 made START's enablement read the blockers as well as the busy flag
+    (`WorkPage._publish_run_state`), so a test that asserts "the terminal released the
+    run" has to be on a page that could have run -- otherwise the button it is reading is
+    disabled for a second, unrelated reason. `selected_model` is patched rather than the
+    combo because the `page` fixture's catalog is empty and has no name to select; the
+    check START runs is the page's own answer, not the widget's history.
+    """
+    audio = tmp_path / name
+    audio.write_bytes(b"RIFF")
+    monkeypatch.setattr(page, "selected_model", lambda: "UVR-MDX-NET-Inst_HQ_3")
+    page.input_edit.setText(str(audio))
+    return audio
+
+
 def _spy_notify(page, monkeypatch):
     """Capture the notifications the page would show.
 
@@ -175,13 +192,23 @@ def test_the_unflagged_page_shows_the_unflagged_resolution(qapp, tmp_path, monke
         f"the user never asked for")
 
 
-def test_busy_state_flips_start_and_stop_together(page):
+def test_busy_state_flips_start_and_stop_together(page, tmp_path, monkeypatch):
+    """The two buttons are the busy state's two faces -- and since Plan 3 Task 2, START
+    has a second condition: nothing may be missing. Both halves are pinned here, because
+    the whole point of one expression is that neither half can be dropped without the
+    other showing it up. A mid-batch `refresh_queue()` that re-enabled START would hand
+    the click to `Job.start`, which answers "a job is already running"."""
+    _runnable(page, tmp_path, monkeypatch)
     page.set_busy(True)
     assert page.start_button.isEnabled() is False
     assert page.stop_button.isEnabled() is True
     page.set_busy(False)
     assert page.start_button.isEnabled() is True
     assert page.stop_button.isEnabled() is False
+    # Idle and blocked: disabled, with the reason where the user can read it.
+    page.input_edit.setText("")
+    assert page.start_button.isEnabled() is False
+    assert "choose an input audio file first" in page.reason_label.text()
 
 
 def test_failure_text_is_classified_or_refused_never_guessed(page):
@@ -432,9 +459,13 @@ def test_the_parameter_summaries_one_action_opens_the_editable_page(qapp, tmp_pa
     assert ctrl.settings_dialog is first, "the summary's action stacked a second dialog"
 
 
-def test_a_cancel_is_reported_as_a_cancel_not_as_a_failure(page, qapp, monkeypatch):
+def test_a_cancel_is_reported_as_a_cancel_not_as_a_failure(page, qapp, tmp_path,
+                                                           monkeypatch):
     """`Job.cancelled` and `Job.failed` are different signals and the page must not
-    blend them: a STOP leaves the bar at zero and says 'Stopped', never 'Failed'."""
+    blend them: a STOP leaves the bar at zero and says 'Stopped', never 'Failed'. The page
+    is made runnable first because START's enablement now has a second condition -- see
+    `_runnable`."""
+    _runnable(page, tmp_path, monkeypatch)
     shown = _spy_notify(page, monkeypatch)
     page.set_busy(True)
     page.progress.setValue(60)
@@ -506,7 +537,12 @@ def test_a_run_that_was_never_started_is_refused_in_words_not_tracebacks(qapp, t
     pg.run_requested.emit()
     assert calls == []
     assert "model" in pg.console.toPlainText().lower()
-    assert pg.start_button.isEnabled() is True, "a refusal must leave the page idle"
+    # The intent of this assertion is unchanged -- a refusal must leave the page idle --
+    # but idle and pressable came apart in Plan 3 Task 2: START is now also disabled while
+    # a model is missing, which is the improvement, not a regression. STOP is the busy
+    # half, and the reason label is the "why" the disabled button cannot say by itself.
+    assert pg.stop_button.isEnabled() is False, "a refusal must leave the page idle"
+    assert "pick a model" in pg.reason_label.text(), pg.reason_label.text()
 
 
 def test_an_assembly_refusal_is_shown_as_the_catalog_written_it(qapp, tmp_path, monkeypatch):
@@ -607,6 +643,10 @@ def test_stop_pressing_cancel_is_the_job_that_owns_the_flag(qapp, tmp_path, monk
     shown = _spy_notify(pg, monkeypatch)
     audio = tmp_path / "in.wav"
     audio.write_bytes(b"RIFF")
+    # Typed into the box as well as written to disk: a job started from a path the page
+    # does not show would leave START disabled for a reason unrelated to this test, and
+    # the box is where a real run's path comes from (`Controller._on_run` reads it).
+    pg.input_edit.setText(str(audio))
     pg.job.start(_request(audio, tmp_path / "out", SlowEngine))
     assert pg.job.is_running() is True
     pg.cancel_requested.emit()
@@ -1126,6 +1166,7 @@ def test_closing_the_window_drains_the_job_before_the_widgets_go(qapp, tmp_path,
     window.setContentWidget(pg)
     audio = tmp_path / "in.wav"
     audio.write_bytes(b"RIFF")
+    pg.input_edit.setText(str(audio))
     pg.job.start(_request(audio, tmp_path / "out", SlowEngine))
     pg.set_busy(True)                                   # what a controller START does
     assert pg.job.is_running() is True

@@ -27,6 +27,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1 -Backend roc
 `sys.path`, and `app/main.py` no longer patches that. In the CLI, omitting `--device` means CPU
 (`Settings.gpu_conversion` defaults off) and every run prints one `[cli] compute device:` line.
 
+**Batch and the default output folder are the GUI's.** **Add files…** / **Add folder…** queue
+several files and runs them one after another — a file the engine fails on is named in the console
+and the run moves on, and **STOP** stops the rest. Ticking **Use this as my default output folder**
+stores it under `ui.export_path` in `settings.json`, which is the fallback when the Output box is
+empty; the CLI keeps its own rule (`UVR_out` beside the input) and never reads that block.
+
 **Where the weights come from.** The model root is `uvr_paths.py:13`, which defaults to
 `REPO/models` and is overridden **only** by the `UVR_MODEL_ROOT` environment variable — there is
 no Settings/Selections field for it and no GUI picker. A fresh `bootstrap.ps1 -Backend rocm` user

@@ -1425,3 +1425,65 @@ def test_the_failure_surfaces_do_not_use_a_plain_widget(qapp, tmp_path, monkeypa
     assert bar is not None
     assert _offenders(bar.findChildren(QWidget)) == []
     assert _offenders(page.findChildren(QWidget)) == []
+
+
+# -- the audio-extension list batch mode shares -------------------------------- #
+
+def test_the_app_audio_extensions_are_the_engines_own_list():
+    """`app/dialogs.AUDIO_EXTENSIONS` is the app's own copy, held rather than imported
+    (the reason is `CONFIG_YAML_SUFFIX`'s note at `app/dialogs.py:111-121`: a comparison
+    that fires on a real mismatch, not on a benign upstream rename). This is that
+    comparison, and it is the only thing standing between the two users of the list and
+    the two behaviours users would read as broken: a folder scan that accepts a file the
+    multi-select dialog hides, or one that silently skips a format the engine can open.
+
+    Two-sided, per this suite's rule for prohibitions. A copy that merely *overlaps* the
+    engine's set would pass a subset test and still skip `.wma` someday, so both directions
+    are asserted, and the case-fold is pinned rather than assumed: `FFMPEG_EXT` carries
+    `"MP3"` with no dot and both cases of `.wav`/`.WAV`, and `audio_files_in()` matches on
+    `p.suffix.lower()`, which is what makes the fold the engine's own rule and not this
+    app's invention.
+    """
+    engine = {e.lower() if e.startswith(".") else "." + e.lower()
+              for e in const.FFMPEG_EXT}
+    app_set = set(dialogs.AUDIO_EXTENSIONS)
+    assert app_set - engine == set(), (
+        f"the app offers extensions the engine's FFMPEG_EXT does not contain: "
+        f"{sorted(app_set - engine)}")
+    assert engine - app_set == set(), (
+        f"the engine can open these and the app hides them: {sorted(engine - app_set)}")
+    assert list(dialogs.AUDIO_EXTENSIONS) == sorted(dialogs.AUDIO_EXTENSIONS), (
+        "sorted, so `AUDIO_FILTER` is a stable string and a diff of it means a change")
+    assert all(e.startswith(".") and e == e.lower() for e in dialogs.AUDIO_EXTENSIONS)
+
+
+def test_the_file_filter_is_derived_from_the_shared_list_not_a_second_copy():
+    """The filter and the scan are one list. Before Plan 3 Task 2 the filter was ten
+    hand-typed extensions while the scan read the engine's wider set, and the difference
+    was invisible until someone picked a `.tta` in a folder and could not pick it in the
+    dialog. A derivation cannot drift; a copy needs this test forever."""
+    assert dialogs.Pickers.AUDIO_FILTER == (
+        "Audio (" + " ".join(f"*{e}" for e in dialogs.AUDIO_EXTENSIONS) + ")")
+    for ext in dialogs.AUDIO_EXTENSIONS:
+        assert f"*{ext}" in dialogs.Pickers.AUDIO_FILTER, ext
+
+
+def test_a_refused_pick_is_none_and_never_an_empty_list(qapp, monkeypatch):
+    """The pickers' contract the queue depends on: `None` means "the user cancelled", and
+    an empty list never escapes. What is pinned here is the fold itself -- the `or None`
+    that turns Qt's empty answer into a refusal -- because a cancelled dialog that read as
+    "zero files" would clear a 40-file queue, which is data loss wearing a picker. The
+    queue's reaction to a refusal is the batch suite's."""
+    for verb in ("input_file", "input_files", "input_folder", "output_dir"):
+        assert callable(getattr(dialogs.Pickers, verb)), verb
+
+    monkeypatch.setattr(dialogs.QFileDialog, "getOpenFileNames",
+                        staticmethod(lambda *a, **k: ([], "")))
+    assert dialogs.Pickers.input_files() is None
+    monkeypatch.setattr(dialogs.QFileDialog, "getOpenFileNames",
+                        staticmethod(lambda *a, **k: (["E:/a.wav"], "")))
+    assert dialogs.Pickers.input_files() == ["E:/a.wav"]
+    monkeypatch.setattr(dialogs.QFileDialog, "getExistingDirectory",
+                        staticmethod(lambda *a, **k: ""))
+    assert dialogs.Pickers.input_folder() is None
+    assert dialogs.Pickers.output_dir() is None

@@ -523,16 +523,43 @@ def write_answer(cat, spec, params: dict) -> Path:
     return cat.write_params(spec.arch, spec.hash, params)
 
 
+#: The extensions this app offers *and* scans, as the app's own copy. Held rather than
+#: imported for the reason `CONFIG_YAML_SUFFIX`'s note earlier in this file gives: the pin
+#: that matters is a *comparison* against `gui_data.constants.FFMPEG_EXT`, in
+#: `tests/test_dialogs.py::test_the_audio_extensions_are_the_engines_own`, so an upstream
+#: rename with no behavioural effect cannot redden the GUI half of the suite for the wrong
+#: reason while a real change in what ffmpeg opens cannot pass unnoticed here.
+#:
+#: One list, two users: `Pickers.AUDIO_FILTER` shows it to the file dialog and
+#: `work_page.audio_files_in()` walks a folder with it. It used to be ten extensions typed
+#: into a string while the scan used the engine's wider set (`.tta`, `.alac`, `.mp2`,
+#: `.mpc`, `.mpeg`, `.wave`, `.eac3`, `.webm`, `.mkv`, and the video containers ffmpeg
+#: opens) -- two lists is a folder pick that accepts a file the multi-select dialog hides,
+#: which a user reads as the picker being broken. Lower-case and dotted because the engine
+#: constant carries `"MP3"` with no dot at `gui_data/constants.py:832` and both cases of
+#: `.wav`/`.WAV`; sorted so the filter string is stable across runs.
+AUDIO_EXTENSIONS: tuple[str, ...] = (
+    ".aac", ".aiff", ".alac", ".eac3", ".flac", ".m4a", ".mkv", ".mov", ".mp2",
+    ".mp3", ".mp4", ".mpc", ".mpc8", ".mpeg", ".ogg", ".opus", ".tta", ".wav",
+    ".wave", ".webm", ".wma",
+)
+
+
 class Pickers:
-    """The two native dialogs this binding has no equivalent of (spec §5.2).
+    """The native dialogs this binding has no equivalent of (spec §5.2).
 
     `FluentMenu` cannot construct and the wheel ships no file dialog from Python, so
     Qt's own is used -- here, in one place, so the suite can say what was asked for
     without hanging on a modal dialog it cannot answer.
     """
 
-    #: Same extensions the CLI accepts for input audio.
-    AUDIO_FILTER = "Audio (*.wav *.mp3 *.flac *.ogg *.m4a *.opus *.aac *.aiff *.wma)"
+    #: Derived from the module-level `AUDIO_EXTENSIONS` above, never typed out beside it:
+    #: a filter that is a second copy of a list is a filter that drifts from the scan
+    #: using the first. Qt wants each pattern as `*.wav`, hence the prefix -- which is the
+    #: other half of why this is derived: a hand-typed filter string is where the dot and
+    #: the star get forgotten, and a filter that matches nothing looks exactly like a
+    #: folder full of the wrong files.
+    AUDIO_FILTER = "Audio (" + " ".join(f"*{e}" for e in AUDIO_EXTENSIONS) + ")"
 
     @staticmethod
     def input_file(parent=None, start: str = "") -> "str | None":
@@ -540,6 +567,28 @@ class Pickers:
         chosen, _filter = QFileDialog.getOpenFileName(
             parent, "Choose an audio file", start or str(Path.home()),
             Pickers.AUDIO_FILTER)
+        return chosen or None
+
+    @staticmethod
+    def input_files(parent=None, start: str = "") -> "list[str] | None":
+        """Many paths, or None. Batch mode's entry point.
+
+        `None` and `[]` are folded into one answer deliberately: `getOpenFileNames` returns
+        an empty list on cancel, and a caller that had to tell a shrug from a refusal would
+        be a caller with two bugs available. The single-file picker above stays, because a
+        dialog whose many results are used as one path is how a batch accidentally starts
+        at file 1 of 40.
+        """
+        chosen, _filter = QFileDialog.getOpenFileNames(
+            parent, "Choose audio files", start or str(Path.home()), Pickers.AUDIO_FILTER)
+        return chosen or None
+
+    @staticmethod
+    def input_folder(parent=None, start: str = "") -> "str | None":
+        """A folder, to be scanned by `work_page.audio_files_in` -- which is where the
+        extension rules live, so this picker stays a directory chooser and not a filter."""
+        chosen = QFileDialog.getExistingDirectory(
+            parent, "Choose a folder of audio files", start or str(Path.home()))
         return chosen or None
 
     @staticmethod
