@@ -184,7 +184,11 @@ def test_a_two_model_run_walks_the_primary_then_secondary_band(tmp_path):
     assert all(50.0 < v <= 100.0 for v in secondary), secondary  # base*2 - base + base*step
 
 
-def test_cancel_is_polled_at_every_progress_hook(tmp_path):
+def test_a_cancel_raised_at_the_first_progress_hook_stops_the_job(tmp_path):
+    """Named for what it proves (wave 2 minor): the flag is set inside the *first* hook
+    call, so this is one branch -- the job notices a cancellation and raises -- not the
+    "every hook is polled" sweep the old name promised. The per-hook sweep is the
+    progress-monotonicity test above, which counts the hooks (8 + 8) but never cancels."""
     flags = {"cancel": False}
     with pytest.raises(session.Cancelled):
         session.run_job(_session(), audio=tmp_path / "in.wav", export_path=tmp_path / "out",

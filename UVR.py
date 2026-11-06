@@ -64,10 +64,21 @@ if __name__ == "__main__":
 #
 # The real reason this block stayed is a boundary, not a reader. Task 8 cut the tkinter
 # layer at one line -- the first GUI class definition -- rather than re-auditing 61
-# import bindings inside the residue, and the file is inert either way: no front end
-# imports it, and nothing that ships reaches anything in it. Trimming the unread imports
-# is a separate call about how much of an inert file to keep, and it has not been made
-# here.
+# import bindings inside the residue. The residue is *unreachable when run*, which is
+# not the same as *inert*: the raise above makes `python UVR.py` stop at its first
+# statement, and nothing that ships imports this file -- but everything below is at
+# module level, NOT inside the `if __name__ == "__main__"` block, so an import *would*
+# execute it, and it is not side-effect-free: `os.remove(SPLASH_DOC)`, three `os.mkdir`
+# sites (`DEFAULT_SAVE_PATH`, `ENSEMBLE_TEMP_PATH`, `SAMPLE_CLIP_PATH`), the
+# `file_check`/`remove_temps` writes and `data = load_data()` against a CWD-relative
+# `data.pkl` -- and the module-level `os.chdir(BASE_PATH)` is what makes that CWD the
+# repository root. "Unreachable when run" is the honest word, not "inert either way";
+# that module-level I/O is the reason the unimportability the module docstring relies on
+# must be preserved, not just tolerated. No line numbers are quoted for them because
+# every one of them sits below this comment, so editing the comment moves them -- the
+# names are the stable handle, and `tests/test_model_data_retired.py` is what keeps the
+# set from growing. Trimming the unread imports is a separate call about how much of a
+# run-dead file to keep, and it has not been made here.
 #
 # The same honesty is owed to the functions, and Task 8's report understated it (it
 # named one of five): seven survive below, and five have no caller in any tracked file,

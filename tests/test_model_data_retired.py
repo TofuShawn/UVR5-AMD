@@ -76,10 +76,14 @@ GONE_POPUPS = ("pop_up_vr_param", "pop_up_mdx_model", "pop_up_mdx_c_param",
 # is itself one of the unread. The fix for a comment that lies is a true comment plus a
 # number nobody has to trust, so the split lives here as data with a guard.
 #
-# Scope of the measurement: 62 explicit import statements bind the 61 unique names below
-# (`from collections import Counter` appears twice), and the two `from x import *` lines
-# are excluded because an AST cannot enumerate what they bind. The comment that binds the
-# file to these lists is in `UVR.py` above the import block; change one, change both.
+# Scope of the measurement: 48 explicit import statements bind the 61 unique names below
+# (there are 64 alias/binding rows in total once the two `from x import *` lines count
+# their own row, and `from collections import Counter` appears twice, so 48 statements and
+# 62 non-star rows both differ from the 61 names -- the unit that used to be quoted here,
+# "62 explicit import statements", conflated the non-star alias-row count with the
+# statement count). The two `import *` lines are excluded from the name lists because an
+# AST cannot enumerate what they bind. The comment that binds the file to these lists is
+# in `UVR.py` above the import block; change one, change both.
 
 #: Import names `UVR.py` binds and never references. Deleting one is an improvement and
 #: this test will say so; adding one is the residue growing and this test refuses it.

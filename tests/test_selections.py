@@ -8,9 +8,7 @@ untouched (spec §10, ruling 2).
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
-import catalog
 import plan
 import selections
 import settings as settings_module

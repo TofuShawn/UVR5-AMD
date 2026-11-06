@@ -62,6 +62,14 @@ Nothing phones home on any code path. The four baked model tables refresh only w
 network; without `--confirm` it refuses, exits non-zero and touches nothing. The tables shipped
 in this repo are staler than a live install's, so this is what makes newer model names resolvable.
 
+**Say plainly what the GUI's button does not do.** The settings page's "Refresh model tables"
+button — this fork's only network-facing control in the GUI — cannot fetch: it hands the refresh
+`confirmed=False`, which `model_refresh.refresh` refuses before any request, so the click prints
+that refusal in the status box and touches nothing. A refresh that reaches the network runs from
+the CLI with `--confirm`, as above. This is a known deviation from spec §10, which lists the
+button as in scope; the confirm step was deliberately left unbuilt rather than shipping a GUI
+control that phones home on a single click.
+
 ## 5. Speed numbers carry their conditions
 
 Conditions on every figure: **RX 7900 XTX (gfx1100)**, Windows, `torch 2.9.1+rocm7.2.1`
@@ -69,11 +77,13 @@ Conditions on every figure: **RX 7900 XTX (gfx1100)**, Windows, `torch 2.9.1+roc
 (a process's first GPU run excluded: MIOpen's cold search is ~20× slower); committed driver
 `tools/task7_timing.py`, which prints every number below.
 
-* Warm GPU, absolute: VR **1.67–1.88 s**, htdemucs **2.74 s** (n=4 GPU runs per session; ~2%
-  within a session, 12.6% across it, so ~2% is never a cross-session claim).
-* Healthy-CPU ratio only as a **range with its n**: **5.24–5.90×** (VR, n=3 sessions), **4.05×**
-  (htdemucs, n=2); its divisor (`torch 2.15.0+cpu`, measured elsewhere) is not reproducible from
-  this repository, so the range's top may never stand alone — a test asserts that.
+* Warm GPU, absolute — driver `tools/task7_timing.py`: VR **1.67–1.88 s**, htdemucs
+  **2.74 s** (n=4 GPU runs per session; ~2% within a session, 12.6% across it, so ~2%
+  is never a cross-session claim).
+* Healthy-CPU ratio — driver `tools/task7_timing.py`, published only as a **range with
+  its n**: **5.24–5.90×** (VR, n=3 sessions), **4.05×** (htdemucs, n=2); its divisor
+  (`torch 2.15.0+cpu`, measured elsewhere) is not reproducible from this repository, so
+  the range's top may never stand alone — a test asserts that.
 * The arches fall into three tiers, and only the first is numerically verified here.
   **Golden-covered** (`vr`, `htdemucs`): SNR ≥ 40 dB CPU-vs-ROCm measured on this branch.
   **Blocked-by-table** (`mdx_c`, `onnx`, `roformer`): refused as `BlockedArchError` (exit 4),

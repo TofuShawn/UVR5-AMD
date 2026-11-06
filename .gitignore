@@ -11,5 +11,17 @@ tests/golden/_artifacts/
 .superpowers/
 
 # design and plan documents are kept local by policy, like .superpowers/ -- a broad
-# `git add -A` at branch end must not stage either one
-docs/
+# `git add -A` at branch end must not stage either one. Anchored with a leading `/` so
+# it means this repo's top-level docs/ ONLY: an unanchored `docs/` also matched
+# `lib_v5/docs/` and any vendored `*/docs/` (measured: `git check-ignore -v
+# lib_v5/docs/new.md` hit this rule), silently ignoring tracked-able trees that are not
+# the policy's subject.
+/docs/
+
+# `data = load_data()` is a *module-level* statement of `UVR.py`, so it is not gated by
+# the raise at the top of that file: importing the module would read/write a CWD-relative
+# `data.pkl` (and `UVR.py`'s own module-level `os.chdir(BASE_PATH)` makes that CWD the
+# repo root). It stays unproduced only because `UVR.py` is not importable in this venv,
+# which is why `UVR.py`'s comment block says "unreachable when run", not "inert" -- and
+# why a stray run or a revived import must not be able to commit the file.
+data.pkl

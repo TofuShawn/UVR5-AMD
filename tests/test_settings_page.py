@@ -46,7 +46,12 @@ def test_arch_groups_are_disjoint_and_cover_exactly_the_50():
     assert set(names) == fields, (sorted(fields - set(names)), sorted(set(names) - fields))
 
 
-def test_apply_round_trips_every_field(qapp, tmp_path):
+def test_apply_round_trips_the_three_field_kinds_it_sets(qapp, tmp_path):
+    """Name fix (wave 2 minor): this was `..._every_field` while the body sets three
+    widgets -- one int, one str enum, one `Selections` name -- and the *all* fields claim
+    is already made honestly one test above, where `set(names) == fields` pins every
+    `Settings` field to a widget. Three samples across the three widget kinds is what
+    this proves; the old name promised an exhaustive round-trip it never ran."""
     st = settings_module.Settings()
     sel = selections_module.Selections()
     page = settings_page.SettingsPage(settings_obj=st, selections_obj=sel)

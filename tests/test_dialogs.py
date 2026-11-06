@@ -1019,11 +1019,14 @@ class PopupEvidence:
 #: through `git show 720ca46:UVR.py`, and `GONE_POPUPS` in
 #: `tests/test_model_data_retired.py` is what keeps a reader from assuming otherwise.
 #:
-#: Nothing after this commit's deletion can re-verify it, which is the whole reason the
-#: table is frozen here instead of read live: an unjustifiable `PARAM_FIELDS` and a
-#: reviewer who cannot tell whether that is because it is right or because the evidence
-#: was thrown away is the worse outcome. `tests/test_model_data_retired.py` now asserts
-#: these popups are *gone*, so a reader always knows which copy is in front of them.
+#: It is re-derivable from git while the blob exists -- the command above is exactly
+#: that derivation -- so the table is frozen here as a *cache of a reproducible walk*,
+#: not because the evidence is unrecoverable: re-running the AST/sed walk on every suite
+#: execution is needless cost, and git history is not a test fixture. What must not
+#: happen is a reader assuming `PARAM_FIELDS` is unjustifiable, or trusting a frozen
+#: table without knowing how to re-derive it. `tests/test_model_data_retired.py` now
+#: asserts these popups are *gone* from the working tree, so a reader always knows which
+#: copy is in front of them and (via the command above) how to reproduce it.
 POPUP_EVIDENCE: dict[str, PopupEvidence] = {
     row.popup: row for row in (
         PopupEvidence("vr", "pop_up_vr_param", 4852, 4874, frozenset({
@@ -1383,7 +1386,13 @@ def test_the_browse_buttons_go_through_the_pickers(qapp, monkeypatch, tmp_path):
 
     assert [entry[0] for entry in seen] == ["in", "out"], seen
     assert seen[0][1] is page and seen[1][1] is page, "the picker must be parented"
-    assert seen[0][2] == str(Path("kept.wav").resolve()) or seen[0][2] == "kept.wav"
+    # One behaviour, not a disjunction (wave 2 minor). Both browse fields seed their
+    # picker with the *field's own text*, exactly as `output_edit` does one line below
+    # (which asserts `== "already/here"`, never a resolved path). The old `resolve()` or
+    # raw `or` accepted two implementations, so a picker that silently started
+    # somewhere else than the field still passed; it now pins the same raw-seed rule the
+    # sibling already uses.
+    assert seen[0][2] == "kept.wav", seen[0]
     assert seen[1][2] == "already/here"
     assert page.input_edit.text() == str(tmp_path / "a.wav")
     assert page.output_edit.text() == str(tmp_path / "b")
