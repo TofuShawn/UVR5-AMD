@@ -7,6 +7,15 @@ because every test passed an explicit `--device cpu` and nothing exercised the
 un-flagged default. Two front ends resolving a device differently is the same bug
 with a wider blast radius, so there is exactly one implementation of "settings ->
 catalog -> backend -> plan" and it lives here.
+
+**What the citations in this file point at.** Every `UVR.py:NNNN` number below is a line
+in *the deleted copy* -- `UVR.py` at commit `720ca46`, the ~7300-line tkinter front end
+Plan 2 Task 8 retired. The `UVR.py` on disk is 389 lines and holds none of what is quoted
+here, so those numbers are re-derivable only from git, which is the same rule
+`app/dialogs.py:36-42` states for `PARAM_FIELDS` and for the same reason: this file
+defends a ruling (`progress_percent`'s seed-at-1, `R-T4-iteration`) with quotes, and a
+quote nobody can look up is a quote nobody can check. `separate.py:`, `plan.py:` and
+`gui_data/constants.py:` citations are live files and stay checkable in the tree.
 """
 from __future__ import annotations
 
@@ -172,6 +181,9 @@ def assemble(*, st: settings_module.Settings, cat: catalog.Catalog, model: str,
 def model_count(rp: plan.RunPlan) -> int:
     """Upstream's `true_model_count` (`UVR.py:6601-6603`), for the models a plan carries.
 
+    Numbers below of the form `:NNNN` are lines of the deleted copy named in this
+    module's docstring, not of the 389-line `UVR.py` on disk.
+
     Faithful in the terms `RunPlan` can answer, and explicit about the two it cannot:
 
     * secondary: `2 if m.is_secondary_model_activated else 1` (`:6603`) -- ensemble mode
@@ -200,6 +212,11 @@ def model_count(rp: plan.RunPlan) -> int:
 def progress_percent(*, models_started: int, model_count: int, step: float,
                      inference_iterations: float = 0.0, total_files: int = 1) -> float:
     """Upstream's percentage, ported term by term -- not re-derived.
+
+    Which is why the citations have to be checkable, and why this one says what it is
+    quoting: every `UVR.py:NNNN` below is a line of the deleted ~7300-line tkinter front
+    end (`UVR.py` at commit `720ca46`, see this module's docstring), and `:NNNN` alone in
+    this block means the same file. The `separate.py:NNNN` lines are live.
 
     `UVR.py:6271-6274`: `base = 100 / (true_model_count * total_files)`,
     `progress = base*iteration - base + base*step`. The `step` it receives is already

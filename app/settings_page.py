@@ -148,6 +148,11 @@ def _check_enum_table() -> None:
 
 _check_enum_table()
 
+#: Which engine parameters each arch actually reads, so the work page can show them and
+#: this page can group them. The `UVR.py:NNNN` provenance after each arch name is a line
+#: in *the deleted copy* (`UVR.py` at commit `720ca46` -- what Task 8 retired; the file on
+#: disk is 389 lines), same rule as `ENUM_FIELDS` above and `app/dialogs.py:36-42`;
+#: `plan.py:` numbers are live.
 ARCH_FIELD_GROUPS: dict[str, tuple[str, ...]] = {
     # read on the VR branch (plan.py, UVR.py:1621/1628 + 3421-3451)
     "vr": ("aggression_setting", "window_size", "batch_size", "post_process_threshold",

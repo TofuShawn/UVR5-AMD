@@ -49,6 +49,12 @@ tier-3 case -- a weight whose model params are known to nobody -- exits non-zero
 with the catalog's message, which carries the hash and the exact `<hash>.json` path
 the user can write themselves. A CLI cannot open the params dialog, so that message
 is the only self-service path there is.
+
+Citations: the three `UVR.py:NNNN` numbers in this file are lines of *the deleted copy*
+(`UVR.py` at commit `720ca46` -- the ~7300-line tkinter front end Plan 2 Task 8 retired to
+the 389-line launcher on disk, which quotes none of them), so they are checkable in git and
+not in the tree; `app/dialogs.py:36-42` states the same rule for `PARAM_FIELDS`. Every
+`separate.py:`, `plan.py:` and `gui_data/constants.py:` number here is a live file.
 """
 from __future__ import annotations
 
@@ -171,7 +177,8 @@ def build_process_data(audio_file: Path | str, export_path: Path | str, *,
     """The per-run inputs the engine reads out of `process_data`.
 
     Plain callables, not mocks, and the shape upstream's GUI passes
-    (`UVR.py:7226-7229`): `set_progress_bar(step, inference_iterations=0)` and
+    (`UVR.py:7226-7229` -- the deleted copy, per this module's docstring):
+    `set_progress_bar(step, inference_iterations=0)` and
     `write_to_console(progress_text, base_text="")` keep those signatures. Here the
     progress bar is a text line and the console is stdout, so a run reports without
     a widget. The two source-cache callbacks report "nothing cached", which is the
@@ -264,7 +271,9 @@ def effective_settings(st: settings_module.Settings, spec: catalog.ModelSpec,
       branches its Demucs stem-only handling on it (`plan.py:447`) and a CLI run of
       `--arch demucs` whose saved settings still say VR would take the wrong stem
       flags. It is not a user-facing knob: the model decides it.
-    * `gpu_conversion` follows `--device` when one was given (`UVR.py:384`'s input,
+    * `gpu_conversion` follows `--device` when one was given (`UVR.py:384`'s input --
+      line 384 *of the deleted copy* named in this module's docstring, not of the 389-line
+      launcher that bears the name now, whose 384th line is something else entirely),
       read by `plan.py:329`), so `--device cpu` cannot be silently overridden by a
       settings file that says otherwise. Device honesty is the point: the flag a
       user typed is the flag the engine sees.
@@ -466,7 +475,17 @@ def run(args: argparse.Namespace, *, out: TextIO = sys.stdout,
 
     st = settings_module.load(Path(args.settings) if args.settings else None)
 
-    from app import session                                  # the one assembly path
+    # The one assembly path, and *inside* this function on purpose (ruling
+    # R-T2-blockset): `tests/test_engine_purity.py` imports every module of the engine
+    # surface -- `separate_cli` among them, since `app/session.py` imports it -- in a
+    # child that blocks `app`, `PySide6` and `fluentqt` at import, so an eager
+    # `from app import session` here would make `import separate_cli` reach the GUI
+    # stack and every one of those guards would fail on the front end instead of on an
+    # engine module. `app/__init__.py:1-18` is the other half of the note: this edge is
+    # the single deliberate name-the-guard-cannot-count, and `RUN_CHILD_BLOCKED` drops
+    # exactly `app` for the child that runs the CLI, which still proves this file is
+    # Qt-free with `app` in plain sight.
+    from app import session
 
     try:
         sess = session.assemble(st=st, cat=cat, model=args.model, arch=args.arch,

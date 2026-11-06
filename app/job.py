@@ -9,7 +9,11 @@ Cancellation is cooperative and its granularity is the engine's own: `separate.p
 has no stop flag, so `session.Cancelled` is raised from the progress hook
 (`separate.py:1383`, once per batch on the VR path). A STOP pressed mid-batch takes
 effect at the next batch, which is honest; upstream's STOP was `thread.terminate()`
-(`UVR.py:6297`), which is not.
+(`UVR.py:6297`), which is not. That number is a line of *the deleted copy* -- `UVR.py` at
+commit `720ca46`, the ~7300-line tkinter front end Plan 2 Task 8 retired down to the
+389-line launcher on disk -- so it is checkable in git and not in the tree, the rule
+`app/dialogs.py:36-42` and `app/session.py`'s docstring also state. `separate.py:`
+citations are live files.
 
 Two deviations from the shape this task was drafted with, both measured at PySide6
 6.9.3 before writing it:
@@ -166,6 +170,19 @@ class Job(QObject):
         the worker is the part that lives on another thread.
         """
         if self._worker is None:
+            # M6, and deliberate: this lambda is the *other half of the edge* in a
+            # `Job` -> `_Worker` -> `Job` reference cycle (`_Worker` is parented to the
+            # `Job` above, and this closure holds the `Job` to read `_cancel` from the
+            # worker thread). It must not be "fixed" into a plain value or a weak
+            # reference: the closure is precisely what keeps the flag's owner alive while
+            # a thread is still reading it, and a `Job` that were collected mid-run would
+            # hand the worker a dangling `self` on its next `self._cancel_flag()` call.
+            # The cycle is also why the teardown rule at the top of this file is
+            # `shutdown()`-then-drop rather than drop: nothing here is freed by reference
+            # counting, only by the cyclic collector, and letting *that* finalise a live
+            # `QThread` is the `0xc0000374` this module already refuses elsewhere. No guard
+            # in the suite can see any of it -- the AST lifetime guard scans classes named
+            # `*Dialog` (`tests/test_work_page.py`), and neither of these two is one.
             worker = _Worker(lambda: self._cancel, self)
             worker.progress.connect(self.progress.emit)
             worker.line.connect(self.console.emit)

@@ -10,6 +10,12 @@ entry).
 Upstream's source of truth for the names is the tk var set in `UVR.py` (e.g.
 `self.vr_voc_inst_secondary_model_var`); the mapping is reproduced field by field
 below, not re-derived.
+
+That file is the *deleted copy*: `UVR.py` at commit `720ca46`, the ~7300-line tkinter front
+end Plan 2 Task 8 retired down to the 389-line launcher now on disk. So every
+`UVR.py:NNNN` number in this file -- the pair in `to_plan_dict` -- is a line
+re-derivable only from git, which is the rule `app/dialogs.py:36-42` states for
+`PARAM_FIELDS`. `plan.py:` and `settings.py:` citations are live files.
 """
 from __future__ import annotations
 
