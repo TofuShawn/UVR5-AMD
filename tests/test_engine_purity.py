@@ -44,13 +44,23 @@ the whole call path and not only for the modules under `LINT_GLOBS`.
      a legitimate parameter called `root` used as `root.something` fires it --
      the answer is to rename it to the upstream `self.root` style, not to add an
      exemption.
+  3. `test_no_gui_import_anywhere_in_the_engine_surface` (wave 2 item 2) AST-walks
+     the engine/composition surface (`engine_lint_files` plus `plan.py`/`backends.py`/
+     `separate_cli.py`) and refuses any `Import`/`ImportFrom` of a GUI name at **any
+     depth** -- the one thing guards 1 and 2 are both structurally blind to. This
+     closes the deferred-import gap the docstring above kept handing between them; the
+     `app` edge is intentionally left to `tests/test_session.py` (the composition
+     layers may import `app`), and `selections.py`/`model_refresh.py` are outside every
+     engine input on purpose (see `purity_surface_files`).
 
-Both "what it cannot see" clauses are load-bearing, not hedging: a ratchet whose
+Three guards, split deliberately, and each one is blind to exactly what the
+others see. All three "what it cannot see" clauses are load-bearing, not hedging:
+a ratchet whose
 docstring implies more than it delivers invites the edit that defeats it. The
 red runs behind every claim here are committed as `tools/task8_red_controls.py`
-(run it explicitly; it is not collected by bare `pytest`). A third test,
-`test_the_pinned_lists_have_not_shrunk`, is the same defense one level up: both
-guards and both controls take `GUI_PACKAGES` and `ENGINE_IMPORTS` as *input*, so
+(run it explicitly; it is not collected by bare `pytest`). The pin test,
+`test_the_pinned_lists_have_not_shrunk`, is the same defense one level up: all
+three guards and the controls take `GUI_PACKAGES` and `ENGINE_IMPORTS` as *input*, so
 neither can see one of them shrink, and the pin checks the lists against frozen
 literals instead. It checks three of them -- `RUN_CHILD_BLOCKED`, the block set the
 CLI-running child is handed, joined the pair under ruling R-T2-blockset, because a
@@ -252,8 +262,13 @@ def guard_script(modules, blocked=GUI_PACKAGES):
     purged `sys.modules` loop is above it so the probe really re-triggers the
     finder instead of hitting a cached `tkinter`. `tools/task8_red_controls.py`
     builds its red runs out of this exact string, and every one of them calls this
-    with the default `blocked`, so the controls keep auditing the full seven-name
-    set. The probe below is written against `tkinter`, which is in *both* block sets,
+    with the default `blocked` -- which is why the default alone cannot be trusted to
+    still be the full set (the controls inherit whatever it says, so that claim was
+    circular). Wave 2 item 1 breaks the circle: `test_the_pinned_lists_have_not_shrunk`
+    now parses the `BLOCKED = [...]` line back out of *this function's own output* and
+    asserts it equals `PINNED_GUI_PACKAGES`, so narrowing the default to a subset goes
+    red there even though the self-assert below still only proves `tkinter` is blocked.
+    The probe is written against `tkinter`, which is in *both* block sets,
     so a child built from either list proves its blocker armed before it does
     anything else.
     """
@@ -334,6 +349,97 @@ def test_no_global_tkinter_root_reference():
     assert not hits, "engine references the GUI root:\n" + "\n".join(hits)
 
 
+def gui_import_hits(files, blocked):
+    """Guard 3 (wave 2 item 2): `(path:lineno name)` for every `Import`/`ImportFrom`
+    whose dotted name is rooted in a blocked GUI name, **at any AST depth**.
+
+    This is the class neither existing guard sees. Guard 1 only runs the *import-time*
+    graph: a GUI import parked inside a function body never executes when the module is
+    imported, so it stays green (the docstring names `from app import session` inside
+    `separate_cli.run()` as the live instance). Guard 2's violation class is exactly
+    `Attribute(value=Name("root"))`, so a hidden `import fluentqt` in a function body is
+    out of its reach too. `ast.walk` descends into every FunctionDef/ClassDef/if-block,
+    which is the whole point: it reads the syntax, not the executed graph.
+
+    Matching is the *same* dotted-prefix rule as the child's finder (`name == pkg or
+    name.startswith(pkg + ".")`), never `split('.')[0]`, so `gui_data.constants` (pure
+    data, legitimately needed by `separate.py:18`) stays allowed while
+    `gui_data.tkinterdnd2` is refused. Relative imports (`from . import x`, level > 0)
+    can never name an absolute GUI package, so they are skipped.
+    """
+    hits = []
+    for f in files:
+        try:
+            tree = ast.parse(f.read_text(encoding="utf-8"))
+        except (SyntaxError, ValueError, OSError):
+            continue  # guard 2 already reports unparseable files; not this one's job
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and not node.level and node.module:
+                names = [node.module]
+            else:
+                continue
+            for nm in names:
+                if any(nm == pkg or nm.startswith(pkg + ".") for pkg in blocked):
+                    hits.append(f"{f}:{node.lineno} import {nm}")
+    return hits
+
+
+def purity_surface_files(root=ROOT):
+    """Guard 3's file set: guard 2's whole engine sweep plus the two composition layers
+    that join guard 1's import surface but sit outside `LINT_GLOBS`.
+
+    `backends.py` is already in `LINT_GLOBS`, so it is de-duplicated by the set; the
+    two that the glob does not reach are `plan.py` and `separate_cli.py` -- and
+    `separate_cli.py` is precisely where guard 1's documented blind spot lives (the
+    deferred `from app import session`). Guard 3 refuses the six GUI names *other than*
+    `app` in these files; the `app` edge is covered directly by
+    `tests/test_session.py::test_importing_session_pulls_in_no_qt` (the app half is the
+    one thing these layers are *allowed* to import), so `app` is excluded from
+    `blocked`, matching the CLI-running child's `RUN_CHILD_BLOCKED` set.
+
+    `selections.py` and `model_refresh.py` are deliberately NOT added here. They are
+    app-facing data/refresh layers, not part of guard 1's 16-module engine import graph
+    nor guard 2's vendored-engine glob, and nothing in the engine imports them, so a GUI
+    coupling in either cannot poison the engine import surface this ratchet protects;
+    their GUI-freedom is an *app* property and is policed on the app side
+    (`tests/test_session.py`, `tests/test_ui_surfaces.py`), not by widening the engine
+    guard's inputs behind the engine's back."""
+    files = {p for p in engine_lint_files()}
+    for extra in ("plan.py", "backends.py", "separate_cli.py"):
+        p = root / extra
+        if p.is_file():
+            files.add(p)
+    return sorted(files)
+
+
+def test_no_gui_import_anywhere_in_the_engine_surface():
+    """The deferred-import guard: no GUI package may be imported at *any* depth in the
+    engine surface, closing the blind spot the module docstring hands between guards 1
+    and 2.
+
+    Guard 1 proves module-level GUI-freedom at import time; guard 2 proves no global
+    `root.<attr>`. Neither sees a GUI import tucked into a function body. This test
+    AST-walks the composition/engine surface for exactly that and refuses it. Reviewer B
+    measured 0 hits against the committed tree, so it lands green; the red control
+    (`tools/task8_red_controls.py::test_red_a_deferred_gui_import_in_a_function_body_
+    goes_red`) proves the predicate fires on a planted `def f(): import fluentqt` that
+    guard 1's import graph and guard 2's root sweep both wave through.
+    """
+    files = purity_surface_files()
+    blocked = frozenset(GUI_PACKAGES) - {"app"}
+    assert blocked == (PINNED_GUI_PACKAGES - {"app"}), (
+        "guard 3's block set drifted from the pinned GUI set minus the app edge; the "
+        "app edge is what `tests/test_session.py` covers, so keep exactly this split.")
+    hits = gui_import_hits(files, blocked)
+    print(f"[purity] guard 3 AST-walked {len(files)} engine/composition files for GUI "
+          f"imports at any depth: {len(hits)} hit(s)", flush=True)
+    assert not hits, (
+        "a GUI package is imported somewhere in the engine surface, including inside a "
+        "function body guard 1 never executes at import:\n" + "\n".join(hits))
+
+
 def pin_drift(list_name, live, pinned, pin_name):
     """A pin failure text a human can act on: what left, what arrived, what to do.
 
@@ -412,3 +518,40 @@ def test_the_pinned_lists_have_not_shrunk():
         "PINNED_ENGINE_IMPORTS but the list grew, so guard 1 imports the repeat "
         "and the per-module table spawns a child per repeat. Delete the repeat, "
         "or update the pin in the same commit and say why.")
+
+    # Wave 2 item 1: pin the *wiring*, not only the constants. Everything above
+    # compares a live name list to its frozen copy, but guard 1 never reads
+    # `GUI_PACKAGES`/`ENGINE_IMPORTS` itself -- `guard_script` takes the block set as a
+    # *parameter default* (`blocked=GUI_PACKAGES`) and emits its import lines from the
+    # `modules` argument. Narrowing that default to `("tkinter",)` leaves every literal
+    # above byte-identical while the engine-import child stops refusing
+    # `fluentqt`/`PySide6`/`app` -- a module doing `import fluentqt` then exits 0. The
+    # child's self-assert only proves `tkinter` is blocked, so the narrowed set still
+    # reads armed, and the red controls do not catch it either (they all call the
+    # default, so the old claim that they "keep auditing the full seven-name set" was
+    # circular). These two asserts read the *source guard_script actually builds*, so
+    # what is pinned is the block set and the import edges of the child that runs.
+    built = guard_script(ENGINE_IMPORTS)
+    blocked_line = next((ln for ln in built.splitlines()
+                         if ln.startswith("BLOCKED = ")), None)
+    assert blocked_line is not None, (
+        "guard_script no longer emits a `BLOCKED = [...]` line, so the block set of "
+        "the child that actually runs cannot be audited here -- read guard_script and "
+        "keep this assert meaningful rather than deleting it.")
+    emitted = frozenset(ast.literal_eval(blocked_line[len("BLOCKED = "):]))
+    assert emitted == PINNED_GUI_PACKAGES, (
+        f"guard_script's default block set no longer builds the child with the full "
+        f"pinned GUI set: the emitted child BLOCKED={sorted(emitted)} vs pinned "
+        f"{sorted(PINNED_GUI_PACKAGES)}. This is the wiring, not the constant -- "
+        "narrowing `guard_script`'s `blocked` *default* to a subset (say "
+        "`('tkinter',)`) makes guard 1 stop refusing `fluentqt`/`PySide6`/`app` while "
+        "every other assertion in this file stays green. If a name genuinely left the "
+        "block set, change PINNED_GUI_PACKAGES in this same commit and say why; do "
+        "not edit guard_script's default to a smaller tuple to make this pass.")
+    for name in PINNED_ENGINE_IMPORTS:
+        assert f"import {name}\n" in built, (
+            f"`{name}` is a pinned engine-import module, but guard_script(ENGINE_IMPORTS)"
+            f" no longer emits `import {name}` as its own line, so guard 1's child never "
+            f"actually imports it -- the module left the ratchet through the call site "
+            f"(guard_script's `modules` join) rather than through ENGINE_IMPORTS, which "
+            f"is the exact half the constant-only pin could not see.")

@@ -374,6 +374,97 @@ def test_red_ast_lint_fires_on_a_planted_engine_file(tmp_path, monkeypatch):
     print(f"[red] committed guard 2 said: {str(fired.value).strip()}", flush=True)
 
 
+# Wave 2 item 2: the third guard -- a GUI import deferred into a function body, the one
+# violation class guard 1 (import-time graph) and guard 2 (`root.<attr>`) are both blind
+# to. The plant imports a real GUI package from the block set inside a never-called
+# body, and imports nothing at module level.
+DEFERRED_GUI = '''"""Engine-shaped module with a GUI import parked in a function body.
+
+Nothing at module level touches a GUI package, so guard 1's import graph passes it, and
+there is no `root.<attr>` attribute access, so guard 2's AST sweep passes it too -- this
+is the class the first two guards are structurally blind to.
+"""
+
+
+def open_settings():
+    import fluentqt
+    from PySide6.QtWidgets import QDialog
+    return fluentqt, QDialog
+'''
+
+GUI_IMPORT_MARK = "imported somewhere in the engine surface"
+
+
+def test_red_a_deferred_gui_import_in_a_function_body_goes_red(tmp_path, monkeypatch):
+    """Guard 1 and guard 2 both wave this file through; only guard 3 refuses it.
+
+    The three-way split is the proof: the same planted module is GREEN under the import
+    graph (nothing GUI executes at import), reports ZERO hits under the `root.<attr>`
+    sweep, and then makes the committed guard-3 test go red. `purity_surface_files` is
+    pointed at the plant instead of the repo, so the control is permanent without
+    touching a tracked engine file.
+    """
+    plant = tmp_path / "plant_deferred_gui.py"
+    plant.write_text(DEFERRED_GUI, encoding="utf-8")
+
+    # Guard 1's half: imports nothing at module level, so the child exits 0.
+    verdict, detail = module_verdict("plant_deferred_gui", tmp=tmp_path)
+    print(f"[red] guard 1 (import graph) on the deferred-GUI plant -> {verdict} | "
+          f"{last_line(detail)}", flush=True)
+    assert verdict == "GREEN", (
+        "guard 1 failed on a module that imports no GUI package at import time, so the "
+        "guards have stopped being complementary: " + str(detail))
+
+    # Guard 2's half: no `root.<attr>` anywhere, so the AST sweep reports nothing.
+    hits2, unparseable2 = t8.global_root_hits([plant])
+    print(f"[red] guard 2 (`root.` sweep) on the same plant -> {len(hits2)} hit(s) "
+          f"| unparseable={unparseable2}", flush=True)
+    assert not hits2 and not unparseable2, (
+        "the `root.` sweep was supposed to be blind to a deferred import; if it now "
+        f"fires here the three guards have collapsed into two: {hits2}")
+
+    # Guard 3's half: the predicate catches both GUI names, at function-body depth.
+    blocked = frozenset(t8.GUI_PACKAGES) - {"app"}
+    hits3 = t8.gui_import_hits([plant], blocked)
+    print(f"[red] guard 3 predicate on the plant -> {hits3}", flush=True)
+    assert len(hits3) == 2, (
+        "guard 3 missed one of the two deferred GUI imports (fluentqt + "
+        f"PySide6.QtWidgets), so the any-depth walk is not really any-depth: {hits3}")
+
+    monkeypatch.setattr(t8, "purity_surface_files", lambda *a, **k: [plant])
+    with pytest.raises(AssertionError, match=GUI_IMPORT_MARK) as fired:
+        t8.test_no_gui_import_anywhere_in_the_engine_surface()
+    print(f"[red] committed guard 3 said: {str(fired.value).splitlines()[0]}",
+          flush=True)
+
+
+def test_red_guard_three_leaves_the_app_edge_and_clean_files_alone(tmp_path):
+    """Guard 3's non-vacuity the other way: `app` is allowed, pure data is allowed.
+
+    Without this, the control above could pass because guard 3 refuses *everything*,
+    which would be wrong -- `separate_cli.py` legitimately does `from app import
+    session`, and `separate.py:18` does `from gui_data.constants import *`. Both plants
+    here must report zero hits.
+    """
+    app_edge = tmp_path / "plant_app_edge.py"
+    app_edge.write_text("def run():\n    from app import session\n    return session\n",
+                        encoding="utf-8")
+    pure_data = tmp_path / "plant_pure_data.py"
+    pure_data.write_text("from gui_data.constants import *\n\n\ndef go():\n"
+                         "    import gui_data.error_handling\n"
+                         "    return gui_data\n", encoding="utf-8")
+
+    blocked = frozenset(t8.GUI_PACKAGES) - {"app"}
+    assert "app" not in blocked, "the app edge leaked into guard 3's block set"
+    hits = t8.gui_import_hits([app_edge, pure_data], blocked)
+    print(f"[red] guard 3 on app-edge + pure-data plants -> {hits} (want none)",
+          flush=True)
+    assert not hits, (
+        "guard 3 refused an import the engine surface is allowed to make (the `app` "
+        "edge is tests/test_session.py's job, and gui_data.* pure data is not a GUI "
+        f"coupling): {hits}")
+
+
 def test_red_sweep_that_sweeps_nothing_goes_red(monkeypatch):
     """`assert files, "lint swept nothing"` -- the glob's own non-vacuity."""
     monkeypatch.setattr(t8, "engine_lint_files", lambda *a, **k: [])

@@ -143,14 +143,36 @@ def test_device_summary_says_only_what_the_backend_reports():
 def test_the_unflagged_page_shows_the_unflagged_resolution(qapp, tmp_path, monkeypatch):
     """The review lesson, in GUI form: nothing was clicked, so whatever the machine
     resolves to with no argument is what the line must say. Monkeypatching `resolve`
-    rather than reading the label twice keeps this from being a tautology."""
+    rather than reading the label twice keeps this from being a tautology.
+
+    Wave 2 item 3: the fake used to be `lambda force=None: _cpu_backend()`, which throws
+    the argument away -- so `work_page._sync_from_state` could have written
+    `backends.resolve(force="rocm")` (or any other `force`) here and this test stayed
+    green, because the fake returns CPU no matter what was asked. That is spec §8's
+    highest-value rule (the un-flagged default must stay un-flagged; Plan 1's only
+    Critical was exactly this shape), so the fake now *records* each `force` it is handed
+    and the assert proves the page reached it with the single un-flagged `force=None`
+    call -- one call, and that call is `None`. The defeat the reviewer measured:
+    `return backends.resolve(force="rocm")` in `app/work_page.py:282` turns this red
+    (`calls == ["rocm"]`), and reverting it turns it green again."""
     import separate_cli
-    monkeypatch.setattr(backends, "resolve", lambda force=None: _cpu_backend())
+    calls: list = []
+
+    def _recording_resolve(force=None):
+        calls.append(force)
+        return _cpu_backend()
+
+    monkeypatch.setattr(backends, "resolve", _recording_resolve)
     cat = separate_cli.make_catalog(tmp_path / "nope", tmp_path / "w")
     fresh = work_page.WorkPage(cat=cat, settings_obj=None, selections_obj=None)
     assert "cpu" in fresh.device_label.text()
     assert fresh.compute_label.text() == "", (
         "the compute line is plan-derived and must stay empty until a plan exists")
+    assert calls == [None], (
+        f"the un-flagged page must reach `backends.resolve` with `force=None` exactly "
+        f"once (spec §8: touching nothing resolves nothing); it reached it with "
+        f"{calls!r} -- a `force` value here means the GUI now silently picks a backend "
+        f"the user never asked for")
 
 
 def test_busy_state_flips_start_and_stop_together(page):
