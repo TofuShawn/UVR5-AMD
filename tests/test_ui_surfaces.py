@@ -118,6 +118,47 @@ UI_MODULE_FUNCTIONS = frozenset({
     "MotionMode",
 })
 
+#: Qt base classes the app may never *construct* itself. `QWidget(` keeps the native
+#: palette (spec §5.3), and a raw `QDialog(`/`QFrame(` is the same mistake one level up:
+#: `ContentDialog` is the binding's dialog, so building a bare `QDialog` bypasses the
+#: census entirely -- the sibling hole the `ContentDialog` licence in `_is_licensed_
+#: internal` only half-closes. The app reaches Qt layouts (`QVBoxLayout`) and the
+#: application object, but never instantiates a bare widget; measured 0 constructions
+#: across `app/**` at HEAD, so this refusal is a ratchet, not a re-litigation.
+BARE_QT_CONSTRUCTIBLES = frozenset({"QWidget", "QDialog", "QFrame"})
+
+#: GUI imports spec §4 calls an error anywhere in `app/**`. The tkinter layer is retired
+#: (Task 8) and the app draws through `fluentqt`, so a re-added `import tkinter` /
+#: `sv_ttk` / `tkinterdnd2` / `PIL.ImageTk` here is a GUI coupling on the front-end side
+#: the branch promised to leave. (`PySide6` is deliberately NOT listed: the app imports
+#: it for the application object, layouts and QSettings -- the reviewed-surface rule for
+#: Qt widgets is `UI_CLASSES` + `BARE_QT_CONSTRUCTIBLES`, not a blanket PySide6 ban.)
+RETIRED_GUI_IMPORTS = ("tkinter", "gui_data.sv_ttk", "gui_data.tkinterdnd2",
+                       "PIL.ImageTk")
+
+#: The UI_CLASSES names the app does NOT instantiate, kept on the list purely for the
+#: binding tripwire (`test_fluent_binding` constructs every declared class, so a wheel
+#: that deletes one fails *there*, by name). Wave 2 minor: `UI_CLASSES` was policed
+#: forward only -- app->list -- so 16 of 32 names went unchecked for whether the app
+#: uses them, and a decorative class drifting out would redden the suite for no
+#: app-facing reason. This is the explicit exemption the reverse assertion below
+#: requires: "unused-but-reviewed", stated, so a name leaving it (now used) or a name
+#: used but absent from it must be an edit in the same commit.
+DECORATIVE_UI_CLASSES = frozenset({
+    "AutoSuggestBox", "Divider", "FluentWidget", "HyperlinkButton",
+    "MultiSelectComboBox", "PasswordBox", "ProgressRing", "RadioButton",
+    "SelectorBar", "SelectorBarItem", "Slider", "TabView", "TabViewItem",
+    "ToggleButton", "ToggleSwitch", "ToolTip",
+})
+
+
+def _app_py_files(repo_root):
+    """Every `app/**/*.py`, recursively. The AST scans used to glob `app/*.py` while
+    their docstrings said `app/**`; `app` is flat today so the two agreed, but the
+    one-word fix (`rglob`) makes the scan match the promise the moment a subpackage
+    lands."""
+    return sorted((repo_root / "app").rglob("*.py"))
+
 
 def _is_fluent(widget) -> bool:
     """True when any class in the widget's own ancestry comes from the binding."""
@@ -206,16 +247,77 @@ def test_the_settings_page_adds_no_bare_surface_of_its_own(qapp):
 def test_app_only_touches_the_reviewed_fluent_surface():
     repo_root = Path(__file__).resolve().parents[1]
     offenders = []
-    for path in sorted((repo_root / "app").glob("*.py")):
+    referenced = set()
+    for path in _app_py_files(repo_root):
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             if (isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)
                     and node.value.id == "fluentqt"):
+                referenced.add(node.attr)
                 if node.attr not in UI_CLASSES and node.attr not in UI_MODULE_FUNCTIONS:
                     offenders.append(f"{path.name}:{node.lineno} fluentqt.{node.attr}")
     assert not offenders, (
         "app/** depends on a Fluent name nobody reviewed; add it to UI_CLASSES in "
         "tests/test_fluent_binding.py in the same commit (and to the binding's "
         "construct test) if it is really needed:\n" + "\n".join(offenders))
+
+    # The reverse direction (wave 2 minor). Forward, UI_CLASSES means "every Fluent class
+    # app may depend on"; reverse, it means the same only if the 16 names app does NOT
+    # depend on are *deliberately* kept for the binding tripwire. Without this half, a
+    # decorative class could be quietly trimmed (or an upstream deletion would look like
+    # an app bug), and the list would stop meaning "reviewed surface". `referenced` is
+    # the fluentqt names app actually touches; intersect with UI_CLASSES for the used set.
+    used_in_app = referenced & set(UI_CLASSES)
+    not_used = set(UI_CLASSES) - used_in_app
+    assert not_used == set(DECORATIVE_UI_CLASSES), (
+        "UI_CLASSES has drifted from `used-in-app ∪ decorative` -- the two-way contract "
+        "this guard enforces. Names app now uses but the decorative list still claims "
+        f"unused: {sorted(not_used & set(DECORATIVE_UI_CLASSES) - not_used)}; names app "
+        f"does NOT use but the decorative list forgot to exempt: "
+        f"{sorted(not_used - set(DECORATIVE_UI_CLASSES))}; decorative names that app now "
+        f"uses (drop them from the exemption): "
+        f"{sorted(set(DECORATIVE_UI_CLASSES) & used_in_app)}. Update DECORATIVE_UI_CLASSES "
+        "in the same commit as the app usage and say why.")
+
+
+def test_the_app_never_constructs_a_bare_qt_widget():
+    """The compile-time half of spec §5.3: the census refuses a bare surface in the
+    *built* tree; this refuses a bare `QWidget(`/`QDialog(`/`QFrame(` in the *source*,
+    which also closes the `ContentDialog` sibling the runtime licence cannot see (a raw
+    QDialog is never walked by `findChildren` on a Fluent owner). Layouts and the
+    application object are not widgets and stay legal."""
+    repo_root = Path(__file__).resolve().parents[1]
+    offenders = []
+    for path in _app_py_files(repo_root):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                    and node.func.id in BARE_QT_CONSTRUCTIBLES):
+                offenders.append(f"{path.name}:{node.lineno} {node.func.id}(...)")
+    assert not offenders, (
+        "app/** constructs a bare Qt widget; use the fluentqt control "
+        "(ContentDialog, not QDialog; Card, not QWidget):\n" + "\n".join(offenders))
+
+
+def test_the_app_never_imports_the_retired_gui_stack():
+    """Spec §4: the tkinter GUI is retired, so importing it from the new front end is an
+    error, not a fallback. `import tkinter` / `sv_ttk` / `tkinterdnd2` / `PIL.ImageTk`
+    anywhere in `app/**` (at any depth, since the scan is over the whole AST) means the
+    retired stack is being reached for again. Measured 0 today; this is the ratchet."""
+    repo_root = Path(__file__).resolve().parents[1]
+    offenders = []
+    for path in _app_py_files(repo_root):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            names = []
+            if isinstance(node, ast.Import):
+                names = [a.name for a in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+                names = [node.module]
+            for nm in names:
+                if any(nm == pkg or nm.startswith(pkg + ".")
+                       for pkg in RETIRED_GUI_IMPORTS):
+                    offenders.append(f"{path.name}:{node.lineno} import {nm}")
+    assert not offenders, (
+        "app/** imports the retired tkinter GUI stack (spec §4 says this is an error):\n"
+        + "\n".join(offenders))
 
 
 def test_no_theme_override_call_sites_in_the_app():
@@ -224,7 +326,7 @@ def test_no_theme_override_call_sites_in_the_app():
     repo_root = Path(__file__).resolve().parents[1]
     banned = ("apply_theme_overrides", "set_widget_theme_overrides")
     offenders = []
-    for path in sorted((repo_root / "app").glob("*.py")):
+    for path in _app_py_files(repo_root):
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             if isinstance(node, ast.Attribute) and node.attr in banned:
                 offenders.append(f"{path.name}:{node.lineno} {node.attr}")

@@ -668,8 +668,19 @@ def test_stop_pressing_cancel_is_the_job_that_owns_the_flag(qapp, tmp_path, monk
 # shorter *and* lighter than the label it replaced, which is exactly what a user reads
 # as an unreadable tab, and what the geometry version scored as a pass.
 
-#: The arch labels the ruling photographed, used by the negative control.
-ARCH_PROBE_LABELS = ("apollo", "demucs", "mdx", "vr")
+#: The arch labels the ruling photographed, used by the negative control. Wave 2 minor:
+#: derived from the catalog instead of hand-copied, so adding a catalog arch *extends*
+#: the legibility measurement (the correct behaviour) instead of breaking a legibility
+#: test for a non-legibility reason, which was the old failure mode: a hand-copied tuple
+#: silently disagrees with whatever row the page then paints.
+#: Measured at this commit: `catalog.SUPPORTED_ARCHS` is `('apollo', 'demucs', 'mdx',
+#: 'vr')` -- exactly the four the ruling photographed -- so this substitution is
+#: behaviour-neutral today and only changes what happens when the catalog grows.
+#: `SUPPORTED_ARCHS` is `tuple(sorted(ARCHS))`, the same list `page.arch_names()` builds
+#: its SelectorBar from; `labels` below is read back off the *widgets the page actually
+#: constructed*, so the cross-check still verifies the page->bar path (nothing dropped,
+#: nothing reordered) rather than restating one list against itself.
+ARCH_PROBE_LABELS = tuple(catalog.SUPPORTED_ARCHS)
 
 
 def _ink_of_rect(image, x0, y0, w, h, exclude=()):
