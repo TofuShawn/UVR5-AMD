@@ -52,9 +52,9 @@ def _coerce(field_name: str, value: object, typ: type) -> typing.Any:
         place the table is *stricter* than `settings._to_bool`
         (settings.py:211-229), which parses `0`/`1` and the tokens `'true'`/`'False'`
         because those are genuine `data.pkl` and `tk` encodings for *those* flags. Two
-        reasons it cannot do that here: this module's own `load()` accepts only
-        `isinstance(value, bool)` for a bool field, so a constructor taking `1` or
-        `'False'` would accept what the file it writes refuses to read back; and
+        reasons it cannot do that here: this module's `load()` calls this very function,
+        so a constructor accepting `1` or `'False'` would let the class hold what its own
+        file cannot be read back as; and
         `to_plan_dict()` re-coerces this field with `bool(...)` (see its
         `vocal_splitter` entry), so the *truthy text* `'False'` would not raise, not
         store `False`, and not stay quiet -- it would silently activate a second model
@@ -263,16 +263,22 @@ def load(path: Path | None = None) -> Selections:
 
     Same contract as `settings.load`: unknown keys are dropped, but a known key whose
     value cannot be its declared type **raises** -- silently keeping a corrupt value is
-    how a wrong-type field reaches the engine. `isinstance` alone would not do it,
-    because `True` is an `int` and `1` is not a `bool`.
+    how a wrong-type field reaches the engine.
 
-    The gate stays in this loop rather than leaning on `__post_init__`: the two raise
-    for different audiences. This one names the file and the offending key, because a
-    corrupt config is a file-level diagnosis; `_coerce` speaks for a constructor
-    argument. What they must agree on is the *domain* -- every value this accepts has
-    to survive the coercion unchanged in substance, and this refuses `1` for a bool
-    field, so `_coerce` must refuse it too rather than let the constructor accept what
-    the loader rejects.
+    The parsing is `_coerce`'s, so the two halves of `settings.json` agree on the domain
+    (finding I9). This loader used to run its own `isinstance` gate, which refused the
+    text `'0.7'` in a float field that `_coerce` parses and `settings.load` (settings.py
+    :546) accepts: the promise at the top of `_coerce`'s docstring -- the same parse
+    "wherever it came from" -- held for the constructor and not for the file, and the
+    asymmetry was reachable. `Controller.__init__` calls this before a window exists, so
+    a hand-edited scale was an app that would not launch with no surface to say so on.
+
+    What stays here rather than being left to `__post_init__` is the *wrapping*: this
+    raises `TypeError` naming the file and the key, because a corrupt config is a
+    file-level diagnosis, while `_coerce` speaks for a constructor argument. The domain
+    they agree on is `_coerce`'s, including its stricter bool branch -- `1` and `'False'`
+    are refused here exactly as `Selections(...)` refuses them, so nothing this accepts
+    can fail to survive its own round trip.
     """
     target = Path(path) if path is not None else settings_module.config_file()
     block = _read_raw(target).get(_KEY) or {}
@@ -282,14 +288,11 @@ def load(path: Path | None = None) -> Selections:
         if f.name not in block:
             continue
         value, typ = block[f.name], types[f.name]
-        ok = (typ is bool and isinstance(value, bool)
-              or typ is int and isinstance(value, int) and not isinstance(value, bool)
-              or typ is float and isinstance(value, (int, float)) and not isinstance(value, bool)
-              or typ is str and isinstance(value, str))
-        if not ok:
+        try:
+            values[f.name] = _coerce(f.name, value, typ)
+        except (TypeError, ValueError) as exc:
             raise TypeError(f"{target}: selections.{f.name} must be {typ.__name__}, "
-                            f"got {type(value).__name__}")
-        values[f.name] = value
+                            f"got {type(value).__name__} ({exc})") from exc
     return Selections(**values)
 
 

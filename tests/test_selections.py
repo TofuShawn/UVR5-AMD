@@ -231,3 +231,67 @@ def test_a_selection_reaches_the_plan_only_when_its_switch_is_on(tmp_path):
     assert on.rp.secondary_model_scale == 0.6
     assert on.rp.is_secondary_model_activated is True
     assert session.model_count(on.rp) == 2      # base 2 when a secondary is activated
+
+
+# -- I9: the two halves of one file, one parse -------------------------------- #
+
+#: The float field of each half, for the pairs below: `post_process_threshold` is the
+#: only float in `Settings`, the twelve scales are the floats in `Selections`.
+_FLOAT_PAIRS = (("post_process_threshold", "vr_voc_inst_secondary_model_scale"),)
+
+
+@pytest.mark.parametrize("written", ["0.7", 0.7, 7, "7", "0.0"])
+def test_a_number_a_widget_or_file_holds_loads_the_same_way_in_both_halves(written,
+                                                                          tmp_path):
+    """I9. `Selections.load`'s own docstring promises that coercion makes a value parse
+    the same way wherever it came from -- file, widget text, or a bare constructor
+    argument -- and the loader then refused the text `0.7` for a float field with its own
+    `isinstance` gate, while `_coerce` parses it and the *sibling half of this same file*
+    accepts it (`settings.load` routes every key through `_coerce`, settings.py:546).
+
+    The consequence was not cosmetic: a hand-edited scale in the selections block made
+    `Controller.__init__` raise before any window existed -- an app that will not launch,
+    with no surface to say so on -- while the identical edit in the settings half was
+    fine. Both halves now parse through the one table."""
+    target = tmp_path / "settings.json"
+    for s_key, sel_key in _FLOAT_PAIRS:
+        target.write_text(json.dumps({s_key: written,
+                                      "selections": {sel_key: written}}), encoding="utf-8")
+        st = settings_module.load(target)
+        sel = selections.load(target)
+        assert getattr(st, s_key) == float(written), (s_key, getattr(st, s_key))
+        assert getattr(sel, sel_key) == float(written), (sel_key, getattr(sel, sel_key))
+        assert type(getattr(sel, sel_key)) is float, sel_key
+
+
+@pytest.mark.parametrize("written", ["loud", "1_0", [], None])
+def test_a_value_neither_half_can_parse_refuses_from_both_and_names_the_file(written,
+                                                                            tmp_path):
+    """The agreement has to run the other way too: what the shared table refuses, each
+    half refuses -- and the selections loader keeps raising *its* `TypeError`, the one
+    that names the file, because a corrupt config is a file-level diagnosis. That is the
+    reason the gate stays in the loop instead of leaning on `__post_init__`; only its
+    parser moves."""
+    target = tmp_path / "settings.json"
+    for s_key, sel_key in _FLOAT_PAIRS:
+        target.write_text(json.dumps({s_key: written,
+                                      "selections": {sel_key: written}}), encoding="utf-8")
+        with pytest.raises((TypeError, ValueError)):
+            settings_module.load(target)
+        with pytest.raises(TypeError) as sel_exc:
+            selections.load(target)
+        message = str(sel_exc.value)
+        assert str(target) in message, message
+        assert sel_key in message, message
+
+
+def test_the_selections_gate_still_refuses_a_bool_for_a_scale(tmp_path):
+    """`_coerce`'s float branch refuses a bool (`a bool is not a scale`), so routing the
+    loader through it cannot let `True` reach a scale as `1.0` -- the very confusion
+    `test_a_wrongly_typed_selection_raises_instead_of_silently_passing` pins from the
+    other side."""
+    target = tmp_path / "settings.json"
+    target.write_text(json.dumps({"selections": {"vr_voc_inst_secondary_model_scale":
+                                   True}}), encoding="utf-8")
+    with pytest.raises(TypeError, match="vr_voc_inst_secondary_model_scale"):
+        selections.load(target)
