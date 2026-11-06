@@ -23,6 +23,7 @@ import catalog
 import fluentqt
 import selections as selections_module
 import settings as settings_module
+import ui_prefs
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout
 
@@ -110,13 +111,23 @@ class WorkPage(fluentqt.Card):
     run_requested = Signal()
     cancel_requested = Signal()
     settings_requested = Signal()
+    #: The default output folder, asked for as text. A signal and not a `save()` call
+    #: here because the page is not the thing that owns the settings file: the composition
+    #: root writes it, reloads it, and hands the page back what the disk actually says --
+    #: so a `settings.json` that refused to be written cannot leave this checkbox showing
+    #: a default that was never stored. See `Controller._on_default_output_requested`.
+    default_output_requested = Signal(str)
 
-    def __init__(self, *, cat: catalog.Catalog, settings_obj, selections_obj, parent=None):
+    def __init__(self, *, cat: catalog.Catalog, settings_obj, selections_obj,
+                 ui_obj: ui_prefs.UiPrefs | None = None, parent=None):
         super().__init__(parent)
         self.catalog = cat
         self.settings = settings_obj if settings_obj is not None else settings_module.load()
         self.selections = (selections_obj if selections_obj is not None
                            else selections_module.load())
+        # `ui_prefs.load()` rather than a default-constructed `UiPrefs()`: the whole point
+        # of the block is that a user's configured folder is there when the window opens.
+        self.ui = ui_obj if ui_obj is not None else ui_prefs.load()
         self.job = job.Job()
         self._build()
         self.refresh_models()
@@ -185,6 +196,21 @@ class WorkPage(fluentqt.Card):
         out_row.addWidget(self.output_edit)
         out_row.addWidget(self.browse_output)
         form.addLayout(out_row)
+
+        # The default output folder, in the place a user is looking at when they want it.
+        # `CheckBox` and not `ToggleSwitch`: measured on the pinned wheel the switch has
+        # `setIsOn` and `toggled` but no `setText`, no `setChecked` and no `isChecked`, so
+        # its state cannot be read back and its label cannot be set from a persisted
+        # value -- a toggle that cannot be told what it currently is would have to be
+        # shown as *something*, and the something would be a guess.
+        self.default_output_check = fluentqt.CheckBox("Use this as my default output folder",
+                                                      self)
+        self.default_output_check.setChecked(bool(self.ui.export_path))
+        self.default_output_check.toggled.connect(self._on_default_output_toggled)
+        form.addWidget(self.default_output_check)
+        self.default_output_label = fluentqt.Label("", self)
+        form.addWidget(self.default_output_label)
+        self.refresh_default_output()
 
         # M1. This Expander was Task 5's placeholder -- "no content until Task 6" -- and
         # Task 6 put the fields on the settings page without removing it, so the primary
@@ -364,6 +390,35 @@ class WorkPage(fluentqt.Card):
         """
         self.compute_label.setText("\n".join(translate_compute_line(ln) for ln in lines))
 
+    def set_default_output(self, value: str) -> None:
+        """Publish what the file actually says.
+
+        Called by the root after a successful write *and* after a refused one, which is
+        what makes the checkbox honest: it shows the stored default, never the last click.
+        `blockSignals` around the state change because setting the check from the file is
+        not a user action -- re-emitting here would ask the root to write the value it just
+        read back, and a signal loop that terminates only because the value happens to be
+        equal is not a design.
+        """
+        self.ui = ui_prefs.UiPrefs(export_path=value)
+        self.default_output_check.blockSignals(True)
+        self.default_output_check.setChecked(bool(value))
+        self.default_output_check.blockSignals(False)
+        self.refresh_default_output()
+
+    def refresh_default_output(self) -> None:
+        """Say where an empty Output box would send the stems.
+
+        The box's own text is the override and this line is the fallback, so the two
+        together are the whole answer; neither one of them alone is, which is why this is
+        a visible label and not a placeholder (a placeholder disappears the moment the
+        field is focused, and the moment of focusing it is exactly when the user is
+        deciding).
+        """
+        self.default_output_label.setText(
+            f"default output: {self.ui.export_path}" if self.ui.export_path
+            else "default output: UVR_out beside each input file")
+
     def show_cancelled(self, text: str) -> None:      # used by the tier-3 dismissal
         self.set_busy(False)
         self.console.appendPlainText(text)
@@ -387,6 +442,25 @@ class WorkPage(fluentqt.Card):
             self, self.output_edit.text() or str(Path.home()))
         if chosen:
             self.output_edit.setText(str(Path(chosen)))
+
+    def _on_default_output_toggled(self, checked: bool) -> None:
+        """Ask the root to persist it. A widget does not write a settings file.
+
+        Empty text with the box ticked is the one combination that would otherwise store a
+        default meaning "the working directory", because `Path("")` is a relative path that
+        exists -- so it is refused here, on the way out, rather than reaching the file and
+        then the engine's `mkdir`.
+        """
+        text = self.output_edit.text().strip()
+        if checked and not text:
+            # Restored from the stored value rather than from the click: the file is the
+            # only thing that knows what the default is.
+            self.set_default_output(self.ui.export_path)
+            self.console.appendPlainText(
+                "default output not set: the Output directory box is empty -- choose a "
+                "folder first, then tick the box")
+            return
+        self.default_output_requested.emit(text if checked else "")
 
     def _on_line(self, text: str) -> None:
         self.console.appendPlainText(text)

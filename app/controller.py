@@ -25,6 +25,7 @@ import plan
 import separate_cli
 import selections as selections_module
 import settings as settings_module
+import ui_prefs as ui_prefs_module
 from PySide6.QtWidgets import QDialog, QVBoxLayout
 
 from app import dialogs, job, session, settings_page, work_page
@@ -91,15 +92,22 @@ class Controller:
     """
 
     def __init__(self, *, cat: catalog.Catalog | None = None,
-                 st=None, selections=None):
+                 st=None, selections=None, ui_obj=None):
         self.catalog = cat if cat is not None else separate_cli.make_catalog()
         self.settings = st if st is not None else settings_module.load()
         self.selections = (selections if selections is not None
                            else selections_module.load())
+        self.ui_prefs = ui_obj if ui_obj is not None else ui_prefs_module.load()
         self.work_page = work_page.WorkPage(cat=self.catalog, settings_obj=self.settings,
-                                             selections_obj=self.selections)
+                                             selections_obj=self.selections,
+                                             ui_obj=self.ui_prefs)
         self.work_page.run_requested.connect(self._on_run)
         self.work_page.cancel_requested.connect(self.work_page.job.request_cancel)
+        # The default output folder is the one setting the *work page* owns, and it comes
+        # through this root for the same reason the other two objects do: this is the place
+        # that knows where the settings file is and what a refused write means.
+        self.work_page.default_output_requested.connect(
+            self._on_default_output_requested)
         # The settings dialog, kept so it is not collected while it is on screen. One at a
         # time: a second click re-raises the dialog it already opened rather than stacking
         # another copy of 83 fields over the first.
@@ -132,11 +140,12 @@ class Controller:
             self._refuse(f"not started: input audio not found: {audio}")
             return
 
-        # Empty output means the default beside the input file -- `session`'s, the one
-        # the CLI uses too. The two front ends choosing different places for the same run
-        # is the bug, and a second spelling of the path *was* the divergence.
-        raw_output = page.output_edit.text().strip()
-        export = Path(raw_output) if raw_output else session.default_export_path(audio)
+        # Where the stems go is one decision with three possible owners, and it lives in
+        # `export_for` so this slot cannot disagree with the label that promises the
+        # default. The third tier is `session.default_export_path` -- `UVR_out` beside the
+        # input, the rule the CLI uses with no flag -- and the two front ends choosing
+        # different places for the same run is the bug Plan 2's wave 1 named.
+        export = self.export_for(audio)
 
         try:
             sess = session.assemble(st=self.settings, cat=self.catalog, model=model,
@@ -170,6 +179,52 @@ class Controller:
         page.show_compute(sess.compute_lines)
         page.set_busy(True)
         page.job.start(job.JobRequest(session=sess, audio=audio, export_path=export))
+
+    def export_for(self, audio: Path) -> Path:
+        """Where this file's stems go, in the three places that can decide it.
+
+        Typed path > `ui.export_path` (the GUI's configured default) > `UVR_out` beside
+        the input. The last tier is `session.default_export_path` and is what the CLI does
+        with no flag; the middle one is deliberately absent there -- a folder the user
+        ticked a box over must not silently move a scripted CLI run's output, which is why
+        the override is resolved in this composition root and not inside `session`, the one
+        assembly path the two front ends share.
+        """
+        typed = self.work_page.output_edit.text().strip()
+        if typed:
+            return Path(typed)
+        if self.ui_prefs.export_path:
+            return Path(self.ui_prefs.export_path)
+        return session.default_export_path(audio)
+
+    def _on_default_output_requested(self, value: str) -> None:
+        """Persist the page's toggle, then hand it back what the disk says.
+
+        The order is the point: the page is only allowed to show a default that is
+        actually stored. A `settings.json` open in an editor is the everyday Windows case
+        -- `SettingsPage.apply` already documents that failure for the settings half -- so
+        the checkbox is reverted to the old value and the reason is printed, rather than
+        remembering a folder the next launch will not know about.
+
+        `UiPrefs(export_path=value)` rather than a fresh `load()`: the write just succeeded,
+        so this *is* the file's content, and re-reading it would make every test that
+        redirects `APPDATA` depend on which config file happened to be reachable.
+        """
+        page = self.work_page
+        try:
+            ui_prefs_module.save(ui_prefs_module.UiPrefs(export_path=value),
+                                 settings_module.config_file())
+        except (OSError, TypeError, ValueError) as exc:
+            page.set_default_output(self.ui_prefs.export_path)
+            page.console.appendPlainText(
+                f"default output not saved: {type(exc).__name__}: {exc} -- the default "
+                f"stays {self.ui_prefs.export_path or 'UVR_out beside each input'}")
+            return
+        self.ui_prefs = ui_prefs_module.UiPrefs(export_path=value)
+        page.set_default_output(value)
+        page.console.appendPlainText(
+            f"default output folder {'set to ' + value if value else 'cleared'} -- "
+            f"written to {settings_module.config_file()}")
 
     def _refuse(self, text: str) -> None:
         """Say why nothing was started. No dialog, no traceback, no fake progress.

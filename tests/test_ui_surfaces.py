@@ -149,6 +149,11 @@ DECORATIVE_UI_CLASSES = frozenset({
     "MultiSelectComboBox", "PasswordBox", "ProgressRing", "RadioButton",
     "SelectorBar", "SelectorBarItem", "Slider", "TabView", "TabViewItem",
     "ToggleButton", "ToggleSwitch", "ToolTip",
+    # `CheckBox` left this set in Plan 3 Task 1, where `app/work_page.py` started using it
+    # for the default-output-folder toggle -- and it left it for the reason this list
+    # exists: the binding's `ToggleSwitch` has `setIsOn`/`toggled` and *no* `setText`,
+    # `setChecked` or `isChecked` (measured on the pinned wheel), so a switch cannot be
+    # initialised from a stored value, which is precisely what that toggle has to do.
 })
 
 

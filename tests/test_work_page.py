@@ -1264,3 +1264,122 @@ def test_build_app_publishes_both_before_anything_is_shown(qapp, monkeypatch,
         assert fluentqt.current_theme() in (fluentqt.Theme.Light, fluentqt.Theme.Dark)
     finally:
         window.controller.request_close(5_000)
+
+
+# -------------------------------------------------------------------------------------- #
+# Plan 3 Task 1: the configurable default output folder (`ui` block).
+
+
+def _ui_ctrl(qapp, tmp_path, monkeypatch, *, ui_obj=None):
+    """A controller whose only configured front-end state is the one this test is about.
+
+    `backends.resolve` is patched the way every other controller test here patches it, and
+    `ui_obj` is passed explicitly so no test in this group reads or writes whatever
+    `settings.json` the session fixture happens to be pointing at.
+    """
+    import separate_cli
+    import ui_prefs
+
+    monkeypatch.setattr(backends, "resolve", lambda force=None: _cpu_backend())
+    cat = separate_cli.make_catalog(tmp_path / "nope", tmp_path / "w")
+    return controller.Controller(cat=cat, st=settings_module.Settings(),
+                                 selections=selections_module.Selections(),
+                                 ui_obj=ui_obj if ui_obj is not None
+                                 else ui_prefs.UiPrefs())
+
+
+def test_the_checkbox_shows_the_stored_default_not_a_guess(qapp, tmp_path, monkeypatch):
+    """Two-sided, per this suite's rule for prohibitions: the box is checked *because* the
+    file says so, and the line under it names the folder an empty Output box would fall
+    back to. A checkbox that only remembered clicks would un-check itself on relaunch,
+    which is the same forgetfulness the block exists to end."""
+    import ui_prefs
+
+    ctrl = _ui_ctrl(qapp, tmp_path, monkeypatch,
+                    ui_obj=ui_prefs.UiPrefs(export_path="E:/music/out"))
+    page = ctrl.work_page
+    assert page.default_output_check.isChecked() is True
+    assert page.default_output_label.text() == "default output: E:/music/out"
+
+    plain = _ui_ctrl(qapp, tmp_path, monkeypatch)
+    assert plain.work_page.default_output_check.isChecked() is False
+    assert plain.work_page.default_output_label.text() == (
+        "default output: UVR_out beside each input file")
+
+
+def test_export_for_answers_its_three_tiers_in_order(qapp, tmp_path, monkeypatch):
+    """Typed box > configured default > beside the input. The third tier is the CLI's rule
+    and stays reachable, because a configured GUI default must not be the only answer --
+    `separate_cli` never imports this block (`tests/test_ui_prefs.py` pins the no-Qt
+    import) and both front ends still have to agree when nobody configured anything."""
+    import ui_prefs
+
+    audio = tmp_path / "in" / "song.wav"
+    audio.parent.mkdir()
+    audio.write_bytes(b"x")
+    ctrl = _ui_ctrl(qapp, tmp_path, monkeypatch)
+    page = ctrl.work_page
+
+    page.output_edit.setText(str(tmp_path / "typed"))
+    assert ctrl.export_for(audio) == tmp_path / "typed"
+
+    page.output_edit.setText("")
+    assert ctrl.export_for(audio) == session.default_export_path(audio)
+    assert ctrl.export_for(audio).name == "UVR_out"
+
+    ctrl.ui_prefs = ui_prefs.UiPrefs(export_path=str(tmp_path / "configured"))
+    assert ctrl.export_for(audio) == tmp_path / "configured"
+    # The typed box still outranks the configured folder: a user who wrote a path in front
+    # of themselves changed it on purpose, for this run.
+    page.output_edit.setText(str(tmp_path / "typed"))
+    assert ctrl.export_for(audio) == tmp_path / "typed"
+
+
+def test_ticking_the_box_asks_the_root_for_the_typed_folder(qapp, tmp_path, monkeypatch):
+    """The page emits and does not write. Asserting the emission, not the file, is what
+    keeps the split testable: `Controller` owns the settings file, the page owns the
+    widgets, and a page that saved behind the root's back would leave `ctrl.ui_prefs`
+    showing a default the disk no longer matches."""
+    ctrl = _ui_ctrl(qapp, tmp_path, monkeypatch)
+    page = ctrl.work_page
+    page.output_edit.setText(str(tmp_path / "chosen"))
+    asked: list[str] = []
+    page.default_output_requested.connect(asked.append)
+    page.default_output_check.setChecked(True)
+    assert asked == [str(tmp_path / "chosen")]
+    page.default_output_check.setChecked(False)
+    assert asked == [str(tmp_path / "chosen"), ""]
+
+
+def test_an_empty_output_box_cannot_be_made_the_default(qapp, tmp_path, monkeypatch):
+    """`Path("")` is a real, existing, *relative* path -- the working directory -- so an
+    empty box ticked would store a default that sends stems into wherever the app happened
+    to be launched from, and then `mkdir` it. Refused here, on the way out of the widget,
+    and the box is restored from the file rather than from the click."""
+    ctrl = _ui_ctrl(qapp, tmp_path, monkeypatch)
+    page = ctrl.work_page
+    page.output_edit.setText("   ")
+    page.default_output_check.setChecked(True)
+    assert page.default_output_check.isChecked() is False
+    assert ctrl.ui_prefs.export_path == ""
+    assert "the Output directory box is empty" in page.console.toPlainText()
+
+
+def test_a_refused_write_reverts_the_checkbox_and_names_the_file(qapp, tmp_path, monkeypatch):
+    """A `settings.json` open in an editor is the everyday Windows case and
+    `SettingsPage.apply` already documents it for the settings half. Here the same failure
+    has one more thing at stake: the checkbox would otherwise keep showing a folder that
+    was never stored, and the next launch would not know it."""
+    import ui_prefs
+
+    ctrl = _ui_ctrl(qapp, tmp_path, monkeypatch,
+                    ui_obj=ui_prefs.UiPrefs(export_path="E:/kept"))
+    monkeypatch.setattr(ui_prefs, "save", lambda *a, **k: (_ for _ in ()).throw(
+        PermissionError(13, "denied")))
+    page = ctrl.work_page
+    page.output_edit.setText("E:/never-stored")
+    page.default_output_check.setChecked(False)         # the untick is the refused write
+    assert page.default_output_check.isChecked() is True    # the stored default survives
+    assert ctrl.ui_prefs.export_path == "E:/kept"
+    text = page.console.toPlainText()
+    assert "default output not saved" in text and "PermissionError" in text
