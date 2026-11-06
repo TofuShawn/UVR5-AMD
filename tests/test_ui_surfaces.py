@@ -111,6 +111,11 @@ UI_MODULE_FUNCTIONS = frozenset({
     "initialize_resources", "prepare_high_dpi_application", "set_theme",
     "set_widget_theme_overrides", "motion_policy", "set_motion_mode",
     "binding_build_info", "Theme", "ButtonStyle",
+    # Wave 2 item 0: `app/main.py` reads the machine's animation switch and publishes
+    # it through `set_motion_mode(fluentqt.MotionMode.Full|Disabled)` before any widget
+    # exists (spec §5.3 reduce-motion). `MotionMode` is the enum both verbs speak; the
+    # honest fix is to review it here, not to drop the wiring or cast the enum to an int.
+    "MotionMode",
 })
 
 
