@@ -28,9 +28,13 @@ import selections as selections_module
 import settings as settings_module
 import ui_prefs
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout
+# `QButtonGroup` is a QObject, not a widget: the surface census walks widgets, so it never
+# sees this, and `BARE_QT_CONSTRUCTIBLES` (QWidget/QDialog/QFrame) does not cover it. It is
+# here because the format radios need an exclusivity guarantee the binding's parent-based
+# auto-exclusive behaviour does not provide -- see the comment at their construction.
+from PySide6.QtWidgets import QButtonGroup, QHBoxLayout, QVBoxLayout
 
-from app import dialogs, job, settings_page
+from app import dialogs, job, session, settings_page
 
 #: The page's own terminal vocabulary. These are the titles the terminal handlers speak
 #: to `_notify` with, and the seam the suite spies on: `Stopped` *is* the cancel surface
@@ -134,6 +138,12 @@ class WorkPage(fluentqt.Card):
     #: so a `settings.json` that refused to be written cannot leave this checkbox showing
     #: a default that was never stored. See `Controller._on_default_output_requested`.
     default_output_requested = Signal(str)
+    #: The two `Settings` fields that moved onto this page, asked for as the values they
+    #: are. Neither is written by the widget that shows it: the root applies it to the
+    #: frozen `Settings`, saves it, and hands the control back the truth on a refusal --
+    #: the same seam `default_output_requested` documents above, and for the same reason.
+    format_requested = Signal(str)
+    gpu_requested = Signal(bool)
 
     def __init__(self, *, cat: catalog.Catalog, settings_obj, selections_obj,
                  ui_obj: ui_prefs.UiPrefs | None = None, parent=None):
@@ -164,15 +174,119 @@ class WorkPage(fluentqt.Card):
     # -- construction ---------------------------------------------------------- #
 
     def _build(self) -> None:
+        """Two labelled segments in a scroll body, over an action row that never scrolls.
+
+        The order is construction-then-attachment throughout, because `refresh_queue()` at
+        the end reads every widget in both groups and `set_busy` reads two of them: a
+        control added before it exists is an `AttributeError` inside a constructor, which
+        the suite would report as forty failures and a launched app would report as a
+        window that never appears.
+        """
         root = QVBoxLayout(self)
         root.setContentsMargins(16, 16, 16, 16)
 
+        # The two machine-derived lines stay outside the scroll body: they are the answer
+        # to "what is this run computing on", and an answer you have to scroll up for is
+        # an answer that is not being read.
         self.device_label = fluentqt.Label("", self)
         self.compute_label = fluentqt.Label("", self)
         root.addWidget(self.device_label)
         root.addWidget(self.compute_label)
 
-        self.arch_bar = fluentqt.Pivot(self)
+        # Ruling: one screen is not the goal. The fork's earlier constraint -- "everything
+        # on one page" -- is what compressed forty fields into a dialog nobody opened, and
+        # the user lifted it out loud ("還有，說實話，沒必要執著在於一屏"). What replaces it
+        # is two labelled segments that say which half is for what.
+        #
+        # And no `ScrollView`, which is a measured result rather than a preference. The
+        # first cut of this layout scrolled the two segments through one, and the suite
+        # then segfaulted at interpreter exit -- 739 passed, rc 139, inside
+        # `QWidget::destroy` under `destroyQCoreApplication`. Probed on the pinned wheel:
+        # two pages built and collected crash with a `ScrollView`, eight exit clean when the
+        # same scroll view is replaced by a plain `Card` holding the same body, and neither
+        # the `QButtonGroup`, the radios, nor `setWidgetResizable` changes the outcome. The
+        # binding transfers ownership of the content widget in `setContentWidget`, so a
+        # page built per test is a scroll area whose teardown Qt and Shiboken both try to
+        # perform. `settings_page` keeps its one scroll area inside a dialog and pays
+        # nothing, because the suite builds it rarely.
+        #
+        # What makes skipping it honest is the number: the page's own `sizeHint()` is
+        # 563 px at 900 wide with every queue and the console showing and the parameters
+        # collapsed, against the 900x1100 window `app/main.py` asks for. There is nothing
+        # to reach for. If a future control pushes that past the window, the fix is a
+        # scroll area at the *window* level -- one per process, owned by the chrome, not
+        # one per page -- and `test_no_scroll_view_is_built_by_the_page` is where that
+        # trade is written down rather than rediscovered.
+        # One layout for the whole page: `QVBoxLayout` twice on the same widget is a Qt
+        # warning and a second layout that never gets installed, so `form` is an alias,
+        # not a new object -- the segments and the chrome below are siblings in `root`.
+        # `body` is the page itself: every control in both groups is parented to it, which
+        # is what the `body` name is for, and it stays readable if a container is ever
+        # introduced at the window level rather than here.
+        body = self
+        form = root
+
+        # -- segment 1: what to process --------------------------------------- #
+        self.segment_one = fluentqt.Label("1 · What to process", body)
+        form.addWidget(self.segment_one)
+
+        form.addWidget(fluentqt.Label("Input file", body))
+        path_row = QHBoxLayout()
+        self.input_edit = fluentqt.LineEdit(body)
+        self.browse_input = fluentqt.Button("Browse", body)
+        self.browse_input.clicked.connect(self._pick_input)
+        path_row.addWidget(self.input_edit)
+        path_row.addWidget(self.browse_input)
+        form.addLayout(path_row)
+
+        # Batch mode, in the shape official UVR 5.6 has it: a queue you can see. The list
+        # below is that queue *rendered*, never a second source of it -- `pending_files()`
+        # is the only reader, and both START and the reason label go through it, which is
+        # what keeps "what is queued" and "what will run" from being two facts.
+        batch_row = QHBoxLayout()
+        self.add_files_button = fluentqt.Button("Add files…", body)
+        self.add_folder_button = fluentqt.Button("Add folder…", body)
+        self.clear_files_button = fluentqt.Button("Clear list", body)
+        self.add_files_button.clicked.connect(self._pick_more_inputs)
+        self.add_folder_button.clicked.connect(self._pick_input_folder)
+        self.clear_files_button.clicked.connect(lambda: self.add_extra_files([]))
+        batch_row.addWidget(self.add_files_button)
+        batch_row.addWidget(self.add_folder_button)
+        batch_row.addWidget(self.clear_files_button)
+        form.addLayout(batch_row)
+        self.file_list = fluentqt.TextEdit(body)
+        self.file_list.setReadOnly(True)
+        self.file_list.setMaxVisibleLines(6)
+        form.addWidget(self.file_list)
+
+        form.addWidget(fluentqt.Label("Output directory", body))
+        out_row = QHBoxLayout()
+        self.output_edit = fluentqt.LineEdit(body)
+        self.browse_output = fluentqt.Button("Browse", body)
+        self.browse_output.clicked.connect(self._pick_output)
+        out_row.addWidget(self.output_edit)
+        out_row.addWidget(self.browse_output)
+        form.addLayout(out_row)
+
+        # The default output folder, in the place a user is looking at when they want it.
+        # `CheckBox` and not `ToggleSwitch`: measured on the pinned wheel the switch has
+        # `setIsOn` and `toggled` but no `setText`, no `setChecked` and no `isChecked`, so
+        # its state cannot be read back and its label cannot be set from a persisted
+        # value -- a toggle that cannot be told what it currently is would have to be
+        # shown as *something*, and the something would be a guess.
+        self.default_output_check = fluentqt.CheckBox("Use this as my default output folder",
+                                                      body)
+        self.default_output_check.setChecked(bool(self.ui.export_path))
+        self.default_output_check.toggled.connect(self._on_default_output_toggled)
+        form.addWidget(self.default_output_check)
+        self.default_output_label = fluentqt.Label("", body)
+        form.addWidget(self.default_output_label)
+
+        # -- segment 2: how to separate --------------------------------------- #
+        self.segment_two = fluentqt.Label("2 · How to separate", body)
+        form.addWidget(self.segment_two)
+
+        self.arch_bar = fluentqt.Pivot(body)
         self._arch_names = self._archs()
         for arch in self._arch_names:
             self.arch_bar.addItem(fluentqt.PivotItem(arch))   # header-only form:
@@ -199,72 +313,53 @@ class WorkPage(fluentqt.Card):
         self.arch_bar.setMinimumWidth(self.arch_bar.sizeHint().width())
         self.arch_bar.currentChanged.connect(self._on_arch_changed)
         self.arch_bar.setSelectedIndex(0)
-        root.addWidget(self.arch_bar)
+        form.addWidget(self.arch_bar)
 
-        form = QVBoxLayout()
-        root.addLayout(form)
-        form.addWidget(fluentqt.Label("Model", self))
-        self.model_combo = fluentqt.ComboBox(self)
+        form.addWidget(fluentqt.Label("Model", body))
+        self.model_combo = fluentqt.ComboBox(body)
         form.addWidget(self.model_combo)
 
-        form.addWidget(fluentqt.Label("Input file", self))
-        path_row = QHBoxLayout()
-        self.input_edit = fluentqt.LineEdit(self)
-        self.browse_input = fluentqt.Button("Browse", self)
-        self.browse_input.clicked.connect(self._pick_input)
-        path_row.addWidget(self.input_edit)
-        path_row.addWidget(self.browse_input)
-        form.addLayout(path_row)
+        # The output format, where the user is choosing output. `save_format` was a free
+        # text box until Plan 2's wave 1 made it a combo on the settings page, and C1 is
+        # the record of what the free-text version did: a value the engine has no branch
+        # for converts nothing and deletes the wav anyway (`session.check_save_format`'s
+        # docstring). Three radios cannot express that value, so it cannot be reached from
+        # here -- and the set is `session.SAVE_FORMATS`, the same tuple the engine-side
+        # gate refuses anything outside of. One list, two guards.
+        self.format_radios: dict[str, fluentqt.RadioButton] = {}
+        # `QButtonGroup` rather than Qt's auto-exclusive-by-parent: the requirement is
+        # "one format is checked", and a Fluent child widget's parent behaviour inside a
+        # nested layout is not something this suite can promise. It is a `QObject`, not a
+        # widget, so the surface census never sees it and `BARE_QT_CONSTRUCTIBLES`
+        # (QWidget/QDialog/QFrame) does not cover it.
+        format_group = QButtonGroup(self)
+        format_group.setExclusive(True)
+        format_row = QHBoxLayout()
+        form.addWidget(fluentqt.Label("Output format", body))
+        for fmt in session.SAVE_FORMATS:
+            radio = fluentqt.RadioButton(fmt, body)
+            # Blocked, then wired: `setChecked` on the initialising radio would otherwise
+            # emit through a slot that writes `settings.json`, so opening the window would
+            # report a change nobody made -- `test_building_the_page_writes_nothing_to_disk`.
+            radio.blockSignals(True)
+            radio.setChecked(fmt == self.settings.save_format)
+            radio.blockSignals(False)
+            radio.toggled.connect(lambda on, f=fmt: on and self.format_requested.emit(f))
+            format_group.addButton(radio)
+            self.format_radios[fmt] = radio
+            format_row.addWidget(radio)
+        form.addLayout(format_row)
 
-        # Batch mode, in the shape official UVR 5.6 has it: a queue you can see. The list
-        # below is that queue *rendered*, never a second source of it -- `pending_files()`
-        # is the only reader, and both START and the reason label go through it, which is
-        # what keeps "what is queued" and "what will run" from being two facts.
-        batch_row = QHBoxLayout()
-        self.add_files_button = fluentqt.Button("Add files…", self)
-        self.add_folder_button = fluentqt.Button("Add folder…", self)
-        self.clear_files_button = fluentqt.Button("Clear list", self)
-        self.add_files_button.clicked.connect(self._pick_more_inputs)
-        self.add_folder_button.clicked.connect(self._pick_input_folder)
-        self.clear_files_button.clicked.connect(lambda: self.add_extra_files([]))
-        batch_row.addWidget(self.add_files_button)
-        batch_row.addWidget(self.add_folder_button)
-        batch_row.addWidget(self.clear_files_button)
-        form.addLayout(batch_row)
-        self.file_list = fluentqt.TextEdit(self)
-        self.file_list.setReadOnly(True)
-        self.file_list.setMaxVisibleLines(6)
-        form.addWidget(self.file_list)
-        self.count_label = fluentqt.Label("", self)
-        form.addWidget(self.count_label)
-        # Built here because `refresh_queue()` is its only writer and this task is what
-        # teaches the page to refresh a queue; Task 3 only decides where it sits.
-        self.reason_label = fluentqt.Label("", self)
-        form.addWidget(self.reason_label)
-
-        form.addWidget(fluentqt.Label("Output directory", self))
-        out_row = QHBoxLayout()
-        self.output_edit = fluentqt.LineEdit(self)
-        self.browse_output = fluentqt.Button("Browse", self)
-        self.browse_output.clicked.connect(self._pick_output)
-        out_row.addWidget(self.output_edit)
-        out_row.addWidget(self.browse_output)
-        form.addLayout(out_row)
-
-        # The default output folder, in the place a user is looking at when they want it.
-        # `CheckBox` and not `ToggleSwitch`: measured on the pinned wheel the switch has
-        # `setIsOn` and `toggled` but no `setText`, no `setChecked` and no `isChecked`, so
-        # its state cannot be read back and its label cannot be set from a persisted
-        # value -- a toggle that cannot be told what it currently is would have to be
-        # shown as *something*, and the something would be a guess.
-        self.default_output_check = fluentqt.CheckBox("Use this as my default output folder",
-                                                      self)
-        self.default_output_check.setChecked(bool(self.ui.export_path))
-        self.default_output_check.toggled.connect(self._on_default_output_toggled)
-        form.addWidget(self.default_output_check)
-        self.default_output_label = fluentqt.Label("", self)
-        form.addWidget(self.default_output_label)
-        self.refresh_default_output()
+        # The device switch, same argument as the format: it is one bool of the plan input
+        # that nothing else in the GUI can reach, because the GUI passes
+        # `force_device=None` and `effective_settings`' override only fires with a flag
+        # (`separate_cli.py:284-286`). `CheckBox` for the measured `ToggleSwitch` hole.
+        self.gpu_check = fluentqt.CheckBox("Use GPU", body)
+        self.gpu_check.blockSignals(True)
+        self.gpu_check.setChecked(bool(self.settings.gpu_conversion))
+        self.gpu_check.blockSignals(False)
+        self.gpu_check.toggled.connect(self.gpu_requested.emit)
+        form.addWidget(self.gpu_check)
 
         # M1. This Expander was Task 5's placeholder -- "no content until Task 6" -- and
         # Task 6 put the fields on the settings page without removing it, so the primary
@@ -274,7 +369,7 @@ class WorkPage(fluentqt.Card):
         # goes where they are editable. One editable surface, no dead widget, and §10's
         # promise visibly honoured instead of duplicated. `string-first ctor raises`
         # (spec §5.2.1) and there is no `setTitle` on Expander, so the header is set after.
-        self.params = fluentqt.Expander(self)
+        self.params = fluentqt.Expander(body)
         self.params.setHeaderText("Model parameters")
         self.params.setAnimationEnabled(False)
         self.params_host = fluentqt.Card()                # a widget, never a bare QWidget
@@ -287,16 +382,19 @@ class WorkPage(fluentqt.Card):
         self.params.setContentWidget(self.params_host)
         form.addWidget(self.params)
 
-        buttons = QHBoxLayout()
-        self.start_button = fluentqt.Button("START", self)
+        # The action row is a sibling of everything above and not a widget that can be
+        # scrolled away: what you press, what tells you whether you may press it, the
+        # progress of the run and the engine's own text are all always on screen. A
+        # `Card` and not a `QWidget`, for the same reason the page is one (§5.3).
+        self.action_row_host = fluentqt.Card(self)
+        buttons = QHBoxLayout(self.action_row_host)
+        self.start_button = fluentqt.Button("START", self.action_row_host)
         self.start_button.setFluentStyle(fluentqt.Button.Accent)
-        self.stop_button = fluentqt.Button("STOP", self)
-        self.stop_button.setEnabled(False)
-        # START asks the controller for one run of one file; the percentage this page
-        # then shows is that file's (`run_job` never sees a file index -- module
-        # docstring). STOP only *asks*: cancellation is cooperative at the engine's own
-        # batch granularity (`separate.py:1383`), and the busy state releases when the
-        # terminal arrives, not when the button is pressed.
+        self.stop_button = fluentqt.Button("STOP", self.action_row_host)
+        # START asks the controller for one run of the queue; the percentage this page
+        # then shows is the queue's (`_on_progress`). STOP only *asks*: cancellation is
+        # cooperative at the engine's own batch granularity (`separate.py:1383`), and the
+        # busy state releases when the run ends, not when the button is pressed.
         self.start_button.clicked.connect(self.run_requested.emit)
         self.stop_button.clicked.connect(self.cancel_requested.emit)
         buttons.addWidget(self.start_button)
@@ -304,11 +402,33 @@ class WorkPage(fluentqt.Card):
         # The one entry to the settings page. It asks the controller for the dialog and
         # does nothing else: the page itself (`app/settings_page.py`) owns the fields, and
         # this page keeps no copy of them -- `Controller` hands it the same two objects it
-        # hands `session.assemble()`.
-        self.settings_button = fluentqt.Button("Settings", self)
+        # hands `session.assemble()`. The format, GPU and output-folder choices now live on
+        # the page above, so the dialog is for the rest.
+        self.settings_button = fluentqt.Button("Settings", self.action_row_host)
         self.settings_button.clicked.connect(self.settings_requested.emit)
         buttons.addWidget(self.settings_button)
-        root.addLayout(buttons)
+        # The disabled-START explanation, beside the button it explains -- and enabled
+        # always, because the *reason* has to be readable and a label you cannot select is
+        # no help when filing a bug report about it.
+        self.reason_label = fluentqt.Label("", self.action_row_host)
+        self.reason_label.setWordWrap(True)
+        buttons.addWidget(self.reason_label, 1)
+        root.addWidget(self.action_row_host)
+
+        self.count_label = fluentqt.Label("", self)
+        root.addWidget(self.count_label)
+
+        self.progress = fluentqt.ProgressBar(self)
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        root.addWidget(self.progress)
+
+        # One line that repeats what the widgets already say, so the answer to "what am I
+        # about to do" does not require reading six controls -- derived, never cached:
+        # see `truth_summary`.
+        self.summary_label = fluentqt.Label("", self)
+        self.summary_label.setWordWrap(True)
+        root.addWidget(self.summary_label)
 
         # Ruling R-T7-infobar. The band is a *layout*, not a widget: a plain QWidget here
         # would keep the native palette (spec §5.3) and the surface census would rightly
@@ -319,12 +439,7 @@ class WorkPage(fluentqt.Card):
         # `app/dialogs.py`'s queue puts at most one bar in it at a time.
         self.notification_band = QVBoxLayout()
         self.notification_band.setContentsMargins(0, 0, 0, 0)
-        root.addLayout(self.notification_band)      # between the buttons and the bar
-        self.progress = fluentqt.ProgressBar(self)
-        self.progress.setRange(0, 100)
-        self.progress.setValue(0)
-        root.addWidget(self.progress)
-
+        root.addLayout(self.notification_band)      # between the summary and the bar
         self.console = fluentqt.TextEdit(self)
         self.console.setReadOnly(True)
         self.console.setMaxVisibleLines(8)
@@ -343,8 +458,11 @@ class WorkPage(fluentqt.Card):
         # because `textChanged` passes the new text and `refresh_queue` takes none.
         self.input_edit.textChanged.connect(lambda _text: self.refresh_queue())
         self.model_combo.currentTextChanged.connect(lambda _text: self.refresh_queue())
-        # Once here, and once at the end of every path that can move a number under it:
-        # the queue's own widgets are built above, the buttons below.
+        self.output_edit.textChanged.connect(lambda _text: self.refresh_queue())
+        self.refresh_default_output()
+        # Once here, at the end: every widget both groups need now exists, and this single
+        # call is what makes the queue, the reason, the count, the summary and START's
+        # enablement agree before the window has even been shown.
         self.refresh_queue()
 
     def _archs(self) -> list[str]:
@@ -374,6 +492,9 @@ class WorkPage(fluentqt.Card):
             self._on_warning(f"{notice.category.__name__}: {notice.message}")
         self.device_label.setText(device_summary(self._backend))
         self.compute_label.setText("")
+        # The first moment the summary can be honest, because it is the first moment the
+        # machine is known. `_build()`'s `refresh_queue()` deliberately skipped it.
+        self.refresh_summary()
 
     def is_cpu_fallback(self) -> bool:
         """True when the machine offers a GPU backend but ONNX Runtime only has the CPU
@@ -484,6 +605,7 @@ class WorkPage(fluentqt.Card):
         else:
             self.count_label.setText(f"{len(files)} file(s) queued")
         self.reason_label.setText("; ".join(blockers))
+        self.refresh_summary()
         self._publish_run_state()
 
     def refresh_models(self) -> None:
@@ -563,6 +685,65 @@ class WorkPage(fluentqt.Card):
         self.default_output_check.setChecked(bool(value))
         self.default_output_check.blockSignals(False)
         self.refresh_default_output()
+
+    def _checked_format(self) -> str:
+        """The format the radios actually hold, or `"?"`.
+
+        `"?"` is a real answer and not a fallback: `settings.save_format` is a free `str`
+        field in a file a user can hand-edit, so `"OGG"` loads, matches none of the three
+        radios, and a page that defaulted its display to WAV would be asserting a format
+        the engine-side gate (`session.check_save_format`) is about to refuse. Showing the
+        unknown value is what makes the refusal explicable.
+        """
+        return next((f for f, r in self.format_radios.items() if r.isChecked()), "?")
+
+    def truth_summary(self) -> str:
+        """One line that repeats, out of the live widgets, what this run will do.
+
+        Derived and never cached: every term reads a widget or the `Backend` this page
+        resolved, so no change can leave five terms still asserting the previous run. It is
+        the line a user skims before pressing START, and it is the line that would have
+        told whoever sent the first screenshot that the page was on `apollo` with nothing
+        installed for that arch -- the state that made the app read as broken rather than
+        as unconfigured.
+
+        It claims nothing the widgets do not already say, which is the property that keeps
+        a summary from becoming a second source of truth: no computed verdict, no
+        "expected time", nothing the engine has not been asked.
+        """
+        files = self.pending_files()
+        return " · ".join([
+            device_summary(self._backend), self.current_arch(), self.selected_model(),
+            f"{len(files)} file(s)" if files else "no input",
+            f"{self._checked_format()} output",
+            "GPU" if self.gpu_check.isChecked() else "CPU",
+        ])
+
+    def refresh_summary(self) -> None:
+        """Republish the strip -- which needs the machine, and so runs after `_sync_from_state`.
+
+        The `getattr` is the constructor's own ordering, not a state that cannot happen:
+        `_build()` refreshes the queue before `_sync_from_state()` has resolved a `Backend`,
+        and `is_cpu_fallback()` above reads the same attribute the same way for the same
+        reason. Silently skipping the first publish is right; a strip that claimed a device
+        the page had not yet asked the machine about would not be.
+        """
+        if getattr(self, "_backend", None) is None:
+            return
+        self.summary_label.setText(self.truth_summary())
+
+    def set_stem_format(self, fmt: str) -> None:
+        """Show the format the file actually holds. The revert path of a refused write."""
+        self.format_radios[fmt].blockSignals(True)
+        self.format_radios[fmt].setChecked(True)
+        self.format_radios[fmt].blockSignals(False)
+        self.refresh_summary()
+
+    def set_gpu(self, on: bool) -> None:
+        self.gpu_check.blockSignals(True)
+        self.gpu_check.setChecked(on)
+        self.gpu_check.blockSignals(False)
+        self.refresh_summary()
 
     def refresh_default_output(self) -> None:
         """Say where an empty Output box would send the stems.

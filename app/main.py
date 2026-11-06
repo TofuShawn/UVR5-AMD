@@ -173,7 +173,12 @@ def build_app(argv=None):
     window = AppWindow(ctrl)
     window.setWindowTitle("UVR5 AMD/ROCm")
     window.setContentWidget(ctrl.work_page)   # `setContentWidget` on Window is real;
-    window.resize(760, 900)                    # `Window.setContent` is not (measured).
+    window.resize(900, 1100)                    # `Window.setContent` is not (measured).
+    # 900x1100, not the 760x900 Plan 2 shipped with: the work page is two segments in a
+    # scroll body now, so the extra height is what makes the second one readable without
+    # the user discovering the scroll bar first. The page is not obliged to fit -- that
+    # constraint was lifted deliberately, and the scroll area is what makes lifting it
+    # honest rather than a clipped bottom row.
     return app, window
 
 

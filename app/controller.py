@@ -157,6 +157,11 @@ class Controller:
         # that knows where the settings file is and what a refused write means.
         self.work_page.default_output_requested.connect(
             self._on_default_output_requested)
+        # The two `Settings` fields that now live on the work page, on the same seam as
+        # the one above: the widget asks, this root writes, and a refusal reverts the
+        # widget rather than letting it keep showing what did not get stored.
+        self.work_page.format_requested.connect(self._on_format_requested)
+        self.work_page.gpu_requested.connect(self._on_gpu_requested)
         # The settings dialog, kept so it is not collected while it is on screen. One at a
         # time: a second click re-raises the dialog it already opened rather than stacking
         # another copy of 83 fields over the first.
@@ -352,6 +357,61 @@ class Controller:
         page.console.appendPlainText(
             f"default output folder {'set to ' + value if value else 'cleared'} -- "
             f"written to {settings_module.config_file()}")
+
+    def _apply_setting(self, republish, field: str, value) -> bool:
+        """One field at a time, into the frozen `Settings`, then onto the disk.
+
+        `dataclasses.replace` rather than a widget-side draft: the object the next
+        `session.assemble` reads is this one, so the change takes effect on the next run --
+        the same contract `save_settings` already advertises for the dialog
+        (`controller.py:271-273`), and the reason the page's parameter summary refreshes.
+
+        `republish` is the page's own un-emitting setter (`set_stem_format`, `set_gpu`) and
+        it is called on *both* outcomes, which is the whole of the widget's honesty: after
+        a success the control is re-set from the object that is now stored, and after a
+        refusal from the one that always was. A control that only got told the truth when
+        the write failed would be showing what the user clicked rather than what the file
+        says -- and in the gap between the click and the failure the summary line would
+        already have promised the run the engine will not perform.
+
+        It arrives as a callable rather than a field name so this root never learns which
+        widget holds which value; a root that knew both would be a root with two things to
+        update when a control moves.
+
+        A dialog left open across a successful write is the one way this contract could be
+        undone behind the user: `SettingsPage.apply` builds all 50 values from the widgets
+        it was handed, so its next Save would write back the pre-change numbers. Closing it
+        is visible; losing an edit to a stale Save is not recoverable, so it closes and the
+        console says why.
+        """
+        page = self.work_page
+        old = getattr(self.settings, field)
+        try:
+            new = dataclasses.replace(self.settings, **{field: value})
+            new.save(settings_module.config_file())
+        except (OSError, TypeError, ValueError) as exc:
+            republish(old)
+            page.console.appendPlainText(
+                f"not saved: {type(exc).__name__}: {exc} -- {field} stays {old}")
+            return False
+        self.settings = new
+        page.settings = new
+        page.refresh_parameter_summary()
+        if self.settings_dialog is not None:
+            self.settings_dialog.close()
+            self.settings_dialog = None
+            page.console.appendPlainText(
+                "settings dialog closed: it still held the values from before this change"
+                " -- open Settings again to edit them")
+        republish(getattr(new, field))
+        page.console.appendPlainText(f"settings saved: {field} = {value}")
+        return True
+
+    def _on_format_requested(self, fmt: str) -> None:
+        self._apply_setting(self.work_page.set_stem_format, "save_format", fmt)
+
+    def _on_gpu_requested(self, on: bool) -> None:
+        self._apply_setting(self.work_page.set_gpu, "gpu_conversion", on)
 
     def _refuse(self, text: str) -> None:
         """Say why nothing was started. No dialog, no traceback, no fake progress.

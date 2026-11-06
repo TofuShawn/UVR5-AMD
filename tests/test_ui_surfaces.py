@@ -146,14 +146,17 @@ RETIRED_GUI_IMPORTS = ("tkinter", "gui_data.sv_ttk", "gui_data.tkinterdnd2",
 #: used but absent from it must be an edit in the same commit.
 DECORATIVE_UI_CLASSES = frozenset({
     "AutoSuggestBox", "Divider", "FluentWidget", "HyperlinkButton",
-    "MultiSelectComboBox", "PasswordBox", "ProgressRing", "RadioButton",
+    "MultiSelectComboBox", "PasswordBox", "ProgressRing",
     "SelectorBar", "SelectorBarItem", "Slider", "TabView", "TabViewItem",
     "ToggleButton", "ToggleSwitch", "ToolTip",
-    # `CheckBox` left this set in Plan 3 Task 1, where `app/work_page.py` started using it
-    # for the default-output-folder toggle -- and it left it for the reason this list
-    # exists: the binding's `ToggleSwitch` has `setIsOn`/`toggled` and *no* `setText`,
-    # `setChecked` or `isChecked` (measured on the pinned wheel), so a switch cannot be
-    # initialised from a stored value, which is precisely what that toggle has to do.
+    # `CheckBox` left this set in Plan 3 Task 1 (the default-output toggle) and
+    # `RadioButton` with it in Task 3 (the output-format group), which is what the
+    # two-way assertion below exists to make visible. `ToggleSwitch` stays, and stays
+    # unused, for a measured reason rather than a preference: it exposes `setIsOn` and
+    # `toggled` but has no `setText`, no `setChecked` and no `isChecked` on this wheel, so
+    # it can neither be initialised from a stored value nor read back -- which is every
+    # use the app has for a toggle. Do not reach for it because this list says it is
+    # reviewed; the review is that it does not work.
 })
 
 

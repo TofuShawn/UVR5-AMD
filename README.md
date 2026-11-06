@@ -32,6 +32,8 @@ several files and runs them one after another — a file the engine fails on is 
 and the run moves on, and **STOP** stops the rest. Ticking **Use this as my default output folder**
 stores it under `ui.export_path` in `settings.json`, which is the fallback when the Output box is
 empty; the CLI keeps its own rule (`UVR_out` beside the input) and never reads that block.
+**Output format** and **Use GPU** are on the work page too, and each writes its one `Settings`
+field the moment it is changed — the page is two labelled segments now, not one screenful.
 
 **Where the weights come from.** The model root is `uvr_paths.py:13`, which defaults to
 `REPO/models` and is overridden **only** by the `UVR_MODEL_ROOT` environment variable — there is
