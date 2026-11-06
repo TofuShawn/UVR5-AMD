@@ -788,8 +788,24 @@ def test_red_a_child_that_outlasts_the_bound_reads_as_a_timeout(monkeypatch):
         "the controls captured the bound at import time, so this monkeypatch "
         "changes only the test's child and not these -- the tie Item 3 asks for "
         "would be decorative")
+    # The probe must outlast the bound, not outlive the run. It used to be
+    # `while True: time.sleep(0.05)`, which is unsound on this venv and cost this plan
+    # hours: `.venv/Scripts/python.exe` is a *redirector* -- it launches the base
+    # interpreter as a child (measured: the process holding the pipe is
+    # `%LOCALAPPDATA%\...\Python312\python.exe` running the same `-c` script) -- so when
+    # `subprocess.run`'s timeout path calls `process.kill()` it kills the stub, the real
+    # interpreter survives and keeps the stdout pipe open, and `communicate()` blocks
+    # until that grandchild exits of its own accord. For `while True` that is never: the
+    # control hung, the whole controls file hung (~1200 s observed, no summary line), and
+    # an interrupted run left a permanent sleeper behind (six were alive on this machine,
+    # each one a plausible explanation for the ledger's "unreproducible suite time").
+    # 5 s is 100x the bound this control narrows to (0.05 s), so the assertion is
+    # unchanged -- the child still outlasts the bound and the failure still reads as
+    # TIMEOUT -- while the worst case for the pipe is now 5 s and an orphan self-exits.
     with pytest.raises(subprocess.TimeoutExpired) as sleeping:
-        run_child("import time\nwhile True: time.sleep(0.05)\n")
+        run_child("import time\n"
+                  "deadline = time.time() + 5\n"
+                  "while time.time() < deadline: time.sleep(0.05)\n")
     print(f"[red] run_child under the patched bound -> {str(sleeping.value)}",
           flush=True)
     with pytest.raises(AssertionError, match="TIMEOUT") as fired:
