@@ -9,10 +9,42 @@ launch command and the import path now agree (R-T8-launch).
 
 Theme follows the system (spec §5.3, ruling A: zero token overrides). Reading it is a
 registry lookup on Windows and a palette guess elsewhere; `set_theme` is the only
-call, and no `apply_theme_overrides` happens anywhere in this app.
+call, and no `apply_theme_overrides` happens anywhere in this app. The registry value
+answers Light or Dark, and a contrast theme is neither -- `high_contrast_enabled()` is
+read first, because re-labelling one of Windows' own accessibility states as a preference
+the user did not pick is the same class of untruth as the motion half below.
+
+Motion follows the system too, for the same reason and by the same route -- spec §5.3 keeps
+reduce-motion as a *retained* demand, and until now nothing in `app/**` called
+`fluentqt.set_motion_mode`, so the wheel resolved its default `Full` and the GUI animated
+on a machine whose user had turned animation effects off (measured:
+`motion_policy().resolvedDuration(250) == 250`). `animations_enabled()` reads the same
+Windows switch the theme comes from, and `build_app` publishes the answer before any
+widget exists, because a policy that arrives after the first hover is a policy the first
+hover did not see.
+
+Two things about that mapping are rulings, not oversights, and both are human-verified the
+way §9.6 says Mica is:
+
+* the OS flag is binary, so `Reduced` has no producer -- the choice is `Full` when
+  animations are on and `Disabled` when they are not, because "don't move things" is not a
+  request for *faster* movement (`resolvedDuration(250)` answers 250 and 0 respectively;
+  `Reduced`'s 50 still moves).
+* nothing here re-reads the flag after launch. Windows broadcasts
+  `WM_SETTINGCHANGE`, and acting on it needs an event filter over the window; the setting
+  is read at start-up, so a mid-session change needs a restart. Verified by hand, not by
+  the suite.
+
+One thing this wiring owes the suite, and it belongs to the wave that owns the guard files:
+`tests/test_ui_surfaces.py`'s `UI_MODULE_FUNCTIONS` already reviews `set_motion_mode` and
+`motion_policy` but not the enum they speak (`MotionMode`), so
+`test_app_only_touches_the_reviewed_fluent_surface` fails on `main.py`'s three
+`fluentqt.MotionMode` attributes until `"MotionMode"` joins that frozenset. The app half is
+done; the list is a reviewed-surface decision this wave must not make for wave 2.
 """
 from __future__ import annotations
 
+import ctypes
 import sys
 
 import fluentqt
@@ -20,8 +52,75 @@ from PySide6.QtCore import QSettings
 from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import QApplication
 
+#: `SystemParametersInfoW` verbs this file needs. Both take a struct by reference and
+#: both want its size in `uiParam`: measured, `SPI_GETANIMATION` with `uiParam=0` returns
+#: rc 0 and leaves `iMinAnimate` at 0, i.e. it *fails in the direction that looks like an
+#: answer* -- a machine with its animations on would be told to stop animating. The size
+#: is passed, and a zero return is reported as "no answer" rather than as False.
+SPI_GETANIMATION = 0x0048
+SPI_GETHIGHCONTRAST = 0x0042
+HCF_HIGHCONTRASTON = 0x00000001
+
+
+class _ANIMATIONINFO(ctypes.Structure):
+    _fields_ = [("cbSize", ctypes.c_uint), ("iMinAnimate", ctypes.c_int)]
+
+
+class _HIGHCONTRASTW(ctypes.Structure):
+    _fields_ = [("cbSize", ctypes.c_uint), ("dwFlags", ctypes.c_ulong),
+                ("lpszDefaultScheme", ctypes.c_wchar_p)]
+
+
+def _system_parameters_info(verb: int, struct) -> bool:
+    """One `SystemParametersInfoW` get, filled in place. False when the call refuses."""
+    struct.cbSize = ctypes.sizeof(struct)
+    return bool(ctypes.windll.user32.SystemParametersInfoW(       # type: ignore[attr-defined]
+        verb, struct.cbSize, ctypes.byref(struct), 0))
+
+
+def animations_enabled() -> "bool | None":
+    """Windows' Settings > Accessibility > Visual effects > Animation effects switch.
+
+    `None` on a platform that has no such call, or when the call itself refuses -- and
+    `None` is *not* folded into False, because False means "the user asked for no motion"
+    and this means "the machine was not asked".
+    """
+    if sys.platform != "win32":
+        return None
+    info = _ANIMATIONINFO()
+    if not _system_parameters_info(SPI_GETANIMATION, info):
+        return None
+    return bool(info.iMinAnimate)
+
+
+def high_contrast_enabled() -> bool:
+    """Windows' contrast-theme flag, and False is the answer for every case that is not
+    "the flag is set" -- the same `None`-as-False collapse `animations_enabled()` refuses,
+    because a theme is a preference this app already has to pick something about."""
+    if sys.platform != "win32":
+        return False
+    hc = _HIGHCONTRASTW()
+    if not _system_parameters_info(SPI_GETHIGHCONTRAST, hc):
+        return False
+    return bool(hc.dwFlags & HCF_HIGHCONTRASTON)
+
+
+def system_motion_mode() -> "fluentqt.MotionMode":
+    """The wheel's mode for the OS's animation switch (`app/main.py`'s docstring §I10)."""
+    enabled = animations_enabled()
+    if enabled is None:
+        return fluentqt.MotionMode.Full          # nothing was asked of us: the default
+    return fluentqt.MotionMode.Full if enabled else fluentqt.MotionMode.Disabled
+
 
 def system_theme() -> "fluentqt.Theme":
+    if high_contrast_enabled():
+        # Spec §5.3 keeps `HighContrast`, and the wheel has the mode (measured:
+        # `Theme.HighContrast` is a member and `set_theme` accepts it) -- what this app
+        # used to map was only Light/Dark, so a contrast theme was silently re-labelled
+        # one of the two the user had just opted out of. It outranks the light/dark
+        # registry value rather than combining with it.
+        return fluentqt.Theme.HighContrast
     prefs = QSettings("HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion"
                       "\\Themes\\Personalize", QSettings.NativeFormat)
     value = prefs.value("AppsUseLightTheme")
@@ -62,7 +161,12 @@ def build_app(argv=None):
     app = QApplication.instance() or QApplication(argv if argv is not None else sys.argv[:1])
     fluentqt.prepare_high_dpi_application()
     fluentqt.initialize_resources()
+    # Both system reads happen before anything is built: `set_theme` after the first
+    # widget paints leaves it painted in the other theme, and `set_motion_mode` after the
+    # first hover leaves that hover animated -- the wheel resolves the duration per call,
+    # so the policy has to be in place before the first one is asked for.
     fluentqt.set_theme(system_theme())
+    fluentqt.set_motion_mode(system_motion_mode())
     from app import controller
 
     ctrl = controller.Controller()

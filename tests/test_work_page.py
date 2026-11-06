@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ast
 import collections
+import sys
 import threading
 import time
 from pathlib import Path
@@ -1130,3 +1131,103 @@ def test_a_close_is_refused_while_the_thread_is_still_live(qapp, tmp_path, monke
 
     assert pg.job.shutdown(10_000) is True, "the engine must finish after the bound"
     _deliver(qapp)
+
+
+# -- I10: the OS accessibility switches, read before the first widget --------- #
+
+@pytest.fixture()
+def motion_mode_restored():
+    """`set_motion_mode` is process-wide state on the wheel's own policy object, so a
+    test that changes it hands back what it found -- otherwise the surface tests that run
+    after this one are measured under a mode the app never chose, and the failure they
+    would report is a duration of 0 with nothing in the traceback to say why."""
+    before = fluentqt.current_motion_mode()
+    yield
+    fluentqt.set_motion_mode(before)
+
+
+def test_the_os_animation_switch_decides_the_motion_mode(monkeypatch,
+                                                         motion_mode_restored):
+    """Spec §5.3 keeps reduce-motion, and until this item nothing in `app/**` called
+    `fluentqt.set_motion_mode` at all: the wheel resolves its own default (`Full`), so
+    `motion_policy().resolvedDuration(250)` answered 250 and the GUI animated on a machine
+    whose user had turned animation effects off. That is an unmet requirement dressed as a
+    deferred one, which is what this item is about.
+
+    The measurement is the duration, not the enum, because the duration is the fact the
+    user sees. `Disabled` and not `Reduced` for the off position: the OS flag is binary, so
+    there is no producer for "animate, but quicker" -- and 50 ms still moves (ruling stated
+    in `app/main.py`'s docstring, with the human-verified half: no `WM_SETTINGCHANGE`
+    listener, so a mid-session change needs a restart).
+    """
+    for answer, mode, duration in ((False, fluentqt.MotionMode.Disabled, 0),
+                                   (True, fluentqt.MotionMode.Full, 250),
+                                   (None, fluentqt.MotionMode.Full, 250)):
+        monkeypatch.setattr(main, "animations_enabled", lambda a=answer: a)
+        chosen = main.system_motion_mode()
+        fluentqt.set_motion_mode(chosen)
+        assert chosen is mode, f"animations_enabled()={answer} chose {chosen!r}"
+        got = fluentqt.motion_policy().resolvedDuration(250)
+        assert got == duration, (
+            f"animations_enabled()={answer}: the wheel still resolves 250 ms to {got}, "
+            f"so the page animates anyway")
+
+
+def test_the_call_that_refuses_is_not_read_as_animations_off(monkeypatch):
+    """`SystemParametersInfoW(SPI_GETANIMATION)` with `uiParam=0` returns rc 0 and leaves
+    `iMinAnimate` at 0 -- a failure that looks exactly like an answer, on a machine whose
+    animations are on. `animations_enabled()` therefore answers None for a refused call,
+    and None must not reach the `Disabled` branch.
+    """
+    class _RefusingUser32:
+        def SystemParametersInfoW(self, *_args):
+            return 0
+
+    class _Windll:                                   # stands in for `ctypes.windll`
+        user32 = _RefusingUser32()
+
+    monkeypatch.setattr(main.ctypes, "windll", _Windll(), raising=True)
+    assert main.animations_enabled() is None
+    assert main.high_contrast_enabled() is False
+    assert main.system_motion_mode() is fluentqt.MotionMode.Full
+
+
+def test_the_machine_is_actually_read(qapp):
+    """The two calls above are exercised against fakes, so this one asks the real OS and
+    pins only that an answer comes back in the domain -- the shape of the probe, not its
+    value, which is the user's setting and none of this suite's business. Measured on the
+    machine this was written on: animations on, contrast theme off."""
+    if sys.platform != "win32":
+        pytest.skip("the SPI calls this reads are Windows-only")
+    assert main.animations_enabled() in (True, False)
+    assert isinstance(main.high_contrast_enabled(), bool)
+
+
+def test_a_contrast_theme_is_not_relabeled_light_or_dark(monkeypatch):
+    """Spec §5.3's other retained demand, and `system_theme()` mapped two of the wheel's
+    three modes: `Theme.HighContrast` exists and `set_theme` takes it (both measured), so a
+    user on a contrast theme was being told their accessibility state was a colour
+    preference. The registry value still decides when the flag is not set."""
+    monkeypatch.setattr(main, "high_contrast_enabled", lambda: True)
+    assert main.system_theme() is fluentqt.Theme.HighContrast
+    monkeypatch.setattr(main, "high_contrast_enabled", lambda: False)
+    assert main.system_theme() in (fluentqt.Theme.Light, fluentqt.Theme.Dark)
+
+
+def test_build_app_publishes_both_before_anything_is_shown(qapp, monkeypatch,
+                                                           motion_mode_restored):
+    """The composition root is where these belong: `set_motion_mode` after the first hover
+    leaves that hover animated, because the duration is resolved per call. So the app-wide
+    entry point has to be what asks the machine -- and the fact this pins is that a real
+    `build_app` leaves the process resolving 0 ms on a machine that asked for no motion."""
+    monkeypatch.setattr(backends, "resolve", lambda force=None: _cpu_backend())
+    monkeypatch.setattr(main, "animations_enabled", lambda: False)
+    monkeypatch.setattr(main, "high_contrast_enabled", lambda: False)
+    app_obj, window = main.build_app([])
+    try:
+        assert app_obj is qapp, "build_app must not make a second QApplication"
+        assert fluentqt.motion_policy().resolvedDuration(250) == 0, (
+            "the app-wide entry point did not publish the machine's answer")
+        assert fluentqt.current_theme() in (fluentqt.Theme.Light, fluentqt.Theme.Dark)
+    finally:
+        window.controller.request_close(5_000)
