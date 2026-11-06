@@ -616,8 +616,6 @@ def test_each_terminal_lands_on_its_own_surface(qapp, tmp_path, monkeypatch, que
          "Out of video memory"),
         ("OSError: [Errno 2] No such file or directory: 'mystery.pth'",
          "Weight file not found"),
-        ("[warn] backend degraded: Running on CPU while the machine asked for a GPU",
-         "Not running on the GPU"),
         ("RuntimeError: MIOpen has no kernel for this conv", "Failed"),
     ]
     for text, title in cases:
@@ -630,6 +628,11 @@ def test_each_terminal_lands_on_its_own_surface(qapp, tmp_path, monkeypatch, que
         _click_close(bar)
         _settle(qapp)
 
+    # The fourth abnormal state is here too, and since finding I4 it has a producer that
+    # exists: `test_the_cpu_fallback_surface_is_driven_by_a_warning_and_the_machines_state`
+    # below takes it through `Job.warning` and the machine's real provider state. It used
+    # to be this list's third case -- a `failed` text containing "Running on CPU", words
+    # the shipped code emits nowhere -- which kept a surface alive on a fixture.
     page.job.cancelled.emit("stopped by the user")
     _settle(qapp)
     bar = _current_bar(page)
@@ -643,6 +646,152 @@ def test_each_terminal_lands_on_its_own_surface(qapp, tmp_path, monkeypatch, que
     page.job.succeeded.emit([written])
     _settle(qapp)
     assert _current_bar(page).title() == "Done"
+
+
+def test_a_dead_bar_is_dropped_and_the_queue_keeps_running(qapp, monkeypatch, queue):
+    """M5. `DEFAULT_NOTIFIER` lives as long as the process and holds `(bar, band, ms)`
+    for widgets owned by a page that does not; when a page died with a bar showing or
+    waiting, the next `_retire` touched a deleted C++ object, raised `RuntimeError`
+    *before* `self._pump()`, and the queue stalled silently for the rest of the session --
+    every later notification, including the ones a run still had to report, went nowhere.
+
+    The host is a bare `QWidget` on purpose: it is not part of the app's surface tree, and
+    `tests/test_ui_surfaces.py`'s guard is about surfaces the user is shown. It dies the
+    way the repo's other lifetime tests kill one (`del` + `gc.collect()`, the shape at
+    `tests/test_dialogs.py:1239-1250`), because that is the only way to make the C++
+    object genuinely gone rather than pretending: measured here, `QWidget.destroy()` on a
+    widget with children only *closes* it, so the wrappers under it stay valid and a test
+    built on it proves nothing. The bars are parented to it because every app call site
+    passes `parent=` (`app/work_page.py:452-453`, `app/dialogs.py:345`), which is what
+    makes them die together."""
+    from PySide6.QtWidgets import QVBoxLayout, QWidget
+
+    host = QWidget()
+    band = QVBoxLayout(host)
+    host.show()
+    first = dialogs.notify("First", "one", host, band=band, dismiss_ms=0)
+    second = dialogs.notify("Second", "two", host, band=band, dismiss_ms=0)
+    assert queue.current() is first and queue.pending_count() == 1, (
+        queue.current(), queue.pending_count())
+    assert first.parent() is host and second.parent() is host
+
+    del host, band
+    gc.collect()
+    _settle(qapp)
+    assert not dialogs._alive(first), "the page did not actually die -- nothing is tested"
+    assert not dialogs._alive(second), "the waiting bar outlived the page that owned it"
+
+    queue._retire()                      # what the timer would do to `first`
+    assert queue.current() is None
+    assert queue.pending_count() == 0, (
+        "the dead second bar is still queued -- the stall this item is about")
+
+    third = dialogs.notify("Third", "three", band=None, dismiss_ms=0)
+    _settle(qapp)
+    assert queue.current() is third, (
+        "a notification after a dead page never reached the screen")
+
+
+def test_a_bar_whose_band_died_but_who_survived_it_is_still_shown(qapp, monkeypatch,
+                                                                  queue):
+    """The other half of the same freeze, and the one the first cut of the fix missed.
+    `post()`'s `band` and `parent` are separate arguments, so a bar can be alive when its
+    band is not -- a pending bar was never inserted into the layout, so nothing reparented
+    it and the page's death took the layout alone.
+
+    That is worse than the dead-bar case, because the raise lands *inside* `_pump`, after
+    `self._showing` was assigned: the queue then believes it is showing a bar that never
+    appeared, no timer was started, and nothing it is ever told reaches the screen again.
+    The answer is to keep the message and lose the placement -- a bandless bar is already
+    a supported shape (`Notifier`'s own docstring) -- not to drop the notification.
+    """
+    from PySide6.QtWidgets import QVBoxLayout, QWidget
+
+    host = QWidget()
+    band = QVBoxLayout(host)
+    host.show()
+    first = dialogs.notify("First", "one", host, band=band, dismiss_ms=0)
+    # no parent: the waiting bar belongs to nobody but the queue, which is exactly the
+    # asymmetry `_pump` has to survive
+    second = dialogs.notify("Second", "two", band=band, dismiss_ms=0)
+    assert second.parent() is None and queue.pending_count() == 1
+
+    del host, band
+    gc.collect()
+    _settle(qapp)
+    assert dialogs._alive(second), "this scenario needs the bar to survive its band"
+
+    queue._retire()                      # drops `first`, pumps `second` onto a dead band
+    assert queue.pending_count() == 0
+    assert queue.current() is second, (
+        "_pump raised on the dead layout and left the queue claiming it was showing "
+        "something -- the silent freeze, in its second form")
+
+    queue._retire()                      # `dismiss_ms=0` means it stays until it is told
+    third = dialogs.notify("Third", "three", band=None, dismiss_ms=0)
+    _settle(qapp)
+    assert queue.current() is third, "the queue never recovered"
+
+
+def test_clear_empties_the_queue_a_test_inherits_from_the_rest_of_the_suite(
+        qapp, monkeypatch, queue):
+    """`Notifier.clear()` exists because the queue is process state. Wave 2's guards count
+    bars, and a pile left by an earlier test is a failure that cannot be reproduced on its
+    own; the reset is a method on the class, not a monkeypatch of its deque."""
+    from PySide6.QtWidgets import QVBoxLayout, QWidget
+
+    host = QWidget()
+    band = QVBoxLayout(host)
+    shown = [dialogs.notify(f"N{i}", "text", band=band, dismiss_ms=0) for i in range(3)]
+    assert queue.current() is shown[0] and queue.pending_count() == 2
+
+    queue.clear()
+    assert queue.current() is None and queue.pending_count() == 0
+    after = dialogs.notify("After", "clean", band=None, dismiss_ms=0)
+    _settle(qapp)
+    assert queue.current() is after
+
+
+def test_the_cpu_fallback_surface_is_driven_by_a_warning_and_the_machines_state(
+        qapp, tmp_path, monkeypatch, queue):
+    """I4, on the surface side. `cpu_fallback` is one of the four abnormal states spec
+    §8 requires its own surface for, and its only producer was `_classify_failure`'s
+    needle for the words `Running on CPU` -- text that exists nowhere in the shipped
+    code. The engine's real degradation notice is a `RuntimeWarning` (`separate.py`'s
+    provider check, `backends.py`'s `_probe_failed`), and `Job.warning` now carries it:
+    this emits the sentence `separate.py:88-98` actually builds, on a page whose
+    `Backend` reports a GPU name with a CPU-only provider list, and asks for the surface.
+
+    The needle is gone, so the same words arriving as a *failure* are not enough: the
+    state has to say the machine was asked for a GPU and did not get one.
+    """
+    from app import work_page
+
+    monkeypatch.setattr(backends, "resolve", lambda force=None: backends.Backend(
+        name="rocm", torch_device="cuda", ort_providers=["CPUExecutionProvider"]))
+    cat = separate_cli.make_catalog(tmp_path / "nope", tmp_path / "w")
+    ctrl = controller.Controller(cat=cat, st=settings_module.Settings(),
+                                 selections=selections_module.Selections())
+    page = ctrl.work_page
+    page.show()
+    _settle(qapp)
+
+    real = ("RuntimeWarning: ONNX Runtime dropped an execution provider for model.onnx: "
+            "it was asked for ['DmlExecutionProvider'] and reports "
+            "['CPUExecutionProvider'], so the first provider actually in use is "
+            "CPUExecutionProvider")
+    page.job.warning.emit(real)
+    _settle(qapp)
+
+    bar = _current_bar(page)
+    assert bar is not None, "a degradation warning produced no surface at all"
+    assert bar.title() == "Not running on the GPU", bar.title()
+    assert bar.message() == real
+    assert real in page.console.toPlainText(), page.console.toPlainText()
+
+    # ... and the invented needle no longer reaches the surface from the failure path.
+    assert work_page._classify_failure(
+        "Running on CPU while the machine asked for a GPU") is None
 
 
 def test_the_console_keeps_the_engine_text_after_the_surface_gone(

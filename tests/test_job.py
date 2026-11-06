@@ -340,6 +340,85 @@ def test_console_lines_reach_the_job_signal(qapp, tmp_path):
     assert len(done) == 1, done
 
 
+def test_a_base_exception_from_the_engine_still_ends_the_job(qapp, tmp_path):
+    """M4. `_Worker.run` caught `Exception`, and anything outside that -- a
+    `BaseException` from a dependency, an interpreter-level abort -- used to walk out of
+    the thread having emitted nothing. The page then stayed on `set_busy(True)` with
+    START disabled, STOP inert and no message anywhere, while `Job.is_running()` already
+    read False, so the two halves of the same object disagreed about a job that was gone.
+
+    The guarantee this class makes is *one terminal per accepted job*, so it is made in
+    a `finally` and not negotiated with the exception's class; what it says stays honest
+    about not having classified the failure.
+    """
+    class EngineAbort(BaseException):
+        pass
+
+    class Aborts(PrimaryOnlyEngine):
+        def seperate(self):
+            raise EngineAbort("the engine walked out through BaseException")
+
+    worker = job.Job()
+    failures, dones = [], []
+    worker.failed.connect(failures.append)
+    worker.succeeded.connect(dones.append)
+    worker.start(_request(tmp_path, Aborts))
+    assert worker.wait(10_000)
+    _deliver(qapp)
+    assert dones == [], dones
+    assert len(failures) == 1, failures
+    assert "without reporting an outcome" in failures[0], failures[0]
+    assert "EngineAbort" in failures[0], failures[0]
+    assert worker.is_running() is False
+
+    # the next job is startable, and its terminal is its own
+    worker.start(_request(tmp_path))
+    assert worker.wait(10_000)
+    _deliver(qapp)
+    assert len(dones) == 1 and len(failures) == 1, (dones, failures)
+
+
+def test_a_warning_raised_inside_the_run_travels_on_its_own_signal(qapp, tmp_path):
+    """I4. The engine's degradations are `RuntimeWarning`s -- `backends.py:43-60` for the
+    device layer, `separate.py:80-100` when ONNX Runtime drops a provider -- and until
+    now nothing in `app/**` listened, so the GUI's fourth abnormal state had no producer
+    and the warning died behind the filter `separate.py:101` sets to `ignore` at import.
+
+    They travel on a signal of their own rather than as console text, because the page
+    has to be able to tell *a warning that the machine is degraded* from a line the
+    engine printed -- and doing that by string-matching the message is the invention this
+    item removes. The capture is scoped to the call, so the process's filter list and its
+    `showwarning` come back afterwards: the suite's own warning reporting is not quietly
+    replaced.
+    """
+    import warnings
+
+    original_showwarning = warnings.showwarning
+    original_filters = list(warnings.filters)
+
+    class Warns(PrimaryOnlyEngine):
+        def seperate(self):
+            warnings.warn("ONNX Runtime dropped an execution provider for model.onnx",
+                          RuntimeWarning)
+            super().seperate()
+
+    worker = job.Job()
+    warned, done = [], []
+    worker.warning.connect(warned.append)
+    worker.succeeded.connect(done.append)
+    worker.start(_request(tmp_path, Warns))
+    assert worker.wait(10_000)
+    _deliver(qapp)
+    assert len(warned) == 1, warned
+    assert "dropped an execution provider" in warned[0], warned
+    assert "RuntimeWarning" in warned[0], warned
+    assert len(done) == 1, done
+    assert warnings.showwarning is original_showwarning, (
+        "the scoped capture left the process's own warning hook replaced")
+    assert warnings.filters[:3] == original_filters[:3], (
+        "the scoped capture left the engine's `ignore` filter undone")
+
+
 def test_progress_signal_carries_a_percentage_not_a_fraction(qapp, tmp_path):
     """`Signal(int)` on the far side of a float percentage: the GUI bar reads 0-100 and
     the engine hands over a fraction, so the conversion happens once, in `run_job`.

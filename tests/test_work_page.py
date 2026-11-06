@@ -195,6 +195,220 @@ def test_show_compute_keeps_the_engines_words_and_drops_only_the_cli_prefix(page
     assert "[cli]" not in text
 
 
+def test_show_compute_translates_a_cli_flag_into_the_affordance_the_gui_offers(page):
+    """I5(b). The clause `describe_compute_device()` ends with tells a *CLI* user to type
+    `--device rocm`; this GUI has no such flag, the affordance is the `gpu_conversion`
+    checkbox on the settings page, and a line that names a flag nobody can pass is the
+    kind of text that gets ignored. Translated here, in the page's own translation layer:
+    `separate_cli.py`'s bytes are the CLI-parity property spec §8 pins and stay as they
+    are (`tests/test_separate_cli.py` is the gate, and
+    `tests/test_cli_device_reporting.py` still checks the CLI's own wording)."""
+    page.show_compute(("[cli] compute device: cpu (is_gpu_conversion=-1 from Settings; "
+                       "pass --device rocm to use the GPU)",))
+    text = page.compute_label.text()
+    assert "--device" not in text, text
+    assert "Settings" in text and "GPU" in text, text
+    assert text.startswith("compute device: cpu (is_gpu_conversion=-1 from Settings;"), text
+
+
+def test_a_refusal_clears_the_compute_line_the_previous_run_put_there(qapp, tmp_path,
+                                                                     monkeypatch):
+    """I5(a). `compute_label` was only ever *set*, so every refusal path left the last
+    run's `compute device:` line on screen under a "not started" console: the page went
+    on asserting what the engine will compute on for a run it refused to make. Driven
+    through the composition root, because that is who owns the line."""
+    import separate_cli
+
+    monkeypatch.setattr(backends, "resolve", lambda force=None: _cpu_backend())
+    cat = separate_cli.make_catalog(tmp_path / "nope", tmp_path / "w")
+    ctrl = controller.Controller(cat=cat, st=settings_module.Settings(),
+                                 selections=selections_module.Selections())
+    pg = ctrl.work_page
+    pg.show_compute(("[cli] compute device: cuda (torch.version.hip='6.2')",))
+    assert pg.compute_label.text() != ""
+
+    pg.input_edit.setText("")                           # the cheapest honest refusal
+    pg.run_requested.emit()
+
+    assert "not started" in pg.console.toPlainText()
+    assert pg.compute_label.text() == "", (
+        "a refusal left the previous run's compute line asserting what will run")
+
+
+def test_the_classify_of_a_failure_reads_the_exception_line_not_the_traceback(page):
+    """M6. `_classify_failure` looked for a bare `"weight"` anywhere in the text
+    `Job.failed` carries -- and that text is `type: message\\n` plus four frames of engine
+    source (`app/job.py:313-314`), where `lib_v5/spec_utils.py:165-188` uses
+    `weight = np.zeros_like(...)` on a perfectly normal path. So any crash inside that
+    function was reported as "Weight file not found". Classification is now done on the
+    first line, which is the only part that *is* the exception."""
+    crash = ("IndexError: list index out of range\n"
+             '  File "E:/Project/UVR/UVR/lib_v5/spec_utils.py", line 165, in crop\n'
+             "    weight = np.zeros_like(spec[..., :bins], dtype=np.float32)\n")
+    assert work_page._classify_failure(crash) is None, work_page._classify_failure(crash)
+    assert work_page._classify_failure("OSError: [WinError 2] No such file or directory: "
+                                       "'Kim_Inst.pth'\nTraceback...") == "missing_weight"
+    assert work_page._classify_failure(
+        "torch.cuda.OutOfMemoryError: CUDA out of memory") == "vram"
+    # ... and the word in the *message* still means the weight, not the traceback frame.
+    assert work_page._classify_failure("RuntimeError: cannot load weight Kim_Inst.pth"
+                                       ) == "missing_weight"
+
+
+def _gpu_backend_with_cpu_ort():
+    return backends.Backend(name="rocm", torch_device="cuda",
+                            ort_providers=["CPUExecutionProvider"])
+
+
+def test_a_warning_from_the_run_reaches_the_console(qapp, tmp_path, monkeypatch):
+    """I4. The engine's degradations are `RuntimeWarning`s (`backends.py:43-60`,
+    `separate.py:80-100`); nothing in `app/**` listened, so spec §8's fourth abnormal
+    state had no producer at all and `cpu_fallback` was kept alive by a string that
+    exists nowhere in the shipped code."""
+    import separate_cli
+
+    monkeypatch.setattr(backends, "resolve", lambda force=None: _gpu_backend_with_cpu_ort())
+    cat = separate_cli.make_catalog(tmp_path / "nope", tmp_path / "w")
+    pg = work_page.WorkPage(cat=cat, settings_obj=None, selections_obj=None)
+    surfaces = []
+    monkeypatch.setattr(dialogs, "report_failure",
+                        lambda kind, text, **kw: surfaces.append((kind, text)))
+
+    pg.job.warning.emit("RuntimeWarning: ONNX Runtime dropped an execution provider "
+                        "for model.onnx: it was asked for ['DmlExecutionProvider']")
+
+    assert "dropped an execution provider" in pg.console.toPlainText()
+    assert surfaces == [("cpu_fallback",
+                         "RuntimeWarning: ONNX Runtime dropped an execution provider "
+                         "for model.onnx: it was asked for "
+                         "['DmlExecutionProvider']")], surfaces
+
+
+def test_a_warning_on_a_cpu_only_machine_is_not_called_a_fallback(qapp, tmp_path,
+                                                                  monkeypatch):
+    """The state decides, not the wording: a machine that *is* cpu has not fallen back
+    from anything, and calling its warning "Not running on the GPU" would be the same
+    invention this item is removing."""
+    import separate_cli
+
+    monkeypatch.setattr(backends, "resolve", lambda force=None: _cpu_backend())
+    cat = separate_cli.make_catalog(tmp_path / "nope", tmp_path / "w")
+    pg = work_page.WorkPage(cat=cat, settings_obj=None, selections_obj=None)
+    shown = []
+    monkeypatch.setattr(pg, "_notify", lambda title, text: shown.append((title, text)))
+
+    pg.job.warning.emit("RuntimeWarning: something the page has no category for")
+
+    assert shown == [("Warning", "RuntimeWarning: something the page has no category for")]
+
+
+def test_the_fallback_state_comes_from_the_backend_and_not_from_a_needle(qapp, tmp_path,
+                                                                        monkeypatch):
+    """`_classify_failure`'s `Running on CPU` needle appears in the shipped code nowhere
+    but a test fixture; `is_cpu_fallback` is the reviewer's condition instead -- a GPU
+    backend whose ONNX Runtime providers are CPU only."""
+    import separate_cli
+
+    monkeypatch.setattr(backends, "resolve", lambda force=None: _gpu_backend_with_cpu_ort())
+    cat = separate_cli.make_catalog(tmp_path / "nope", tmp_path / "w")
+    pg = work_page.WorkPage(cat=cat, settings_obj=None, selections_obj=None)
+    assert pg.is_cpu_fallback() is True
+    assert "rocm" in pg.device_label.text()
+
+    monkeypatch.setattr(backends, "resolve", lambda force=None: _cpu_backend())
+    plain = work_page.WorkPage(cat=cat, settings_obj=None, selections_obj=None)
+    assert plain.is_cpu_fallback() is False
+    assert work_page._classify_failure("Running on CPU") is None, (
+        "the invented needle is still a producer for the degraded surface")
+
+
+# -- M1: the arch's engine parameters, on the page spec §10 puts them on -------- #
+
+def test_the_model_parameters_expander_is_not_a_dead_control(qapp, tmp_path, monkeypatch):
+    """Task 5 shipped this Expander as a placeholder -- "no content until Task 6" -- and
+    Task 6 put the fields on the settings page without removing it, so the primary page
+    carried a control that opened onto nothing and no test named it. Spec §10 assigns the
+    arch's engine parameters to the work page, so it now shows a read-only summary of
+    them plus one action that goes where they are editable."""
+    import separate_cli
+    from app import settings_page
+
+    monkeypatch.setattr(backends, "resolve", lambda force=None: _cpu_backend())
+    cat = separate_cli.make_catalog(tmp_path / "nope", tmp_path / "w")
+    pg = work_page.WorkPage(cat=cat, settings_obj=settings_module.Settings(),
+                            selections_obj=None)
+    assert pg.params.contentWidget() is pg.params_host, "the expander is still empty"
+    assert pg.params_summary.isVisibleTo(pg)
+    pg.arch_bar.setSelectedIndex(pg.arch_names().index("vr"))
+    text = pg.params_summary.text()
+    for name in settings_page.ARCH_FIELD_GROUPS["vr"]:
+        assert name in text, (name, text)
+    assert repr(settings_module.Settings().window_size) in text, text
+    # An arch the parameter table has no group for says so instead of borrowing numbers.
+    pg.arch_bar.setSelectedIndex(pg.arch_names().index("apollo"))
+    assert "apollo" in pg.params_summary.text()
+    for name in settings_page.ARCH_FIELD_GROUPS["vr"]:
+        assert name not in pg.params_summary.text(), name
+
+
+def test_the_parameter_summary_follows_the_arch_and_reads_the_settings_object(
+        qapp, tmp_path, monkeypatch):
+    """One source, no second table: the names come from the same
+    `settings_page.ARCH_FIELD_GROUPS` the editable page is built from, and the values
+    from the `Settings` the controller assembled with -- so the summary cannot disagree
+    with what a run will actually use."""
+    import separate_cli
+    from app import controller, settings_page
+
+    monkeypatch.setattr(backends, "resolve", lambda force=None: _cpu_backend())
+    cat = separate_cli.make_catalog(tmp_path / "nope", tmp_path / "w")
+    ctrl = controller.Controller(cat=cat, st=settings_module.Settings(segment="70"),
+                                 selections=selections_module.Selections())
+    pg = ctrl.work_page
+    pg.arch_bar.setSelectedIndex(pg.arch_names().index("demucs"))
+    _deliver(qapp)
+    text = pg.params_summary.text()
+    assert "segment = '70'" in text, text
+    for name in settings_page.ARCH_FIELD_GROUPS["demucs"]:
+        assert name in text, (name, text)
+    for name in settings_page.ARCH_FIELD_GROUPS["vr"]:
+        assert name not in text, (name, text)
+
+    # and a settings save, which hands the controller new objects, moves the summary too
+    pg.arch_bar.setSelectedIndex(pg.arch_names().index("vr"))
+    _deliver(qapp)
+    pg.settings = settings_module.Settings(window_size=1024)
+    pg.refresh_parameter_summary()
+    assert "window_size = 1024" in pg.params_summary.text(), pg.params_summary.text()
+
+
+def test_the_parameter_summaries_one_action_opens_the_editable_page(qapp, tmp_path,
+                                                                    monkeypatch):
+    """One editable surface, restated: the work page shows the numbers and the button is
+    the only way to change them -- it emits the same `settings_requested` the Settings
+    button emits, so the dialog stays the controller's one dialog (R-T4-onejob, and the
+    one-dialog rule in `Controller._on_settings_requested`)."""
+    import separate_cli
+
+    monkeypatch.setattr(backends, "resolve", lambda force=None: _cpu_backend())
+    cat = separate_cli.make_catalog(tmp_path / "nope", tmp_path / "w")
+    pg = work_page.WorkPage(cat=cat, settings_obj=None, selections_obj=None)
+    asked = []
+    pg.settings_requested.connect(lambda: asked.append(True))
+    pg.params_edit.click()
+    assert asked == [True], asked
+    # The summary's action is the *same signal*, so the dialog stays the controller's
+    # one dialog (R-T4-onejob and `Controller._on_settings_requested`'s one-at-a-time).
+    ctrl = controller.Controller(cat=cat, st=settings_module.Settings(),
+                                 selections=selections_module.Selections())
+    ctrl.work_page.params_edit.click()
+    ctrl.work_page.settings_button.click()
+    assert ctrl.settings_dialog is not None
+    first = ctrl.settings_dialog
+    ctrl.work_page.params_edit.click()
+    assert ctrl.settings_dialog is first, "the summary's action stacked a second dialog"
+
+
 def test_a_cancel_is_reported_as_a_cancel_not_as_a_failure(page, qapp, monkeypatch):
     """`Job.cancelled` and `Job.failed` are different signals and the page must not
     blend them: a STOP leaves the bar at zero and says 'Stopped', never 'Failed'."""

@@ -15,6 +15,7 @@ queueing is not added here (Task 4's carry, R-T4-iteration).
 """
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
 
 import backends
@@ -25,15 +26,19 @@ import settings as settings_module
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout
 
-from app import dialogs, job
+from app import dialogs, job, settings_page
 
 #: The page's own terminal vocabulary. These are the titles the terminal handlers speak
 #: to `_notify` with, and the seam the suite spies on: `Stopped` *is* the cancel surface
 #: (kind `cancelled`), and `Failed` is what a message the page cannot classify stays.
-#: The widget's own title comes from `app/dialogs.py`.
+#: `Degraded` and `Warning` are the two halves the I4 warning path chooses between --
+#: the first is spec §8's CPU-fallback surface, the second what a warning the failure
+#: vocabulary has no category for gets. The widget's own title comes from `app/dialogs.py`.
 DONE_TITLE = "Done"
 FAILED_TITLE = "Failed"
 CANCELLED_TITLE = "Stopped"
+DEGRADED_TITLE = "Degraded"
+WARNING_TITLE = "Warning"
 
 #: arch -> the `Selections` field holding this arch's main model pick.
 MAIN_MODEL_FIELD = {"vr": "vr_model", "mdx": "mdx_net_model", "demucs": "demucs_model",
@@ -41,25 +46,51 @@ MAIN_MODEL_FIELD = {"vr": "vr_model", "mdx": "mdx_net_model", "demucs": "demucs_
 
 
 def _classify_failure(text: str) -> str | None:
-    """Map engine text to one of ``vram`` / ``missing_weight`` / ``cpu_fallback``, or
-    `None` when the text says nothing certain.
+    """Map engine text to one of ``vram`` / ``missing_weight``, or `None` when the text
+    says nothing certain.
 
     `None` is the point, not a fallback: a *cancel* is a separate signal
     (`Job.cancelled`), so guessing an unknown failure into a category would let Task 7's
     dialog label a crash as something the user asked for.
 
-    The needles are the strings the engine actually emits: `torch.cuda.OutOfMemoryError`
-    / `CUDA out of memory` from the ROCm wheel, `No such file or directory` from an
-    `OSError` on a missing weight, and `backends.py`'s degradation notices (which say
-    `Running on CPU` / `CPUExecutionProvider` while the machine asked for a GPU).
+    Only the **first line** is read, because that is the only part that is the exception:
+    `Job.failed`'s text is `f"{type}: {message}"` plus four frames of engine source
+    (`app/job.py:313-314`), and `lib_v5/spec_utils.py:165-188` has
+    `weight = np.zeros_like(...)` on a normal path -- so a bare `"weight"` substring of
+    the whole text called an unrelated crash "Weight file not found" (M6).
+
+    The third of the four abnormal states is not here any more. `cpu_fallback` used to
+    be keyed on the needle `Running on CPU`, a string the shipped code emits nowhere
+    (repo-wide it appeared only in the plan text and in a test fixture), while the real
+    degradations arrive as `RuntimeWarning`s. They come in through `Job.warning` and are
+    decided by `is_cpu_fallback()` against the machine, not against a sentence (I4).
     """
-    if "OutOfMemoryError" in text or "out of memory" in text:
+    first = text.splitlines()[0] if text else ""
+    if "OutOfMemoryError" in first or "out of memory" in first.lower():
         return "vram"
-    if "No such file or directory" in text or "weight" in text:
+    if ("No such file or directory" in first or "FileNotFoundError" in first
+            or "weight" in first.lower()):
         return "missing_weight"
-    if "Running on CPU" in text or "CPUExecutionProvider" in text:
-        return "cpu_fallback"
     return None
+
+
+#: The part of `describe_compute_device()`'s refusal that is CLI advice, and what to say
+#: instead. `separate_cli.py`'s bytes are the CLI-parity property spec §8 pins, so the
+#: rewrite happens here, in the page's own translation layer, and nowhere else: this GUI
+#: has no `--device` flag -- the affordance is the `gpu_conversion` checkbox the Settings
+#: button opens (I5(b)). The clause is matched on the CLI's own wording so a change
+#: there is visible here rather than silently un-translated;
+#: `tests/test_work_page.py` pins both halves.
+_CLI_ADVICE = ("pass --device rocm to use the GPU",
+               "GPU conversion is off in Settings -- turn it on there to use the GPU")
+
+
+def translate_compute_line(line: str) -> str:
+    """One `compute device:` line, as a GUI user should read it."""
+    line = line.removeprefix("[cli] ")
+    if _CLI_ADVICE[0] in line:
+        line = line.replace(_CLI_ADVICE[0], _CLI_ADVICE[1])
+    return line
 
 
 def device_summary(backend: backends.Backend) -> str:
@@ -155,9 +186,26 @@ class WorkPage(fluentqt.Card):
         out_row.addWidget(self.browse_output)
         form.addLayout(out_row)
 
-        self.params = fluentqt.Expander(self)                # string-first ctor raises
-        self.params.setHeaderText("Model parameters")        # (spec §5.2.1) -- and there
-        form.addWidget(self.params)                          # is no setTitle on Expander
+        # M1. This Expander was Task 5's placeholder -- "no content until Task 6" -- and
+        # Task 6 put the fields on the settings page without removing it, so the primary
+        # page carried a control that opened onto nothing and no test named it. Spec §10
+        # assigns the arch's engine parameters to the work page, so what it opens onto now
+        # is a read-only summary of the arch's own parameter group plus the one action that
+        # goes where they are editable. One editable surface, no dead widget, and §10's
+        # promise visibly honoured instead of duplicated. `string-first ctor raises`
+        # (spec §5.2.1) and there is no `setTitle` on Expander, so the header is set after.
+        self.params = fluentqt.Expander(self)
+        self.params.setHeaderText("Model parameters")
+        self.params.setAnimationEnabled(False)
+        self.params_host = fluentqt.Card()                # a widget, never a bare QWidget
+        params_form = QVBoxLayout(self.params_host)       # (spec §5.3, Task 5's guard)
+        self.params_summary = fluentqt.Label("", self.params_host)
+        self.params_edit = fluentqt.Button("Edit these in Settings", self.params_host)
+        self.params_edit.clicked.connect(self.settings_requested.emit)
+        params_form.addWidget(self.params_summary)
+        params_form.addWidget(self.params_edit)
+        self.params.setContentWidget(self.params_host)
+        form.addWidget(self.params)
 
         buttons = QHBoxLayout()
         self.start_button = fluentqt.Button("START", self)
@@ -204,6 +252,7 @@ class WorkPage(fluentqt.Card):
 
         self.job.progress.connect(self.progress.setValue)
         self.job.console.connect(self._on_line)
+        self.job.warning.connect(self._on_warning)
         self.job.succeeded.connect(self._on_done)
         self.job.failed.connect(self._on_failed)
         self.job.cancelled.connect(self._on_cancelled)
@@ -218,9 +267,38 @@ class WorkPage(fluentqt.Card):
         user who touches nothing takes, and it is the one Plan 1's review found untested.
         `compute_label` stays empty: that line is plan-derived and may not appear before
         a plan exists (the controller fills it via `show_compute`).
+
+        The `Backend` object is kept, because `is_cpu_fallback()` is the only honest
+        producer the degraded-GPU surface has: the degradation this machine can be in is
+        a *state*, and it was being inferred from a sentence (I4). The `catch_warnings`
+        block around the probe is for the notices `backends.resolve()` itself raises --
+        `_probe_failed` when WMI refuses to say whether the card is AMD's, for instance:
+        at start-up there is no worker thread to carry them, and nothing else in the app
+        listens, so they would print to stderr and vanish. Scoped, so no global hook is
+        left installed for a test that runs after this one.
         """
-        self.device_label.setText(device_summary(backends.resolve(force=None)))
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            self._backend = backends.resolve(force=None)
+        for notice in caught:
+            self._on_warning(f"{notice.category.__name__}: {notice.message}")
+        self.device_label.setText(device_summary(self._backend))
         self.compute_label.setText("")
+
+    def is_cpu_fallback(self) -> bool:
+        """True when the machine offers a GPU backend but ONNX Runtime only has the CPU
+        provider, which is the reviewer's condition and the one `backends.resolve()` can
+        actually answer (`backends.py`'s `resolve`: the vendor scan or the provider list
+        can both fail, and when they do the run is correct and far slower).
+
+        Deliberately not derived from any text: a warning that *says* CPU on a machine
+        that is honestly CPU-only has not fallen back from anything.
+        """
+        backend = getattr(self, "_backend", None)
+        if backend is None:
+            return False
+        return (backend.name != "cpu" and backend.torch_device != "cpu"
+                and list(backend.ort_providers) == ["CPUExecutionProvider"])
 
     # -- public surface -------------------------------------------------------- #
 
@@ -245,6 +323,32 @@ class WorkPage(fluentqt.Card):
         self.model_combo.addItems([catalog.NO_MODEL, *names])
         current = getattr(self.selections, MAIN_MODEL_FIELD[arch], catalog.NO_MODEL)
         self.model_combo.setCurrentText(current if current in names else catalog.NO_MODEL)
+        self.refresh_parameter_summary()
+
+    def parameter_summary(self) -> str:
+        """The selected arch's engine parameters and what each one currently is.
+
+        Read-only, and derived: the *names* are `settings_page.ARCH_FIELD_GROUPS`' own
+        tuple for this arch -- the same table the editable page builds its widgets from,
+        so the two cannot drift apart -- and the *values* come from the `Settings` object
+        the controller assembles runs with, which is why `Controller.save_settings` hands
+        this page the new one. An arch the table has no group for (apollo) is said so,
+        rather than shown another arch's numbers.
+        """
+        arch = self.current_arch()
+        group = settings_page.ARCH_FIELD_GROUPS.get(arch)
+        if group is None:
+            return (f"{arch} reads no per-arch engine parameters; the general group's "
+                    f"format and device choices are what apply to it.")
+        lines = [f"{arch}: {len(group)} engine parameters (read-only here -- use the "
+                 f"button below)"]
+        lines += [f"{name} = {getattr(self.settings, name, '?')!r}" for name in group]
+        return "\n".join(lines)
+
+    def refresh_parameter_summary(self) -> None:
+        """Re-publish `parameter_summary()` -- on an arch change and after a settings
+        save, the two moments the numbers can move under the page."""
+        self.params_summary.setText(self.parameter_summary())
 
     def set_busy(self, busy: bool) -> None:
         self.start_button.setEnabled(not busy)
@@ -253,11 +357,12 @@ class WorkPage(fluentqt.Card):
     def show_compute(self, lines: tuple[str, ...]) -> None:
         """Publish the plan-derived compute line. The controller calls this the moment
         `session.assemble()` returns, because `Session.compute_lines` is the only place
-        those words come from -- and `compute_label` must stay empty until then.
-        `describe_compute_device()` prefixes `[cli] `; the prefix is the CLI's convention
-        for interleaving with stdout, so it is dropped here and nothing else changes.
+        those words come from -- and `compute_label` must stay empty until then. An empty
+        tuple is how a refusal clears the line again (I5(a)), and `translate_compute_line`
+        drops the CLI's `[cli] ` prefix and its `--device` advice, which is the GUI's
+        translation layer and the only place either of those is rewritten.
         """
-        self.compute_label.setText("\n".join(ln.removeprefix("[cli] ") for ln in lines))
+        self.compute_label.setText("\n".join(translate_compute_line(ln) for ln in lines))
 
     def show_cancelled(self, text: str) -> None:      # used by the tier-3 dismissal
         self.set_busy(False)
@@ -285,6 +390,19 @@ class WorkPage(fluentqt.Card):
 
     def _on_line(self, text: str) -> None:
         self.console.appendPlainText(text)
+
+    def _on_warning(self, text: str) -> None:
+        """A degradation the engine warned about, said twice in the only two ways a user
+        can be told: the console keeps it, the band points at it.
+
+        Whether it is worth the *degraded* surface is `is_cpu_fallback()`'s answer about
+        the machine, not a match against the sentence -- which is what spec §8's fourth
+        abnormal state was missing a producer for (I4). Anything else the engine warns
+        about is still a warning, so it gets `notify`'s plain surface rather than being
+        dropped or dressed up as one of the four.
+        """
+        self.console.appendPlainText(f"warning: {text}")
+        self._notify(DEGRADED_TITLE if self.is_cpu_fallback() else WARNING_TITLE, text)
 
     def _on_done(self, written: list) -> None:
         self.set_busy(False)
@@ -318,15 +436,18 @@ class WorkPage(fluentqt.Card):
 
         The page's title chooses the surface, and only from what the page actually knows:
         a cancel is the `cancelled` kind because it arrived on `Job.cancelled` (a signal,
-        never a guess); a failure is one of the three classified kinds only if its own
-        text says so, and otherwise keeps the plain `Failed` surface with the engine's
-        words as the message.
+        never a guess); a failure is one of the two classified kinds only if its own
+        first line says so, and otherwise keeps the plain `Failed` surface with the
+        engine's words as the message. `cpu_fallback` is not reached from here at all --
+        it is `_on_warning`'s, because that state is a warning and not a crash.
         """
         kind = None
         if title == CANCELLED_TITLE:
             kind = "cancelled"
         elif title == FAILED_TITLE:
             kind = _classify_failure(text)
+        elif title == DEGRADED_TITLE:
+            kind = "cpu_fallback"
         if kind is None:
             return dialogs.notify(title, text, parent=self)
         return dialogs.report_failure(kind, text, parent=self)

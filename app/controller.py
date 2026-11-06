@@ -172,7 +172,15 @@ class Controller:
         page.job.start(job.JobRequest(session=sess, audio=audio, export_path=export))
 
     def _refuse(self, text: str) -> None:
-        """Say why nothing was started. No dialog, no traceback, no fake progress."""
+        """Say why nothing was started. No dialog, no traceback, no fake progress.
+
+        The compute line goes empty with the refusal (I5(a)): it is a statement about
+        what the *engine will compute on*, and every path that reaches here has decided
+        the engine will not run at all. Leaving the previous run's line up meant the page
+        still asserted `compute device: cuda` under "not started" -- one of the two ways
+        this root used to tell a truth it had stopped being true.
+        """
+        self.work_page.show_compute(())
         self.work_page.console.appendPlainText(text)
 
     # -- TIER 3 --------------------------------------------------------------- #
@@ -279,6 +287,13 @@ class Controller:
             return messages
         self.settings, self.selections = page.st, page.sel
         self.work_page.selections = self.selections
+        # The work page now *shows* settings values (M1's parameter summary), so the
+        # object it reads has to be the one that was just saved. `refresh_models()` is
+        # still deliberately not called -- the Model combo is a per-run pick that may
+        # legitimately differ from the persisted `*_model` selection -- but the summary
+        # has no such excuse for going stale.
+        self.work_page.settings = self.settings
+        self.work_page.refresh_parameter_summary()
         console(f"settings saved to {settings_module.config_file()}")
         dialog.close()
         return messages

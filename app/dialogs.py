@@ -211,18 +211,49 @@ class Notifier(QObject):
     def pending_count(self) -> int:
         return len(self._pending)
 
+    def clear(self) -> None:
+        """Drop everything queued and close what is showing -- the test seam M5 asks for.
+
+        `DEFAULT_NOTIFIER` is process state with a lifetime longer than any page's, so a
+        suite that posts a bar and then destroys its page inherits a queue full of dead
+        wrappers; a test that counts bars has to be able to say "start from nothing"
+        instead of monkeypatching the deque behind the class's back.
+        """
+        self._timer.stop()
+        while self._pending:
+            bar, _band, _ms = self._pending.popleft()
+            _hide_and_release(bar)
+        if self._showing is not None:
+            bar, band, _ms = self._showing
+            self._showing = None
+            _hide_and_release(bar, band=band)
+
     # -- the one-at-a-time discipline ----------------------------------------- #
 
     def _pump(self) -> None:
-        if self._showing is not None or not self._pending:
+        if self._showing is not None:
             return
-        bar, band, ms = self._pending.popleft()
-        self._showing = (bar, band, ms)
-        if band is not None:
-            band.insertWidget(0, bar)
-        bar.show()
-        if ms > 0:
-            self._timer.start(ms)
+        while self._pending:
+            bar, band, ms = self._pending.popleft()
+            if not _alive(bar):
+                # Its page was destroyed while this bar waited its turn. Dropping it is
+                # the whole of the handling: the entry cannot be shown, and keeping it
+                # would make the *next* notification wait behind a widget that no longer
+                # exists -- which is how the queue used to stall silently (M5).
+                continue
+            if band is not None and not _alive(band):
+                # The page took its notification band with it and this bar did not belong
+                # to the page (`post`'s `band` and `parent` are separate arguments). The
+                # message is still true, so it is shown top-level like any bandless one;
+                # touching the dead layout here is the *other* way this queue froze.
+                band = None
+            self._showing = (bar, band, ms)
+            if band is not None:
+                band.insertWidget(0, bar)
+            bar.show()
+            if ms > 0:
+                self._timer.start(ms)
+            return
 
     def _retire(self) -> None:
         """Close the current bar, give the slot back, and let the next one through.
@@ -230,22 +261,61 @@ class Notifier(QObject):
         Idempotent and identity-checked, because two things call it: the timer and the
         bar's own close button (`closed` fires on that press -- measured; neither `close()`
         nor `setIsOpen(False)` emits it, which is why the timer cannot lean on them).
+
+        Nothing here may raise on its way to `self._pump()`: the bar can belong to a page
+        that has already been destroyed, and until this was guarded the `RuntimeError` Qt
+        raises for a deleted C++ object came out of `_retire` *before* the pump, so one
+        dead bar froze the queue and every notification after it went nowhere.
         """
         if self._showing is None:
             return
         bar, band, _ms = self._showing
         self._showing = None
         self._timer.stop()
-        if band is not None:
-            band.removeWidget(bar)
-        bar.hide()
-        # Measured: `deleteLater()` is not honoured inside `processEvents()` (Qt only
-        # processes deferred deletes when control returns to a *real* loop), so a
-        # deleteLater'd bar stays alive past the last reference and a leak here would be
-        # invisible to the suite. Dropping the parent hands ownership back to Python, and
-        # the widget goes now.
-        bar.setParent(None)
+        _hide_and_release(bar, band=band)
         self._pump()
+
+
+def _alive(obj) -> bool:
+    """False once the C++ object behind a wrapper is gone -- i.e. its page was destroyed.
+
+    Asked of *either* kind a queue entry holds (the bar is a `QWidget`, the band a
+    `QVBoxLayout`), which is why the touch is `objectName()` and not `isVisible()`: a
+    layout has no visibility to ask about, and the band is exactly as dead as the page
+    that owned it. Any call at all raises once the peer is gone, so this reads the one
+    every `QObject` answers.
+
+    `shiboken6.isValid` would be the direct question, and the wheel itself uses it
+    (`.venv/.../fluentqt/foundation.py`), but it would put a binding-internals import in
+    the module the surface guards read; Qt's own answer is precisely this `RuntimeError`.
+    A dead bar is dropped, not shown, not counted; a dead band costs the placement, not
+    the message.
+    """
+    try:
+        obj.objectName()
+    except RuntimeError:
+        return False
+    return True
+
+
+def _hide_and_release(bar, band=None) -> None:
+    """Take a bar off screen if it is still a widget, and hand it back to Python.
+
+    The two liveness checks are independent, and that is not paranoia: a pending bar was
+    never inserted into its band, so a bar the queue still owns can outlive the layout it
+    was meant to sit in.
+    """
+    if not _alive(bar):
+        return
+    if band is not None and _alive(band):
+        band.removeWidget(bar)
+    bar.hide()
+    # Measured: `deleteLater()` is not honoured inside `processEvents()` (Qt only
+    # processes deferred deletes when control returns to a *real* loop), so a
+    # deleteLater'd bar stays alive past the last reference and a leak here would be
+    # invisible to the suite. Dropping the parent hands ownership back to Python, and
+    # the widget goes now.
+    bar.setParent(None)
 
 
 def _band_for(parent) -> "QVBoxLayout | None":
@@ -260,6 +330,13 @@ def _band_for(parent) -> "QVBoxLayout | None":
 
 #: The app-wide queue. One at a time is a property of the *screen*, not of a page, and a
 #: run can produce a failure while a Done bar is still up.
+#:
+#: The consequence is that this queue outlives the pages whose bars it holds, and a held
+#: `(bar, band, ms)` tuple keeps a wrapper whose C++ object a closed dialog already
+#: destroyed. `_alive` (below) is what makes that survivable -- a dead bar is dropped on
+#: the way in and on the way out, a dead band costs only the placement, so neither can
+#: raise and freeze the pump (M5) -- and `Notifier.clear()` is the seam that lets a test
+#: empty the process-wide state it would otherwise inherit.
 DEFAULT_NOTIFIER = Notifier()
 
 

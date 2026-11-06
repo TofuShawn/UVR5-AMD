@@ -32,7 +32,9 @@ Two deviations from the shape this task was drafted with, both measured at PySid
 from __future__ import annotations
 
 import dataclasses
+import sys
 import traceback
+import warnings
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QThread, Signal
@@ -48,7 +50,15 @@ class JobRequest:
 
 
 class Job(QObject):
-    """The GUI-facing half of one job: five signals, one `start()`, one STOP.
+    """The GUI-facing half of one job: six signals, one `start()`, one STOP.
+
+    `warning` is the engine's degradation channel: `backends.warn_degradation` and
+    `separate.py`'s provider check speak in `RuntimeWarning`s, and `separate.py:101`
+    sets `warnings.filterwarnings("ignore")` at import, so without a listener here the
+    machine's fourth abnormal state (spec §8's CPU-only fallback) had no producer at all.
+    It is a signal and not console text because the page must be able to tell *the
+    machine is degraded* from *the engine printed something* -- which is the distinction
+    that must not be made by matching words (finding I4).
 
     Teardown: this object owns a `QThread` child, and `QThread`'s destructor hard-aborts
     the process when its thread is still running. A window-close handler that lets the
@@ -61,6 +71,7 @@ class Job(QObject):
 
     progress = Signal(int)
     console = Signal(str)
+    warning = Signal(str)
     succeeded = Signal(list)
     failed = Signal(str)
     cancelled = Signal(str)
@@ -158,6 +169,7 @@ class Job(QObject):
             worker = _Worker(lambda: self._cancel, self)
             worker.progress.connect(self.progress.emit)
             worker.line.connect(self.console.emit)
+            worker.warning.connect(self.warning.emit)
             worker.done.connect(self._on_done)
             worker.fail.connect(self._on_fail)
             worker.cancel.connect(self._on_cancel)
@@ -281,6 +293,7 @@ class _Worker(QThread):
 
     progress = Signal(int)
     line = Signal(str)
+    warning = Signal(str)
     done = Signal(list, int)
     fail = Signal(str, int)
     cancel = Signal(str, int)
@@ -294,23 +307,75 @@ class _Worker(QThread):
         # happens to be current when the queued event is finally delivered.
         self.generation = 0
 
+    def report_warning(self, message, category, filename, lineno, file=None, line=None):
+        """`warnings.showwarning`, for the duration of one job only.
+
+        The signature is the hook's, and the return is what `warnings` expects (None):
+        the point is the *destination* -- an engine-side degradation becomes a queued
+        signal instead of stderr text nobody sees, and the page decides what surface it
+        is worth (`app/work_page.py::_on_warning`).
+        """
+        self.warning.emit(f"{category.__name__}: {message}")
+        return None
+
     def run(self) -> None:
         generation = self.generation
+        terminal = False
         try:
-            written = session.run_job(
-                self.request.session,
-                audio=self.request.audio,
-                export_path=self.request.export_path,
-                printer=self.line.emit,
-                console_log=None,
-                progress=lambda pct: self.progress.emit(int(pct)),
-                cancel=self.cancel_flag,
-            )
-        except session.Cancelled as exc:
-            self.cancel.emit(str(exc), generation)
-            return
-        except Exception as exc:                              # noqa: BLE001 - report it
-            self.fail.emit(f"{type(exc).__name__}: {exc}\n{traceback.format_exc(limit=4)}",
-                           generation)
-            return
-        self.done.emit([Path(p) for p in written], generation)
+            try:
+                written = self._run_with_warnings_captured()
+            except session.Cancelled as exc:
+                terminal = True
+                self.cancel.emit(str(exc), generation)
+                return
+            except Exception as exc:                          # noqa: BLE001 - report it
+                terminal = True
+                self.fail.emit(f"{type(exc).__name__}: {exc}\n"
+                               f"{traceback.format_exc(limit=4)}", generation)
+                return
+            terminal = True
+            self.done.emit([Path(p) for p in written], generation)
+        finally:
+            if not terminal:
+                # M4. `except Exception` does not catch `BaseException`, and a thread
+                # that walks out of `run()` without emitting leaves the page on
+                # `set_busy(True)` for the rest of the session: START stays disabled and
+                # STOP does nothing, with no message anywhere. Whatever it was -- a
+                # `SystemExit` from a dependency, Qt's own abort paths, a generator
+                # throwing `GeneratorExit` -- the guarantee this class makes is that one
+                # terminal arrives, so it is made here rather than negotiated with the
+                # type of the exception.
+                exc = sys.exception()
+                detail = (f"{type(exc).__name__}: {exc}" if exc is not None
+                          else "no exception (the worker returned without reporting)")
+                self.fail.emit(f"the worker thread ended without reporting an outcome: "
+                               f"{detail}", generation)
+
+    def _run_with_warnings_captured(self) -> list:
+        """`session.run_job` with the engine's warnings redirected to `warning`.
+
+        Scoped, on purpose. `catch_warnings()` saves and restores the process's filter
+        list (and, since 3.11, its `showwarning`), and the `finally` here restores the
+        hook by hand as well so the app does not depend on which version that half of
+        the rescue arrived in: `separate.py:101` has already set the whole process to
+        `ignore`, so this block must not leave that behind either -- the suite's own
+        warning reporting, and any later job's, has to see what it set up.
+        `simplefilter("always")` inside the block is the same escape `backends.py`'s own
+        `warn_degradation` uses for the same reason.
+        """
+        previous = warnings.showwarning
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("always")
+                warnings.showwarning = self.report_warning
+                return session.run_job(
+                    self.request.session,
+                    audio=self.request.audio,
+                    export_path=self.request.export_path,
+                    printer=self.line.emit,
+                    console_log=None,
+                    progress=lambda pct: self.progress.emit(int(pct)),
+                    cancel=self.cancel_flag,
+                )
+        finally:
+            warnings.showwarning = previous
