@@ -3,7 +3,11 @@
 Everything below was read off this machine's installed wheels, not off a package index,
 on 2026-11-06. Versions are the ones `requirements.txt` and
 `tests/golden/pins.json` pin for the branch, and each entry names the upstream project's
-**own** licence file, with the path it has here when it ships inside the wheel.
+**own** licence file. Where that file ships inside the wheel it is given by the path it
+has *here*; where it does not — the font/icon asset rows below — the path is the one it
+has in the upstream **source** tree, and the recipient of this fork gets those faces
+compiled into the native `_fluentqt.pyd` with no separate licence text they can open.
+Those two paths are a citation, not a file this repository ships.
 
 ## This fork's own licence
 
@@ -49,6 +53,11 @@ derivatives of Microsoft's Fluent UI System Icons 1.1.328 under the MIT licence.
 Fluent-Qt's generator preserves the upstream catalog entries and adds its own semantic
 shortcuts **without copying any proprietary Segoe font outlines**; nothing here ships a
 Segoe face. The icon aliases the Python side sees are `fluentqt/_icon_aliases.json`.
+
+One asset row the wheel's own notices list but this table does not: a **Noto Sans SC**
+derivative. It is referenced only by Fluent-Qt's WebAssembly (browser) target, is absent
+from the native Windows wheel this fork installs, and is therefore never linked into
+`_fluentqt.pyd` here — nothing in this repository reaches it.
 
 **Qt / PySide6.** `PySide6-Essentials 6.9.3` and `shiboken6 6.9.3` (pulled in by
 Fluent-Qt, which hard-pins both) declare `LGPL-3.0-only OR GPL-2.0-only OR
@@ -99,8 +108,14 @@ ml-collections, pytorch-lightning, onnx, natsort, matchering, psutil and the dem
 
 The vendored `demucs/` and `lib_v5/` trees carry their upstream headers and licences
 in place; nothing in this notice alters them. Model weights are separate works with
-their own terms and are never installed into this repository — the model root
-(`UVR_MODEL_ROOT`) is read-only by policy here.
+their own terms. No tooling on this branch ever *installs* a weight: there is no
+downloader on any code path, and the model root (`UVR_MODEL_ROOT`, defaulting to
+`REPO/models`) is read-only by policy. That is not the same as "the tree holds none" —
+two weights inherited from the upstream base are still git-tracked here,
+`models/VR_Models/UVR-DeNoise-Lite.pth` (17,922,277 bytes) and `lib_v5/mixer.ckpt`, and
+`catalog.py` builds VR weight paths under the repo root, so the repository tree *is* a
+working weights root for a fresh clone. Whether to keep shipping that tracked `.pth` is
+the maintainer's open decision; this notice states the fact and does not resolve it.
 
 ## Names
 

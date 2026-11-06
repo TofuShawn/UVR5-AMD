@@ -11,7 +11,7 @@
 # runs, so the raise has to be above everything.
 # --------------------------------------------------------------------------- #
 if __name__ == "__main__":
-    raise SystemExit("legacy tkinter GUI removed; use separate_cli.py (PySide6 app arrives in Plan 2)")
+    raise SystemExit("legacy tkinter GUI removed; use separate_cli.py, or the Fluent-Qt app: python -m app.main")
 
     # Plan 2 Task 8 deleted the layer this block used to launch: the nine GUI classes
     # (the batch/ensemble/audio-tool layers, the widgets, the window itself), the 16

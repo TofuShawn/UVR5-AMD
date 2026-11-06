@@ -52,8 +52,8 @@ import pathlib
 REPO = pathlib.Path(__file__).resolve().parents[1]
 UVR_SRC = (REPO / "UVR.py").read_text(encoding="utf-8")
 UVR_TREE = ast.parse(UVR_SRC)
-REFUSAL = ("legacy tkinter GUI removed; use separate_cli.py "
-           "(PySide6 app arrives in Plan 2)")
+REFUSAL = ("legacy tkinter GUI removed; use separate_cli.py, "
+           "or the Fluent-Qt app: python -m app.main")
 
 #: Every GUI name Task 8 deleted. Checked both as AST definitions (so prose may still
 #: *say* the word, as the header comment does) and as source text for the two names

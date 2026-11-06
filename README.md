@@ -27,6 +27,26 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1 -Backend roc
 `sys.path`, and `app/main.py` no longer patches that. In the CLI, omitting `--device` means CPU
 (`Settings.gpu_conversion` defaults off) and every run prints one `[cli] compute device:` line.
 
+**Where the weights come from.** The model root is `uvr_paths.py:13`, which defaults to
+`REPO/models` and is overridden **only** by the `UVR_MODEL_ROOT` environment variable — there is
+no Settings/Selections field for it and no GUI picker. A fresh `bootstrap.ps1 -Backend rocm` user
+who launches `python -m app.main` with nothing set therefore sees the small set that ships *inside
+this repo tree* (the VR `UVR-DeNoise-Lite` weight and `lib_v5/mixer.ckpt` are git-tracked), not
+their existing library. To point the fork at an install's model library — the fork's central
+"no silent migration" promise is that it never moves your files for you — set the variable to the
+**Windows** path before launching:
+
+```powershell
+$env:UVR_MODEL_ROOT = "C:\Users\you\UVR\models"   # the read-only library you already have
+.venv\Scripts\python.exe -m app.main
+```
+
+This fork ships **no weight downloader**: nothing on any code path fetches a `.pth`/`.onnx`/`.th` —
+you place the file yourself and, if it is a name the baked tables do not know, supply its params as
+§3 describes. The whole app is bound to a **Windows-only, Python 3.12** interpreter: the only ROCm
+torch wheel is AMD's `cp312` Windows build (`bootstrap.ps1` pins `py -3.12`), so neither the GUI nor
+the suite is reachable on another OS or Python version.
+
 ## 3. A GUI-free run cannot open the params dialog: an unknown model is a hard error
 
 Upstream resolves params from the per-model `<hash>.json`, then a baked table, then **asks a human
@@ -54,8 +74,15 @@ Conditions on every figure: **RX 7900 XTX (gfx1100)**, Windows, `torch 2.9.1+roc
 * Healthy-CPU ratio only as a **range with its n**: **5.24–5.90×** (VR, n=3 sessions), **4.05×**
   (htdemucs, n=2); its divisor (`torch 2.15.0+cpu`, measured elsewhere) is not reproducible from
   this repository, so the range's top may never stand alone — a test asserts that.
-* SNR ≥ 40 dB CPU-vs-ROCm verified for `vr` and `htdemucs` only; `mdx`, `onnx`, `roformer`,
-  `mdx_c` and demucs v1/v2 have no weights here — refused as blocked, not simulated.
+* The arches fall into three tiers, and only the first is numerically verified here.
+  **Golden-covered** (`vr`, `htdemucs`): SNR ≥ 40 dB CPU-vs-ROCm measured on this branch.
+  **Blocked-by-table** (`mdx_c`, `onnx`, `roformer`): refused as `BlockedArchError` (exit 4),
+  never simulated. **Selectable-but-unverified**: `mdx` is in `SUPPORTED_ARCHS`, is **not** in
+  `BLOCKED_ARCHS`, and has a real 66,759,214-byte weight installed here
+  (`MDX_Net_Models/UVR-MDX-NET-Inst_HQ_3.onnx`), so it *runs* — it simply has no golden SNR
+  figure on this branch; `apollo` is offered by `archs()` yet lists **zero** names, so it
+  selects nothing. Demucs v1/v2 are **not catalog arches at all**: naming one is
+  `UnknownModelName` (exit 6), not a blocked (exit 4) refusal.
 
 The upstream v5.6 document follows, kept intact but for §License; it describes the **official** app.
 
