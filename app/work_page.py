@@ -205,13 +205,37 @@ class WorkPage(fluentqt.Card):
         root.setContentsMargins(20, 16, 20, 16)
         root.setSpacing(12)
 
+        # Masthead: the app's name, and beside it the one sentence a first-time user needs
+        # ("what is this and what do I do first"). The window chrome paints no title of its
+        # own (TitleBar exposes no title setter, measured), so the identity lives here in
+        # the content where it is guaranteed visible. The orientation maps straight onto
+        # the two numbered cards and START below, so an empty page still reads as a
+        # three-step task rather than a wall of unexplained controls.
+        masthead = QHBoxLayout()
+        masthead.setSpacing(12)
+        self.app_title = fluentqt.Label("UVR5 AMD/ROCm", self)
+        self.app_title.setFluentTypography(fluentqt.FontRole.Title)
+        masthead.addWidget(self.app_title)
+        masthead.addStretch(1)
+        self.orientation_label = self._caption(
+            "New here? Add audio in 1, pick a model in 2, then press START.",
+            fluentqt.Label.TextColorRole.Secondary)
+        self.orientation_label.setWordWrap(True)
+        masthead.addWidget(self.orientation_label)
+        root.addLayout(masthead)
+
         # The machine-derived lines, compact and quiet: they answer "what is this computing
         # on" and must not be scrolled away, but they are context, not a control, so they
-        # take the caption role and a secondary ink rather than a full body line each.
+        # take the caption role and a secondary ink. One row, not two: the pair repeats what
+        # the truth strip below already says, so spending two full lines on it at the top
+        # would tax every screen for information the summary carries anyway.
+        machine_row = QHBoxLayout()
+        machine_row.setSpacing(8)
         self.device_label = self._caption("", fluentqt.Label.TextColorRole.Tertiary)
         self.compute_label = self._caption("", fluentqt.Label.TextColorRole.Secondary)
-        root.addWidget(self.device_label)
-        root.addWidget(self.compute_label)
+        machine_row.addWidget(self.device_label)
+        machine_row.addWidget(self.compute_label, 1)
+        root.addLayout(machine_row)
 
         columns = QHBoxLayout()
         columns.setSpacing(12)
@@ -276,7 +300,7 @@ class WorkPage(fluentqt.Card):
         self.file_list.setReadOnly(True)
         self.file_list.setFontRole(fluentqt.FontRole.Caption)
         self.file_list.setPlaceholderText("nothing queued yet -- add files or a folder above")
-        self.file_list.setMinVisibleLines(4)
+        self.file_list.setMinVisibleLines(3)
         self.file_list.setMaxVisibleLines(6)
         one.addWidget(self.file_list, 1)
 
@@ -491,7 +515,7 @@ class WorkPage(fluentqt.Card):
         self.console.setReadOnly(True)
         self.console.setFontRole(fluentqt.FontRole.Caption)
         self.console.setPlaceholderText("engine output appears here")
-        self.console.setMinVisibleLines(5)
+        self.console.setMinVisibleLines(4)
         self.console.setMaxVisibleLines(8)
         root.addWidget(self.console)
 

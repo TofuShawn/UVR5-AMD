@@ -178,7 +178,7 @@ def build_app(argv=None):
     # asked for: the work page is two cards side by side over a full-width run band and
     # console now, and the extra width is what lets the left card hold two path rows plus
     # the queue without stretching every control to the full window. The height is the
-    # page's own fullest sizeHint (934 with a full console and the parameters open,
+    # page's own fullest sizeHint (944 with a full console and the parameters open,
     # measured) plus a little margin -- and 960 still fits a 1080p screen's usable area,
     # which 1100 did not. There is no scroll body: two pages each holding a ScrollView
     # segfault at interpreter exit (see `work_page._build`), so the page is laid out to fit
