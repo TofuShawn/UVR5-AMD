@@ -208,14 +208,18 @@ class WorkPage(fluentqt.Card):
         # Masthead: the app's name, and beside it the one sentence a first-time user needs
         # ("what is this and what do I do first"). The window chrome paints no title of its
         # own (TitleBar exposes no title setter, measured), so the identity lives here in
-        # the content where it is guaranteed visible. The orientation maps straight onto
-        # the two numbered cards and START below, so an empty page still reads as a
-        # three-step task rather than a wall of unexplained controls.
+        # the content where it is guaranteed visible. The name says what this front end IS
+        # -- the PySide6 GUI fork, not official UVR's tkinter -- with the AMD/ROCm target as
+        # a quiet badge; the orientation maps straight onto the two numbered cards and
+        # START below, so an empty page still reads as a three-step task.
         masthead = QHBoxLayout()
         masthead.setSpacing(12)
-        self.app_title = fluentqt.Label("UVR5 AMD/ROCm", self)
+        self.app_title = fluentqt.Label("UVR5 PySide6 GUI", self)
         self.app_title.setFluentTypography(fluentqt.FontRole.Title)
         masthead.addWidget(self.app_title)
+        self.fork_label = self._caption("AMD/ROCm fork",
+                                        fluentqt.Label.TextColorRole.Tertiary)
+        masthead.addWidget(self.fork_label)
         masthead.addStretch(1)
         self.orientation_label = self._caption(
             "New here? Add audio in 1, pick a model in 2, then press START.",

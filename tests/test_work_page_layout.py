@@ -85,20 +85,22 @@ def test_the_page_is_two_segments_over_a_fixed_action_row(qapp, tmp_path, monkey
 
 
 def test_the_masthead_names_the_app_and_the_first_run_task(qapp, tmp_path, monkeypatch):
-    """The two complaints this pins: the window chrome paints no title (TitleBar exposes
-    no title setter, measured), and an empty page gave a first-time user no idea what to
-    do. So the identity and the orientation live in the content: a title label and a
-    caption that maps onto the two numbered cards and START. Both must be present, wired
-    into the page, and not hidden -- a masthead that exists but is invisible answers
-    neither complaint, which is why this checks `isHidden` and ancestry, not just attrs.
+    """The complaints this pins: the window chrome paints no title (TitleBar exposes no
+    title setter, measured); an empty page gave a first-time user no idea what to do; and
+    the name did not say which front end this is. So the content carries the identity --
+    "UVR5 PySide6 GUI" with an AMD/ROCm fork badge -- plus a caption mapping the task onto
+    the two numbered cards and START. All must be present, wired into the page, and not
+    hidden: a masthead that exists but is invisible answers none of it, which is why this
+    checks `isHidden` and ancestry, not just attrs.
     """
     ctrl = _ui_ctrl(qapp, tmp_path, monkeypatch)
     page = ctrl.work_page
-    assert page.app_title.text() == "UVR5 AMD/ROCm", page.app_title.text()
+    assert page.app_title.text() == "UVR5 PySide6 GUI", page.app_title.text()
+    assert "AMD/ROCm" in page.fork_label.text(), page.fork_label.text()
     orientation = page.orientation_label.text()
     assert orientation, "the first-run orientation line is empty"
     assert "START" in orientation and "1" in orientation and "2" in orientation, orientation
-    for label in (page.app_title, page.orientation_label):
+    for label in (page.app_title, page.fork_label, page.orientation_label):
         assert page.isAncestorOf(label), label
         assert not label.isHidden(), label
 

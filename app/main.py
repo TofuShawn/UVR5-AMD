@@ -171,7 +171,7 @@ def build_app(argv=None):
 
     ctrl = controller.Controller()
     window = AppWindow(ctrl)
-    window.setWindowTitle("UVR5 AMD/ROCm")
+    window.setWindowTitle("UVR5 PySide6 GUI")
     window.setContentWidget(ctrl.work_page)   # `setContentWidget` on Window is real;
     window.resize(900, 960)                     # `Window.setContent` is not (measured).
     # 900x960, not the 760x900 Plan 2 shipped with nor the 900x1100 the first two-column cut
