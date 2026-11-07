@@ -133,6 +133,8 @@ def test_the_module_is_the_whole_public_surface_it_claims():
     test in this file against a `tmp_path`, never here, because a test that writes to the
     real `config_file()` leaves its result for the rest of the session.
     """
-    assert callable(ui_prefs.load) and callable(ui_prefs.save)
+    defined = sorted(n for n, v in vars(ui_prefs).items()
+                     if not n.startswith("_") and getattr(v, "__module__", None) == "ui_prefs")
+    assert defined == ["UiPrefs", "load", "save"], defined
     assert ui_prefs.UiPrefs() == ui_prefs.UiPrefs(export_path="")
     assert [f.name for f in dataclasses.fields(ui_prefs.UiPrefs)] == ["export_path"]

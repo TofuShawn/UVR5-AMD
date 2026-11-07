@@ -224,6 +224,33 @@ def test_stop_after_the_first_file_runs_no_more(qapp, tmp_path, monkeypatch):
     assert page.start_button.isEnabled()
 
 
+def test_a_stopped_batch_gets_a_surface_and_not_only_a_console_line(qapp, tmp_path,
+                                                                   monkeypatch):
+    """The other two batch endings speak through `_notify`; a STOP did not.
+
+    `_notify_for_file` returns early while `_batch_total > 1` (one bar per file over forty
+    files is the pile R-T7-infobar exists to prevent), and `end_batch(stopped=True)`
+    returned before either tally branch -- so the one ending a user *caused* was the only
+    one with no surface at all. The console keeps its line; the band gets the batch's own
+    words, and exactly one bar, because the per-file terminals stayed silent."""
+    files = _wav_files(tmp_path, ["a.wav", "b.wav", "c.wav"])
+    ctrl = _ui_ctrl(qapp, tmp_path, monkeypatch)
+    page = ctrl.work_page
+    _stub_assemble(monkeypatch, page)
+    started: list[Path] = []
+    _stub_job_start(page, monkeypatch, started,
+                    terminal=lambda: page.job.cancelled.emit("stopped by the user"))
+    shown = _spy_notify(page, monkeypatch)
+    _queued_files(page, files)
+    page.run_requested.emit()
+
+    assert [p.name for p in started] == ["a.wav"], started
+    assert shown == [(work_page.CANCELLED_TITLE,
+                      "batch stopped after 1 file(s); the rest were not run")], shown
+    assert ("batch stopped after 1 file(s); the rest were not run"
+            in page.console.toPlainText())
+
+
 def test_a_stop_pressed_before_any_terminal_stops_the_queue(qapp, tmp_path, monkeypatch):
     """The flag is set by the *button*, not read off the terminal. A cancellation lands
     when the engine's next progress hook fires (`separate.py:1383`), so a STOP during a

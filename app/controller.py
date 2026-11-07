@@ -47,11 +47,6 @@ class _Batch:
     `start()` emits when it refuses, held there so `_start_current_file` can pre-empt the
     same refusal without a second copy of it. `tests/test_job.py` runs unmodified as the
     evidence that nothing else moved.
-
-    `request` is the last `JobRequest` handed out, kept so a mid-run reader can ask which
-    file the engine is on without re-deriving it from `files[index]` -- which is the same
-    path, but derived twice in two places is how a counter and a display start agreeing by
-    accident and then disagreeing.
     """
 
     sess: session.Session
@@ -60,7 +55,6 @@ class _Batch:
     written: int = 0
     failures: list[str] = dataclasses.field(default_factory=list)
     stopping: bool = False
-    request: "job.JobRequest | None" = None
 
     @property
     def current(self) -> Path:
@@ -194,7 +188,6 @@ class Controller:
             return
         files = page.pending_files()
         model = page.selected_model()
-        audio = files[0]
 
         try:
             sess = session.assemble(st=self.settings, cat=self.catalog, model=model,
@@ -257,9 +250,8 @@ class Controller:
             self._refuse(f"not started: {job.BUSY_REFUSAL}")
             return
         self.work_page.set_busy(True)
-        batch.request = job.JobRequest(session=batch.sess, audio=batch.current,
-                                       export_path=self.export_for(batch.current))
-        self.work_page.job.start(batch.request)
+        self.work_page.job.start(job.JobRequest(session=batch.sess, audio=batch.current,
+                                                export_path=self.export_for(batch.current)))
 
     def _on_file_done(self, written: list) -> None:
         if self._batch is None:

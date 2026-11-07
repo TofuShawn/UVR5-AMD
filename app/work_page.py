@@ -607,7 +607,7 @@ class WorkPage(fluentqt.Card):
             self.count_label.setText(f"{len(files)} file(s) queued")
         self.reason_label.setText("; ".join(blockers))
         self.refresh_summary()
-        self._publish_run_state()
+        self._publish_run_state(blockers)
 
     def refresh_models(self) -> None:
         arch = self.current_arch()
@@ -643,7 +643,7 @@ class WorkPage(fluentqt.Card):
         save, the two moments the numbers can move under the page."""
         self.params_summary.setText(self.parameter_summary())
 
-    def _publish_run_state(self) -> None:
+    def _publish_run_state(self, blockers: list[str]) -> None:
         """The one expression that decides whether START is pressable.
 
         Two features write this button -- the busy state and the blockers -- and two
@@ -652,8 +652,12 @@ class WorkPage(fluentqt.Card):
         answers "a job is already running", and a `set_busy(False)` that ignored the
         blockers would enable a START that can only refuse. So the rule lives here, once,
         and both callers call it.
+
+        The list arrives rather than being recomputed because `blockers()` stats every
+        queued path: `refresh_queue` already has it for the reason label, and asking again
+        would stat a 400-file queue twice per keystroke in the Input box.
         """
-        self.start_button.setEnabled(not self._busy and not self.blockers())
+        self.start_button.setEnabled(not self._busy and not blockers)
         self.stop_button.setEnabled(self._busy)
         # Everything that decides the run in flight is read-only for its duration. The plan
         # is assembled once (`Controller._on_run`) and `export_for` is asked per file, so a
@@ -672,7 +676,7 @@ class WorkPage(fluentqt.Card):
     def set_busy(self, busy: bool) -> None:
         """Whether a run is in flight -- one of the two halves of START's enablement."""
         self._busy = busy
-        self._publish_run_state()
+        self._publish_run_state(self.blockers())
 
     def show_compute(self, lines: tuple[str, ...]) -> None:
         """Publish the plan-derived compute line. The controller calls this the moment
@@ -858,8 +862,12 @@ class WorkPage(fluentqt.Card):
             return
         if stopped:
             self.progress.setValue(0)
-            self.console.appendPlainText(
-                f"batch stopped after {total} file(s); the rest were not run")
+            line = f"batch stopped after {total} file(s); the rest were not run"
+            self.console.appendPlainText(line)
+            # The one ending the user caused gets the same surface as the two they did
+            # not: `_notify_for_file` stayed silent for every file of this batch, so
+            # without this a STOP is a console line nobody is looking at.
+            self._notify(CANCELLED_TITLE, line)
             return
         self.console.appendPlainText(
             f"batch finished: {total} file(s) attempted, {written} file(s) written"
