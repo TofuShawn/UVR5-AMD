@@ -3,7 +3,7 @@
 The requirement this file exists to hold is a sentence the user said out loud after three
 days of screenshots: the page has to be as easy to use as official UVR 5.6 and better where
 5.6 is ugly, and "one screen" is not the goal -- "沒必要執著在於一屏". So the page is now
-two labelled segments in a scroll body over a fixed action row, and the three choices that
+two labelled cards side by side over a fixed run band, and the three choices that
 decide where a stem lands and what computes it (output folder, format, GPU) are on the page
 instead of behind a Settings button in an 83-field dialog.
 
@@ -60,13 +60,15 @@ def test_building_the_page_writes_nothing_to_disk(qapp, tmp_path, monkeypatch):
 
 
 def test_the_page_is_two_segments_over_a_fixed_action_row(qapp, tmp_path, monkeypatch):
-    """The two segments say what each half is for, and the action row does not scroll.
+    """The two cards say what each half is for, and the run band does not scroll away.
 
     Four assertions, each a different failure: labels absent (the page is still a wall of
-    widgets); the action row *inside* the scroll area (START, the progress bar and the
-    reason drift off the bottom during a batch, which is 5.6's complaint rather than its
-    fix); the console inside it too (reading engine text while scrolling is not possible);
-    and the form controls outside it (the whole reason a scroll body is allowed).
+    widgets); the run band nested inside either card instead of parented to the page (START,
+    the progress bar and the reason would then be clipped by a card sized to its own
+    contents during a batch, which is 5.6's complaint rather than its fix); the console
+    buried in a card too (reading engine text while the queue grows is not possible); and
+    the form controls unreachable from the page root (they live in the cards, so the page
+    has to be their ancestor).
     """
     ctrl = _ui_ctrl(qapp, tmp_path, monkeypatch)
     page = ctrl.work_page        # the root is kept: its slots are what the page's signals
@@ -96,8 +98,9 @@ def test_no_scroll_view_is_built_by_the_page(qapp, tmp_path, monkeypatch):
 
     So there is no scroll area here, and the reason it is not needed is a number rather
     than an assertion of intent: the page's own `sizeHint()` at the width `app/main.py`
-    launches at, with the queue showing and the parameters collapsed, against the height
-    that window asks for. If that stops being true, the scroll area belongs at the
+    launches at, with the queue empty and the parameters collapsed, is 838 (measured) --
+    under the 900 bound below, and under the 960 the window asks for even after a full
+    console pushes it to 934. If that stops being true, the scroll area belongs at the
     *window* level -- one per process, owned by the chrome -- and this is where whoever
     gets there finds out why it is not already there.
     """

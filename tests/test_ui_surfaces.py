@@ -116,6 +116,12 @@ UI_MODULE_FUNCTIONS = frozenset({
     # exists (spec §5.3 reduce-motion). `MotionMode` is the enum both verbs speak; the
     # honest fix is to review it here, not to drop the wiring or cast the enum to an int.
     "MotionMode",
+    # The work page's visual pass: `FontRole` is the typography enum `Label.setFluentTypography`
+    # and `TextEdit.setFontRole` speak, and `Icons` is the glyph table `Button.setIconGlyph`
+    # reads. Both are design namespaces, not widgets and not token overrides -- they select
+    # the wheel's own roles, which is exactly what ruling A permits (the ban is on
+    # `apply_theme_overrides` / `set_widget_theme_overrides`, checked below).
+    "FontRole", "Icons",
 })
 
 #: Qt base classes the app may never *construct* itself. `QWidget(` keeps the native

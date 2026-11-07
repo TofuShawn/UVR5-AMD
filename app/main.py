@@ -173,12 +173,17 @@ def build_app(argv=None):
     window = AppWindow(ctrl)
     window.setWindowTitle("UVR5 AMD/ROCm")
     window.setContentWidget(ctrl.work_page)   # `setContentWidget` on Window is real;
-    window.resize(900, 1100)                    # `Window.setContent` is not (measured).
-    # 900x1100, not the 760x900 Plan 2 shipped with: the work page is two segments in a
-    # scroll body now, so the extra height is what makes the second one readable without
-    # the user discovering the scroll bar first. The page is not obliged to fit -- that
-    # constraint was lifted deliberately, and the scroll area is what makes lifting it
-    # honest rather than a clipped bottom row.
+    window.resize(900, 960)                     # `Window.setContent` is not (measured).
+    # 900x960, not the 760x900 Plan 2 shipped with nor the 900x1100 the first two-column cut
+    # asked for: the work page is two cards side by side over a full-width run band and
+    # console now, and the extra width is what lets the left card hold two path rows plus
+    # the queue without stretching every control to the full window. The height is the
+    # page's own fullest sizeHint (934 with a full console and the parameters open,
+    # measured) plus a little margin -- and 960 still fits a 1080p screen's usable area,
+    # which 1100 did not. There is no scroll body: two pages each holding a ScrollView
+    # segfault at interpreter exit (see `work_page._build`), so the page is laid out to fit
+    # instead, and `test_no_scroll_view_is_built_by_the_page` pins the build-state hint
+    # under 900 so a future control that outgrows the window is caught here.
     return app, window
 
 
