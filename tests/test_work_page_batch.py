@@ -1,10 +1,11 @@
 """Plan 3 Task 2: the batch queue, tested where the queue lives -- the composition root.
 
-Batch mode is deliberately *not* in `app/job.py`. `Job` is one file (`:133-150` refuses an
+Batch mode is deliberately *not* in `app/job.py`. `Job` is one file (`:141-158` refuses an
 overlap and explains why: the export directory, the VRAM, and `run_job`'s before/after
 snapshot of the former), `session.run_job` is one file, and the engine is one file. What
-runs many files is the thing that owns all three, so the queue is `Controller`'s business
-and the only change to `job.py` is nothing.
+runs many files is the thing that owns all three, so the queue is `Controller`'s business;
+the only change to `job.py` is `BUSY_REFUSAL`, the sentence its refusal emits, held there so
+the root can pre-empt that refusal without a second copy of the words.
 
 The stubs are the suite's own: `_ui_ctrl`, `_Rp`, `SlowEngine` and `_spy_notify` come from
 `tests/test_work_page.py` (the cross-module import is `tests/test_ui_surfaces.py:28`'s
@@ -17,7 +18,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from app import dialogs, session, work_page
+from app import dialogs, job, session, work_page
 from tests.test_work_page import SlowEngine, _Rp, _spy_notify, _ui_ctrl
 
 
@@ -294,6 +295,96 @@ def test_the_queue_is_reachable_from_the_page_and_survives_a_refusal(qapp, tmp_p
     assert len(page.pending_files()) == 3, "a refusal must not eat the queue"
     assert page.start_button.isEnabled() is False
     assert ctrl._batch is None, "a refusal starts nothing"
+
+
+def test_a_refused_start_does_not_drain_the_queue_as_fake_failures(qapp, tmp_path,
+                                                                  monkeypatch):
+    """`Job.start` reports a refusal on `failed` -- the same signal a file's engine error
+    arrives on (`job.py:156-158`). Consuming that as a file terminal advances the queue,
+    which starts the next file, which refuses again: a three-file batch ends as "3 file(s)
+    attempted, 0 written, 3 of 3 failed" with a named failure per file, for runs that never
+    existed. Measured before the fix, and the lie is the point -- the user is told which
+    files are broken when nothing ran at all.
+
+    Driven with `is_running()` held True, so the condition is the production one. The guard
+    pre-empts it: no request is handed to a `Job` that would answer on `failed`, so nothing
+    is attempted, one reason is printed, busy is released, and the queue is intact for the
+    next press. The negative control at the end calls the *real* `start` to prove the
+    sentence the root prints is the one the `Job` itself emits."""
+    files = _wav_files(tmp_path, ["a.wav", "b.wav", "c.wav"])
+    ctrl = _ui_ctrl(qapp, tmp_path, monkeypatch)
+    page = ctrl.work_page
+    _stub_assemble(monkeypatch, page)
+    _queued_files(page, files)
+    monkeypatch.setattr(page.job, "is_running", lambda: True)
+    started: list[Path] = []
+    real_start = page.job.start
+
+    def start(request):
+        started.append(Path(request.audio))
+        real_start(request)
+    monkeypatch.setattr(page.job, "start", start)
+
+    page.run_requested.emit()
+
+    assert started == [], "the guard pre-empts the refusal instead of consuming it"
+    text = page.console.toPlainText()
+    assert f"not started: {job.BUSY_REFUSAL}" in text, text
+    assert "b.wav" not in text and "c.wav" not in text, text
+    assert "batch finished" not in text, text
+    assert ctrl._batch is None
+    assert page.start_button.isEnabled(), "the refusal releases busy instead of stranding it"
+    assert page.stop_button.isEnabled() is False
+    assert len(page.pending_files()) == 3, "a refusal must not eat the queue"
+
+    # Negative control, last so its terminal cannot disturb the assertions above: the real
+    # `start` answers a live job with exactly this sentence on `failed`, and the root ignores
+    # it now that no batch is live (`_batch is None`) rather than tallying a file.
+    heard: list[str] = []
+    page.job.failed.connect(heard.append)
+    real_start(job.JobRequest(session=None, audio=files[0], export_path=tmp_path))
+    assert heard == [job.BUSY_REFUSAL], heard
+    assert ctrl._batch is None
+
+
+def test_the_choices_a_run_froze_cannot_be_changed_mid_run(qapp, tmp_path, monkeypatch):
+    """The plan is assembled once for the whole batch (`_on_run`), and `export_for` is asked
+    per file. So a change made while file 2 is running has two possible meanings and both
+    used to be available: the Output box would move the *rest* of one batch into a second
+    folder -- which is also the directory `run_job` diffs to decide what it wrote -- and a
+    format or GPU click would print "settings saved" while every remaining file still ran
+    under the plan assembled before it. A console line claiming a change the run does not
+    honour is the same lie as a radio showing a value that was never stored.
+
+    The fix is that those controls are read-only for the duration, so there is no deferred
+    write to explain. The queue is deliberately *not* frozen: lining up the next run while
+    this one finishes is legitimate, and `batch.files` is already a copy."""
+    files = _wav_files(tmp_path, ["a.wav", "b.wav"])
+    ctrl = _ui_ctrl(qapp, tmp_path, monkeypatch)
+    page = ctrl.work_page
+    _stub_assemble(monkeypatch, page)
+    _queued_files(page, files)
+    monkeypatch.setattr(page.job, "start", lambda request: None)   # no terminal: still running
+    frozen = [page.output_edit, page.browse_output, page.default_output_check,
+              page.gpu_check, page.model_combo, page.arch_bar, page.settings_button,
+              page.params_edit, *page.format_radios.values()]
+
+    page.run_requested.emit()
+    assert all(not w.isEnabled() for w in frozen), \
+        [type(w).__name__ for w in frozen if w.isEnabled()]
+    assert page.stop_button.isEnabled(), "STOP is the one thing a run in flight must offer"
+    assert page.input_edit.isEnabled() and page.add_files_button.isEnabled(), \
+        "the next run's queue is not this run's plan"
+
+    page.job.succeeded.emit([])                     # file 1 ends, file 2 starts
+    assert ctrl._batch is not None and ctrl._batch.index == 1
+    assert all(not w.isEnabled() for w in frozen), "still mid-batch, still frozen"
+
+    page.job.succeeded.emit([])                     # the batch ends
+    assert ctrl._batch is None
+    assert all(w.isEnabled() for w in frozen), \
+        [type(w).__name__ for w in frozen if not w.isEnabled()]
+    assert page.start_button.isEnabled()
 
 
 def test_the_buttons_are_wired_to_the_pickers_not_to_nothing(qapp, tmp_path, monkeypatch):

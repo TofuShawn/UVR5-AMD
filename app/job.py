@@ -53,6 +53,14 @@ class JobRequest:
     export_path: object
 
 
+#: What `start()` says when it refuses to overlap a live job. A constant because the
+#: composition root pre-empts the same refusal (`Controller._start_current_file`): the
+#: root must not hand a request to a `Job` that will answer it on `failed`, where a batch
+#: would read it as a file's engine error. Two copies of one sentence is two sentences the
+#: moment either is edited, and the root's console line is the one a user reads.
+BUSY_REFUSAL = "a job is already running; wait for it or press STOP"
+
+
 class Job(QObject):
     """The GUI-facing half of one job: six signals, one `start()`, one STOP.
 
@@ -146,7 +154,7 @@ class Job(QObject):
         (Task 5's controller) owns exactly one `Job`; Task 5 must keep to that one instance.
         """
         if self.is_running():
-            self.failed.emit("a job is already running; wait for it or press STOP")
+            self.failed.emit(BUSY_REFUSAL)
             return
         worker = self._ensure_worker()
         # `is_running()` releases on `isFinished()`, so a previous job's terminal can still

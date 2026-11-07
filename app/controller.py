@@ -40,11 +40,13 @@ class _Batch:
     """The queue, its position, and its tally. The root's business, all of it.
 
     Deliberately not in `app/job.py`: `Job` is one file (`start()`'s guard at
-    `job.py:133-150` explains the three reasons -- a shared export directory, shared VRAM,
+    `job.py:141-158` explains the three reasons -- a shared export directory, shared VRAM,
     and `run_job`'s before/after snapshot of the former attributing one run's stems to
     another), `session.run_job` is one file, and the engine is one file. The only change to
-    `job.py` for batch mode is nothing, and `tests/test_job.py` runs unmodified as the
-    evidence of that.
+    `job.py` for batch mode is one constant and no behaviour: `BUSY_REFUSAL` is the sentence
+    `start()` emits when it refuses, held there so `_start_current_file` can pre-empt the
+    same refusal without a second copy of it. `tests/test_job.py` runs unmodified as the
+    evidence that nothing else moved.
 
     `request` is the last `JobRequest` handed out, kept so a mid-run reader can ask which
     file the engine is on without re-deriving it from `files[index]` -- which is the same
@@ -241,6 +243,18 @@ class Controller:
         """
         batch = self._batch
         if batch is None:
+            return
+        if self.work_page.job.is_running():
+            # `Job.start` reports this very refusal on `failed` (`job.py:156-158`) -- the
+            # same signal a file's engine error arrives on. Letting it through would make
+            # `_on_file_failed` tally a file that never ran and `_advance` start the next
+            # one, which refuses again: a three-file batch ends as "3 of 3 failed" with a
+            # named failure per file, for runs that never existed. So the refusal is caught
+            # here, where the queue is still known, and ends the batch once.
+            self._batch = None
+            self.work_page.end_batch(written=batch.written, failures=batch.failures,
+                                     stopped=True)
+            self._refuse(f"not started: {job.BUSY_REFUSAL}")
             return
         self.work_page.set_busy(True)
         batch.request = job.JobRequest(session=batch.sess, audio=batch.current,
@@ -536,7 +550,20 @@ class Controller:
         # has no such excuse for going stale.
         self.work_page.settings = self.settings
         self.work_page.refresh_parameter_summary()
+        # Two of these fields are now *displayed* on the work page, and the truth strip reads
+        # the widgets rather than the object -- so they follow the save. Both republish with
+        # signals blocked: showing a stored value is not a user action, and a `toggled` here
+        # would ask `_apply_setting` to write back what was just read.
+        self.work_page.set_stem_format(self.settings.save_format)
+        self.work_page.set_gpu(bool(self.settings.gpu_conversion))
         console(f"settings saved to {settings_module.config_file()}")
+        if self._batch is not None:
+            # The dialog is non-modal, so Save can land mid-run. The batch keeps the plan it
+            # assembled once, and a bare "settings saved" over a running job reads as a
+            # change to that job -- the deferred-write lie the page's own controls are
+            # frozen against while busy.
+            console("the run in flight keeps the plan it started with; these values are "
+                    "the next run's")
         dialog.close()
         return messages
 

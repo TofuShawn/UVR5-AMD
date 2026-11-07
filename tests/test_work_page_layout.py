@@ -192,8 +192,17 @@ def test_the_gpu_choice_writes_the_one_field_the_plan_reads(qapp, tmp_path, monk
     monkeypatch.setattr(page, "selected_model", lambda: "UVR-MDX-NET-Inst_HQ_3")
     _stub_job_start(page, monkeypatch, [], failing=set())
     page.input_edit.setText(str(_wav_files(tmp_path, ["one.wav"])[0]))
+    # Both directions, from the other side of the default: `gpu_conversion` defaults to
+    # False, so a lone `setChecked(False)` emits no `toggled`, writes nothing, and asserts
+    # the default back at itself -- which is what this test used to do.
+    page.gpu_check.setChecked(True)
+    assert ctrl.settings.gpu_conversion is True
+    assert json.loads(settings_module.config_file().read_text(encoding="utf-8"))[
+        "gpu_conversion"] is True
     page.gpu_check.setChecked(False)
     assert ctrl.settings.gpu_conversion is False
+    assert json.loads(settings_module.config_file().read_text(encoding="utf-8"))[
+        "gpu_conversion"] is False
     page.run_requested.emit()
     assert started, "START assembled"
     assert started[-1]["st"] is ctrl.settings
@@ -260,6 +269,8 @@ def test_the_summary_strip_repeats_nothing_it_can_get_wrong(qapp, tmp_path, monk
     files = _wav_files(tmp_path, ["one.wav", "two.wav"])
     page.add_extra_files([str(f) for f in files])
     page.format_radios["FLAC"].setChecked(True)
+    page.gpu_check.setChecked(True)
+    assert "GPU" in page.truth_summary(), page.truth_summary()
     page.gpu_check.setChecked(False)
     text = page.truth_summary()
     assert "FLAC output" in text and "CPU" in text, text
@@ -291,6 +302,58 @@ def test_the_controls_are_read_only_at_build_and_live_afterwards(qapp, tmp_path,
     assert ctrl.settings.gpu_conversion is not settings_module.Settings().gpu_conversion
     assert json.loads(settings_module.config_file().read_text())["gpu_conversion"] == \
         ctrl.settings.gpu_conversion
+
+
+def test_a_settings_save_republishes_the_two_choices_the_work_page_shows(qapp, tmp_path,
+                                                                      monkeypatch):
+    """The work page now *displays* two `Settings` fields, so a save that came through the
+    dialog has to reach the widgets that display them. `save_settings` adopted the new
+    object and refreshed the parameter summary but left the radios and the GPU box showing
+    the previous run's values -- and those two widgets are what the truth strip reads, so
+    the page spent the rest of the session asserting a format the next run would not use.
+    The republish blocks signals: showing a stored value is not a user action, and a
+    `toggled` here would ask the root to write back what it just read."""
+    ctrl = _ui_ctrl(qapp, tmp_path, monkeypatch)
+    page = ctrl.work_page
+    ctrl._on_settings_requested()
+    dlg = ctrl.settings_dialog
+    dlg.page.set_field_value("save_format", "FLAC")
+    dlg.page.set_field_value("gpu_conversion", True)
+    before = settings_module.config_file().read_bytes()
+    ctrl.save_settings(dlg.page, dlg)
+    assert ctrl.settings.save_format == "FLAC"
+    assert page._checked_format() == "FLAC"
+    assert page.gpu_check.isChecked() is True
+    assert "FLAC output" in page.summary_label.text(), page.summary_label.text()
+    assert settings_module.config_file().read_bytes() != before, "the save reached the disk"
+    assert "settings saved: save_format" not in page.console.toPlainText(), \
+        "a republish is not a second write"
+
+
+def test_a_settings_save_mid_run_says_which_run_it_applies_to(qapp, tmp_path, monkeypatch):
+    """The dialog is non-modal, so START can be pressed while it is open and Save can land
+    while file 2 is running. The batch keeps the plan it assembled -- that is the whole
+    reason it assembles once -- so the console has to say the saved values are the *next*
+    run's. Without the line, "settings saved to ..." reads as a change to the run in flight,
+    which is the same deferred-write lie the work page's own controls are frozen against."""
+    from tests.test_work_page_batch import _stub_assemble, _wav_files
+
+    ctrl = _ui_ctrl(qapp, tmp_path, monkeypatch)
+    page = ctrl.work_page
+    _stub_assemble(monkeypatch, page)
+    files = _wav_files(tmp_path, ["a.wav", "b.wav"])
+    page.input_edit.setText(str(files[0]))
+    page.add_extra_files([str(files[1])])
+    monkeypatch.setattr(page.job, "start", lambda request: None)   # still in flight
+    ctrl._on_settings_requested()
+    dlg = ctrl.settings_dialog
+    dlg.page.set_field_value("save_format", "FLAC")
+    page.run_requested.emit()
+    assert page._busy is True
+    ctrl.save_settings(dlg.page, dlg)
+    text = page.console.toPlainText()
+    assert "the run in flight keeps the plan it started with" in text, text
+    assert page._checked_format() == "FLAC", "the page shows what the next run will use"
 
 
 def test_the_page_still_refuses_an_illegal_format_at_the_engine_gate(qapp, tmp_path,

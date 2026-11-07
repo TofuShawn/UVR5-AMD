@@ -655,6 +655,19 @@ class WorkPage(fluentqt.Card):
         """
         self.start_button.setEnabled(not self._busy and not self.blockers())
         self.stop_button.setEnabled(self._busy)
+        # Everything that decides the run in flight is read-only for its duration. The plan
+        # is assembled once (`Controller._on_run`) and `export_for` is asked per file, so a
+        # mid-batch Output edit would move the rest of one batch into a second folder -- the
+        # folder `run_job` diffs to decide what it wrote -- and a format or GPU click would
+        # print "settings saved" while every remaining file still ran under the plan
+        # assembled before it. Freezing the controls means there is no deferred write to
+        # explain. The queue is deliberately absent: lining up the next run while this one
+        # finishes is legitimate, and `_Batch.files` is already a copy of the paths.
+        for widget in (self.output_edit, self.browse_output, self.default_output_check,
+                       self.model_combo, self.arch_bar, self.gpu_check,
+                       self.settings_button, self.params_edit,
+                       *self.format_radios.values()):
+            widget.setEnabled(not self._busy)
 
     def set_busy(self, busy: bool) -> None:
         """Whether a run is in flight -- one of the two halves of START's enablement."""
