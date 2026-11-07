@@ -334,6 +334,7 @@ class WorkPage(fluentqt.Card):
         # (QWidget/QDialog/QFrame) does not cover it.
         format_group = QButtonGroup(self)
         format_group.setExclusive(True)
+        self.format_group = format_group        # `set_stem_format` lifts exclusivity to clear it
         format_row = QHBoxLayout()
         form.addWidget(fluentqt.Label("Output format", body))
         for fmt in session.SAVE_FORMATS:
@@ -733,10 +734,24 @@ class WorkPage(fluentqt.Card):
         self.summary_label.setText(self.truth_summary())
 
     def set_stem_format(self, fmt: str) -> None:
-        """Show the format the file actually holds. The revert path of a refused write."""
-        self.format_radios[fmt].blockSignals(True)
-        self.format_radios[fmt].setChecked(True)
-        self.format_radios[fmt].blockSignals(False)
+        """Show the format the file actually holds -- including one no radio can hold.
+
+        `save_format` is a free `str` in a file a user can hand-edit, so the value a refused
+        write reverts to may be `"OGG"`. Indexing the group by it raised `KeyError` out of a
+        Qt slot (PySide6 prints that to stderr and the loop carries on), which left the
+        rejected pick on screen over a file that still said something else. Nothing checked
+        is the state that value loaded into, and `_checked_format` reads it as `"?"`.
+
+        Exclusivity is lifted for the write because an exclusive `QButtonGroup` will not let
+        its checked button be cleared, and "clear the group" is exactly what an unknown
+        value asks for.
+        """
+        self.format_group.setExclusive(fmt in self.format_radios)
+        for name, radio in self.format_radios.items():
+            radio.blockSignals(True)
+            radio.setChecked(name == fmt)
+            radio.blockSignals(False)
+        self.format_group.setExclusive(True)
         self.refresh_summary()
 
     def set_gpu(self, on: bool) -> None:

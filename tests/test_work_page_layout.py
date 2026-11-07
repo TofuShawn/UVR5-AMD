@@ -312,3 +312,33 @@ def test_the_page_still_refuses_an_illegal_format_at_the_engine_gate(qapp, tmp_p
         "nothing is claimed to be selected when the file says something illegal"
     assert page._checked_format() == "?"
     assert "? output" in page.truth_summary()
+
+
+def test_a_refused_write_from_an_illegal_stored_format_reverts_to_nothing(qapp, tmp_path,
+                                                                       monkeypatch):
+    """The two holes above meet in one gesture, and the revert path is where they collided:
+    the file says `"OGG"`, the user clicks WAV, the write is refused, and the controller
+    republishes the value it could not change -- `"OGG"`, which has no radio. Indexing the
+    group by it raised `KeyError` out of a Qt slot, which PySide6 prints to stderr while
+    the event loop carries on: the radio kept showing the rejected WAV and the summary kept
+    saying WAV. Reverting to *nothing checked* is the only honest answer, and it is the same
+    state the illegal value loaded into."""
+    target = settings_module.config_file()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps({"save_format": "OGG"}), encoding="utf-8")
+    monkeypatch.setattr(backends, "resolve", lambda force=None: _cpu_backend())
+    import separate_cli
+    cat = separate_cli.make_catalog(tmp_path / "nope", tmp_path / "w")
+    ctrl = controller.Controller(cat=cat, st=settings_module.load(target),
+                                 selections=None, ui_obj=ui_prefs.UiPrefs())
+    page = ctrl.work_page
+    monkeypatch.setattr(settings_module.Settings, "save",
+                        lambda self, path=None: (_ for _ in ()).throw(
+                            PermissionError(13, "denied")))
+    page.format_radios["WAV"].setChecked(True)
+    assert ctrl.settings.save_format == "OGG", "a refused write changes nothing"
+    assert not [r for r in page.format_radios.values() if r.isChecked()], \
+        "the rejected WAV is not left on screen over a file that still says OGG"
+    assert page._checked_format() == "?"
+    assert "? output" in page.summary_label.text(), page.summary_label.text()
+    assert "not saved" in page.console.toPlainText()
