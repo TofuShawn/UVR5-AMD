@@ -25,3 +25,7 @@ tests/golden/_artifacts/
 # which is why `UVR.py`'s comment block says "unreachable when run", not "inert" -- and
 # why a stray run or a revived import must not be able to commit the file.
 data.pkl
+
+# local double-click launcher; carries this machine's weights path, so it stays out of
+# the tree like the other local-only conveniences above. Anchored to the repo root.
+/run.bat
