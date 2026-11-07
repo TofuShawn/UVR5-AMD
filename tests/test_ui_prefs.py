@@ -48,6 +48,28 @@ def test_round_trip_keeps_the_other_two_blocks(tmp_path):
     assert ui_prefs.load(target).export_path == str(target.parent / "out")
 
 
+def test_the_other_two_writers_preserve_the_ui_block(tmp_path):
+    """The reverse of `test_round_trip_keeps_the_other_two_blocks`, and the half that was
+    missing: three writers claim one file, so proving the *newest* one merges is not
+    proving the other two do. `Settings.save` is the one a work-page format click reaches
+    (`Controller._apply_setting`), so a `save` that rewrote the top level would delete the
+    configured output folder on the next format change -- silently, and only for users who
+    had configured one. Both directions are asserted by reading the file back with each
+    block's own loader, which is what the next launch does."""
+    target = tmp_path / "settings.json"
+    prefs = ui_prefs.UiPrefs(export_path=str(tmp_path / "out"))
+    ui_prefs.save(prefs, target)
+    settings_module.Settings(save_format="FLAC").save(target)
+    assert ui_prefs.load(target) == prefs, "Settings.save dropped the ui block"
+    sel = selections_module.Selections(vr_voc_inst_secondary_model_scale="0.7")
+    selections_module.save(sel, target)
+    assert ui_prefs.load(target) == prefs, "selections.save dropped the ui block"
+    raw = json.loads(target.read_text(encoding="utf-8"))
+    assert raw["save_format"] == "FLAC"
+    assert raw["selections"]["vr_voc_inst_secondary_model_scale"] == \
+        sel.vr_voc_inst_secondary_model_scale
+
+
 def test_constructing_from_text_and_reading_the_file_agree(tmp_path):
     """`UiPrefs(export_path=X)` == `load()` of a file that says X, including the
     whitespace: `_coerce`'s `str` branch passes the very object given, so a path a user
@@ -93,7 +115,7 @@ def test_importing_ui_prefs_pulls_in_no_qt():
     """The block is readable by a front end that has no Qt at all.
 
     Two-sided, per this suite's rule for prohibitions: the refusal alone would be
-    satisfied by deleting the module, so `test_the_module_is_importable_and_its_default_is_empty`
+    satisfied by deleting the module, so `test_the_module_is_the_whole_public_surface_it_claims`
     below asks that it be there and say something.
     """
     code = ("import sys, ui_prefs;"

@@ -526,18 +526,20 @@ def write_answer(cat, spec, params: dict) -> Path:
 #: The extensions this app offers *and* scans, as the app's own copy. Held rather than
 #: imported for the reason `CONFIG_YAML_SUFFIX`'s note earlier in this file gives: the pin
 #: that matters is a *comparison* against `gui_data.constants.FFMPEG_EXT`, in
-#: `tests/test_dialogs.py::test_the_audio_extensions_are_the_engines_own`, so an upstream
-#: rename with no behavioural effect cannot redden the GUI half of the suite for the wrong
-#: reason while a real change in what ffmpeg opens cannot pass unnoticed here.
+#: `tests/test_dialogs.py::test_the_app_audio_extensions_are_the_engines_own_list` (both
+#: directions), so an upstream rename with no behavioural effect cannot redden the GUI half
+#: of the suite for the wrong reason while a real change in what ffmpeg opens cannot pass
+#: unnoticed here.
 #:
 #: One list, two users: `Pickers.AUDIO_FILTER` shows it to the file dialog and
-#: `work_page.audio_files_in()` walks a folder with it. It used to be ten extensions typed
-#: into a string while the scan used the engine's wider set (`.tta`, `.alac`, `.mp2`,
-#: `.mpc`, `.mpeg`, `.wave`, `.eac3`, `.webm`, `.mkv`, and the video containers ffmpeg
-#: opens) -- two lists is a folder pick that accepts a file the multi-select dialog hides,
-#: which a user reads as the picker being broken. Lower-case and dotted because the engine
-#: constant carries `"MP3"` with no dot at `gui_data/constants.py:832` and both cases of
-#: `.wav`/`.WAV`; sorted so the filter string is stable across runs.
+#: `work_page.audio_files_in()` walks a folder with it. The filter used to be nine patterns
+#: typed into a string (`*.wav *.mp3 *.flac *.ogg *.m4a *.opus *.aac *.aiff *.wma`, measured
+#: at cd177fe); the folder scan is new in Plan 3, so the two have never disagreed -- the
+#: reason they share one list is that two lists *would* disagree, and a folder pick that
+#: accepts a file the multi-select dialog hides reads as the picker being broken. Lower-case
+#: and dotted because the engine constant carries `"MP3"` with no dot at
+#: `gui_data/constants.py:832` and both cases of `.wav`/`.WAV`; sorted so the filter string
+#: is stable across runs.
 AUDIO_EXTENSIONS: tuple[str, ...] = (
     ".aac", ".aiff", ".alac", ".eac3", ".flac", ".m4a", ".mkv", ".mov", ".mp2",
     ".mp3", ".mp4", ".mpc", ".mpc8", ".mpeg", ".ogg", ".opus", ".tta", ".wav",

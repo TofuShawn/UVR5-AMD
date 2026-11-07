@@ -149,14 +149,15 @@ DECORATIVE_UI_CLASSES = frozenset({
     "MultiSelectComboBox", "PasswordBox", "ProgressRing",
     "SelectorBar", "SelectorBarItem", "Slider", "TabView", "TabViewItem",
     "ToggleButton", "ToggleSwitch", "ToolTip",
-    # `CheckBox` left this set in Plan 3 Task 1 (the default-output toggle) and
-    # `RadioButton` with it in Task 3 (the output-format group), which is what the
-    # two-way assertion below exists to make visible. `ToggleSwitch` stays, and stays
-    # unused, for a measured reason rather than a preference: it exposes `setIsOn` and
-    # `toggled` but has no `setText`, no `setChecked` and no `isChecked` on this wheel, so
-    # it can neither be initialised from a stored value nor read back -- which is every
-    # use the app has for a toggle. Do not reach for it because this list says it is
-    # reviewed; the review is that it does not work.
+    # `RadioButton` left this set in Plan 3 Task 3 (the output-format group), which is what
+    # the two-way assertion below exists to make visible. `CheckBox` was never in it:
+    # `app/settings_page.py` has built the 50-field form's bools with it since Plan 2 Task 6
+    # (measured at cd177fe -- `fluentqt.CheckBox(name, self)` at :377, and absent from this
+    # set in the same commit). `ToggleSwitch` stays, and stays unused, for a measured reason
+    # rather than a preference: it exposes `setIsOn` and `toggled` but has no `setText`, no
+    # `setChecked` and no `isChecked` on this wheel, so it can neither be initialised from a
+    # stored value nor read back -- which is every use the app has for a toggle. Do not reach
+    # for it because this list says it is reviewed; the review is that it does not work.
 })
 
 

@@ -94,11 +94,16 @@ def test_pending_files_is_typed_file_first_then_extras_deduped(qapp, tmp_path, m
     assert page.pending_files() == [b, a]
 
 
-def test_audio_files_in_uses_the_engines_own_extension_list():
-    """Recursive, and matched against `gui_data.constants.FFMPEG_EXT` rather than a
-    home-grown tuple: that constant carries `"MP3"` with no dot at :832 and both cases of
-    `.wav`/`.WAV`, so a tidy five-suffix list would quietly skip files the engine can
-    read -- which in batch mode reads as "it lost half my folder", with no error."""
+def test_audio_files_in_is_recursive_case_insensitive_and_sorted():
+    """What the scan does with the list `app/dialogs.py::AUDIO_EXTENSIONS` holds: walk
+    subfolders, match the suffix case-insensitively, skip what is not audio, and return path
+    order so the queue a user sees is stable. The list's *identity* is pinned elsewhere and
+    in both directions -- `tests/test_dialogs.py::
+    test_the_app_audio_extensions_are_the_engines_own_list` compares the held copy against
+    `gui_data.constants.FFMPEG_EXT`, which carries `"MP3"` with no dot at :832 and both cases
+    of `.wav`/`.WAV`. This test is the behaviour half: a scan that lower-cased the pattern
+    but not the filename would pass that pin and still lose `song.MP3`, which in batch mode
+    reads as "it lost half my folder", with no error."""
     import tempfile
 
     with tempfile.TemporaryDirectory() as td:

@@ -1312,11 +1312,17 @@ def test_build_app_publishes_both_before_anything_is_shown(qapp, monkeypatch,
 
 
 def _ui_ctrl(qapp, tmp_path, monkeypatch, *, ui_obj=None):
-    """A controller whose only configured front-end state is the one this test is about.
+    """A controller built from in-memory defaults, with the machine's answer stubbed.
 
     `backends.resolve` is patched the way every other controller test here patches it, and
-    `ui_obj` is passed explicitly so no test in this group reads or writes whatever
-    `settings.json` the session fixture happens to be pointing at.
+    `st`/`selections`/`ui_obj` are passed explicitly rather than `load()`ed, so no test in
+    this group depends on what a file already said. Writes are a different matter and are
+    *not* avoided: a control that persists goes to `settings_module.config_file()`, which
+    the session-scoped sandbox (`tests/conftest.py::_sandbox_config_root`) repoints at a
+    temporary APPDATA -- so the file a test writes is the sandbox's, never the user's real
+    one. Running this helper outside pytest is what wrote a real `%APPDATA%` once; inside
+    the suite the fixture is the guarantee, and this docstring used to claim the helper
+    was.
     """
     import separate_cli
     import ui_prefs
