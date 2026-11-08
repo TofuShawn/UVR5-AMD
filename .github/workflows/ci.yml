@@ -43,3 +43,20 @@ jobs:
             -q -k "not vram" `
             --deselect tests/test_job.py::test_one_real_job_on_the_worker_thread `
             --deselect tests/test_selections.py::test_a_selection_reaches_the_plan_only_when_its_switch_is_on
+
+  # Packaging: source zip + bootstrap (the ROCm stack is too big/fragile to freeze).
+  # Only on a version tag; uploads an artifact, does not auto-publish a public release.
+  dist:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build source zip
+        run: python tools/make_dist.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: uvr5-pyside6-gui-src
+          path: dist/*.zip

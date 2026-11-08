@@ -29,3 +29,6 @@ data.pkl
 # local double-click launcher; carries this machine's weights path, so it stays out of
 # the tree like the other local-only conveniences above. Anchored to the repo root.
 /run.bat
+
+# build artifact of tools/make_dist.py (the distributable source zip)
+/dist/
