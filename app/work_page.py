@@ -35,6 +35,7 @@ from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QButtonGroup, QHBoxLayout, QVBoxLayout
 
 from app import dialogs, job, session, settings_page
+from app.i18n import LANGUAGES, load_language, save_language, tr
 
 #: The page's own terminal vocabulary. These are the titles the terminal handlers speak
 #: to `_notify` with, and the seam the suite spies on: `Stopped` *is* the cancel surface
@@ -217,12 +218,12 @@ class WorkPage(fluentqt.Card):
         self.app_title = fluentqt.Label("UVR5 PySide6 GUI", self)
         self.app_title.setFluentTypography(fluentqt.FontRole.Title)
         masthead.addWidget(self.app_title)
-        self.fork_label = self._caption("AMD/ROCm fork",
+        self.fork_label = self._caption(tr("fork_badge"),
                                         fluentqt.Label.TextColorRole.Tertiary)
         masthead.addWidget(self.fork_label)
         masthead.addStretch(1)
         self.orientation_label = self._caption(
-            "New here? Add audio in 1, pick a model in 2, then press START.",
+            tr("orientation"),
             fluentqt.Label.TextColorRole.Secondary)
         self.orientation_label.setWordWrap(True)
         masthead.addWidget(self.orientation_label)
@@ -262,16 +263,16 @@ class WorkPage(fluentqt.Card):
         two.setSpacing(8)
 
         # -- segment 1: what to process --------------------------------------- #
-        self.segment_one = self._heading("1 · What to process", self.segment_one_host)
+        self.segment_one = self._heading(tr("seg1"), self.segment_one_host)
         one.addWidget(self.segment_one)
 
-        one.addWidget(self._field_label("Input file", self.segment_one_host))
+        one.addWidget(self._field_label(tr("input_file"), self.segment_one_host))
         path_row = QHBoxLayout()
         path_row.setSpacing(8)
         self.input_edit = fluentqt.LineEdit(self.segment_one_host)
-        self.input_edit.setPlaceholderText("path to an audio file, or add a batch below")
+        self.input_edit.setPlaceholderText(tr("input_ph"))
         self.input_edit.setClearButtonEnabled(True)
-        self.browse_input = self._icon_button("Browse", fluentqt.Icons.Folder,
+        self.browse_input = self._icon_button(tr("browse"), fluentqt.Icons.Folder,
                                               self.segment_one_host)
         self.browse_input.clicked.connect(self._pick_input)
         path_row.addWidget(self.input_edit, 1)
@@ -285,11 +286,11 @@ class WorkPage(fluentqt.Card):
         # taking a third of the column as they did when the row had no stretch.
         batch_row = QHBoxLayout()
         batch_row.setSpacing(8)
-        self.add_files_button = self._icon_button("Add files…", fluentqt.Icons.Add,
+        self.add_files_button = self._icon_button(tr("add_files"), fluentqt.Icons.Add,
                                                   self.segment_one_host)
-        self.add_folder_button = self._icon_button("Add folder…", fluentqt.Icons.Folder,
+        self.add_folder_button = self._icon_button(tr("add_folder"), fluentqt.Icons.Folder,
                                                    self.segment_one_host)
-        self.clear_files_button = self._icon_button("Clear", fluentqt.Icons.Delete,
+        self.clear_files_button = self._icon_button(tr("clear"), fluentqt.Icons.Delete,
                                                     self.segment_one_host,
                                                     style=fluentqt.Button.ButtonStyle.Subtle)
         self.add_files_button.clicked.connect(self._pick_more_inputs)
@@ -303,18 +304,18 @@ class WorkPage(fluentqt.Card):
         self.file_list = fluentqt.TextEdit(self.segment_one_host)
         self.file_list.setReadOnly(True)
         self.file_list.setFontRole(fluentqt.FontRole.Caption)
-        self.file_list.setPlaceholderText("nothing queued yet -- add files or a folder above")
+        self.file_list.setPlaceholderText(tr("queue_ph"))
         self.file_list.setMinVisibleLines(3)
         self.file_list.setMaxVisibleLines(6)
         one.addWidget(self.file_list, 1)
 
-        one.addWidget(self._field_label("Output directory", self.segment_one_host))
+        one.addWidget(self._field_label(tr("output_dir"), self.segment_one_host))
         out_row = QHBoxLayout()
         out_row.setSpacing(8)
         self.output_edit = fluentqt.LineEdit(self.segment_one_host)
-        self.output_edit.setPlaceholderText("empty = the default folder below")
+        self.output_edit.setPlaceholderText(tr("output_ph"))
         self.output_edit.setClearButtonEnabled(True)
-        self.browse_output = self._icon_button("Browse", fluentqt.Icons.Folder,
+        self.browse_output = self._icon_button(tr("browse"), fluentqt.Icons.Folder,
                                                self.segment_one_host)
         self.browse_output.clicked.connect(self._pick_output)
         out_row.addWidget(self.output_edit, 1)
@@ -327,7 +328,7 @@ class WorkPage(fluentqt.Card):
         # its state cannot be read back and its label cannot be set from a persisted
         # value -- a toggle that cannot be told what it currently is would have to be
         # shown as *something*, and the something would be a guess.
-        self.default_output_check = fluentqt.CheckBox("Use this as my default output folder",
+        self.default_output_check = fluentqt.CheckBox(tr("default_output_check"),
                                                       self.segment_one_host)
         self.default_output_check.setChecked(bool(self.ui.export_path))
         self.default_output_check.toggled.connect(self._on_default_output_toggled)
@@ -338,7 +339,7 @@ class WorkPage(fluentqt.Card):
         one.addStretch(1)
 
         # -- segment 2: how to separate --------------------------------------- #
-        self.segment_two = self._heading("2 · How to separate", self.segment_two_host)
+        self.segment_two = self._heading(tr("seg2"), self.segment_two_host)
         two.addWidget(self.segment_two)
 
         self.arch_bar = fluentqt.Pivot(self.segment_two_host)
@@ -364,7 +365,7 @@ class WorkPage(fluentqt.Card):
         self.arch_bar.setSelectedIndex(0)
         two.addWidget(self.arch_bar)
 
-        two.addWidget(self._field_label("Model", self.segment_two_host))
+        two.addWidget(self._field_label(tr("model"), self.segment_two_host))
         self.model_combo = fluentqt.ComboBox(self.segment_two_host)
         two.addWidget(self.model_combo)
 
@@ -384,7 +385,7 @@ class WorkPage(fluentqt.Card):
         format_group = QButtonGroup(self)
         format_group.setExclusive(True)
         self.format_group = format_group        # `set_stem_format` lifts exclusivity to clear it
-        two.addWidget(self._field_label("Output format", self.segment_two_host))
+        two.addWidget(self._field_label(tr("output_format"), self.segment_two_host))
         format_row = QHBoxLayout()
         format_row.setSpacing(16)
         for fmt in session.SAVE_FORMATS:
@@ -406,7 +407,7 @@ class WorkPage(fluentqt.Card):
         # that nothing else in the GUI can reach, because the GUI passes
         # `force_device=None` and `effective_settings`' override only fires with a flag
         # (`separate_cli.py:284-286`). `CheckBox` for the measured `ToggleSwitch` hole.
-        self.gpu_check = fluentqt.CheckBox("Use GPU", self.segment_two_host)
+        self.gpu_check = fluentqt.CheckBox(tr("gpu_check"), self.segment_two_host)
         self.gpu_check.blockSignals(True)
         self.gpu_check.setChecked(bool(self.settings.gpu_conversion))
         self.gpu_check.blockSignals(False)
@@ -421,7 +422,7 @@ class WorkPage(fluentqt.Card):
         # goes where they are editable. `string-first ctor raises` (spec §5.2.1) and there
         # is no `setTitle` on Expander, so the header is set after.
         self.params = fluentqt.Expander(self.segment_two_host)
-        self.params.setHeaderText("Model parameters")
+        self.params.setHeaderText(tr("params_header"))
         self.params.setAnimationEnabled(False)
         self.params_host = fluentqt.Card()                # a widget, never a bare QWidget
         params_form = QVBoxLayout(self.params_host)       # (spec §5.3, Task 5's guard)
@@ -430,7 +431,7 @@ class WorkPage(fluentqt.Card):
         self.params_summary = self._caption("", fluentqt.Label.TextColorRole.Secondary,
                                             parent=self.params_host)
         self.params_summary.setWordWrap(True)
-        self.params_edit = self._icon_button("Edit these in Settings", fluentqt.Icons.Edit,
+        self.params_edit = self._icon_button(tr("params_edit"), fluentqt.Icons.Edit,
                                              self.params_host)
         self.params_edit.clicked.connect(self.settings_requested.emit)
         params_form.addWidget(self.params_summary)
@@ -453,11 +454,11 @@ class WorkPage(fluentqt.Card):
         band.setSpacing(10)
         buttons = QHBoxLayout()
         buttons.setSpacing(8)
-        self.start_button = self._icon_button("START", fluentqt.Icons.Play,
+        self.start_button = self._icon_button(tr("start"), fluentqt.Icons.Play,
                                               self.action_row_host,
                                               style=fluentqt.Button.ButtonStyle.Accent,
                                               size=fluentqt.Button.ButtonSize.Large)
-        self.stop_button = self._icon_button("STOP", fluentqt.Icons.Stop,
+        self.stop_button = self._icon_button(tr("stop"), fluentqt.Icons.Stop,
                                              self.action_row_host)
         self.stop_button.setCriticalOnHover(True)
         # START asks the controller for one run of the queue; the percentage this page
@@ -472,11 +473,27 @@ class WorkPage(fluentqt.Card):
         # does nothing else: the page itself owns the fields, and this page keeps no copy
         # of them. Subtle, because it is the quiet door to the other 48 fields -- START and
         # STOP are the loud ones.
-        self.settings_button = self._icon_button("Settings", fluentqt.Icons.Settings,
+        self.settings_button = self._icon_button(tr("settings"), fluentqt.Icons.Settings,
                                                  self.action_row_host,
                                                  style=fluentqt.Button.ButtonStyle.Subtle)
         self.settings_button.clicked.connect(self.settings_requested.emit)
         buttons.addWidget(self.settings_button)
+        # Language: persisted and applied at the next launch, because re-translating an
+        # already-built widget tree in place would leave half the page in the old language.
+        # The combo lists native names plus a "follow the OS" entry; changing it saves the
+        # choice and says so, rather than silently half-applying.
+        self.language_combo = fluentqt.ComboBox(self.action_row_host)
+        self.language_combo.setToolTip(tr("language"))
+        self._lang_codes = ["system", *[code for code, _name in LANGUAGES]]
+        names = [tr("lang_system"), *[name for _code, name in LANGUAGES]]
+        self.language_combo.blockSignals(True)
+        self.language_combo.addItems(names)
+        saved = load_language()
+        self.language_combo.setCurrentIndex(
+            self._lang_codes.index(saved) if saved in self._lang_codes else 0)
+        self.language_combo.blockSignals(False)
+        self.language_combo.currentIndexChanged.connect(self._on_language_changed)
+        buttons.addWidget(self.language_combo)
         buttons.addStretch(1)
         self.count_label = fluentqt.Label("", self.action_row_host)
         self.count_label.setFluentTypography(fluentqt.FontRole.BodyStrong)
@@ -514,11 +531,11 @@ class WorkPage(fluentqt.Card):
         self.notification_band = QVBoxLayout()
         self.notification_band.setContentsMargins(0, 0, 0, 0)
         root.addLayout(self.notification_band)
-        root.addWidget(self._field_label("Console", self))
+        root.addWidget(self._field_label(tr("console"), self))
         self.console = fluentqt.TextEdit(self)
         self.console.setReadOnly(True)
         self.console.setFontRole(fluentqt.FontRole.Caption)
-        self.console.setPlaceholderText("engine output appears here")
+        self.console.setPlaceholderText(tr("console_ph"))
         self.console.setMinVisibleLines(4)
         self.console.setMaxVisibleLines(8)
         root.addWidget(self.console)
@@ -577,6 +594,11 @@ class WorkPage(fluentqt.Card):
         if size is not None:
             btn.setFluentSize(size)
         return btn
+
+    def _on_language_changed(self, index: int) -> None:
+        """Persist the choice; the running page keeps its language until relaunch."""
+        save_language(self._lang_codes[index])
+        self.console.appendPlainText(tr("lang_restart"))
 
     def _archs(self) -> list[str]:
         return sorted(self.catalog.archs())
@@ -687,16 +709,16 @@ class WorkPage(fluentqt.Card):
         """
         out: list[str] = []
         if self.selected_model() == catalog.NO_MODEL:
-            out.append("pick a model from the Model list first")
+            out.append(tr("blocker_model"))
         files = self.pending_files()
         if not files:
-            out.append("choose an input audio file first")
+            out.append(tr("blocker_input"))
             return out
         missing = [str(p) for p in files if not p.is_file()]
         if missing:
             head = ", ".join(missing[:3])
-            out.append(f"input audio not found: {head}"
-                       + (f" (+{len(missing) - 3} more)" if len(missing) > 3 else ""))
+            out.append(tr("blocker_missing", head=head,
+                       more=tr("blocker_more", n=len(missing) - 3) if len(missing) > 3 else ""))
         return out
 
     def refresh_queue(self) -> None:
@@ -714,9 +736,9 @@ class WorkPage(fluentqt.Card):
             # A single file is not a batch and does not get batch vocabulary: "0 / 1
             # file(s)" over a one-file run is noise, and the queue wording is what a user
             # of the single-file path has always read.
-            self.count_label.setText(f"{self._files_done} / {self._batch_total} file(s)")
+            self.count_label.setText(tr("count_progress", done=self._files_done, total=self._batch_total))
         else:
-            self.count_label.setText(f"{len(files)} file(s) queued")
+            self.count_label.setText(tr("count_queued", n=len(files)))
         self.reason_label.setText("; ".join(blockers))
         self.refresh_summary()
         self._publish_run_state(blockers)
@@ -743,10 +765,8 @@ class WorkPage(fluentqt.Card):
         arch = self.current_arch()
         group = settings_page.ARCH_FIELD_GROUPS.get(arch)
         if group is None:
-            return (f"{arch} reads no per-arch engine parameters; the general group's "
-                    f"format and device choices are what apply to it.")
-        lines = [f"{arch}: {len(group)} engine parameters (read-only here -- use the "
-                 f"button below)"]
+            return tr("params_none", arch=arch)
+        lines = [tr("params_line", arch=arch, n=len(group))]
         lines += [f"{name} = {getattr(self.settings, name, '?')!r}" for name in group]
         return "\n".join(lines)
 
@@ -844,8 +864,8 @@ class WorkPage(fluentqt.Card):
         files = self.pending_files()
         return " · ".join([
             device_summary(self._backend), self.current_arch(), self.selected_model(),
-            f"{len(files)} file(s)" if files else "no input",
-            f"{self._checked_format()} output",
+            tr("summary_files", n=len(files)) if files else tr("summary_no_input"),
+            tr("summary_output", fmt=self._checked_format()),
             "GPU" if self.gpu_check.isChecked() else "CPU",
         ])
 
@@ -899,8 +919,8 @@ class WorkPage(fluentqt.Card):
         deciding).
         """
         self.default_output_label.setText(
-            f"default output: {self.ui.export_path}" if self.ui.export_path
-            else "default output: UVR_out beside each input file")
+            tr("default_set", path=self.ui.export_path) if self.ui.export_path
+            else tr("default_unset"))
 
     # -- batch lifecycle ------------------------------------------------------ #
 
@@ -1059,8 +1079,7 @@ class WorkPage(fluentqt.Card):
             # only thing that knows what the default is.
             self.set_default_output(self.ui.export_path)
             self.console.appendPlainText(
-                "default output not set: the Output directory box is empty -- choose a "
-                "folder first, then tick the box")
+                tr("default_not_set"))
             return
         self.default_output_requested.emit(text if checked else "")
 

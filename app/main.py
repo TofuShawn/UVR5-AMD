@@ -188,6 +188,12 @@ def build_app(argv=None):
 
 
 def main() -> int:
+    # Resolve the UI language before any widget is built: a label constructed in one
+    # language and repainted in another is a half-translated page. `build_app` itself does
+    # not set the locale, so tests that build pages directly stay on the English source.
+    from app import i18n
+    choice = i18n.load_language()
+    i18n.set_locale(i18n.resolve_system() if choice == "system" else choice)
     app, window = build_app()
     window.show()
     return app.exec()
