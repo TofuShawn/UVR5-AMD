@@ -125,3 +125,12 @@ belongs to its Foundation contributors; "Inter" is the Reserved Font Name the fo
 above deliberately do not use. Their appearance here identifies the upstreams being
 redistributed, and implies no endorsement or affiliation. Fluent-Qt's own
 `TRADEMARKS.md`, shipped in the wheel, is the fuller statement.
+
+## Bundled UI fonts (SIL Open Font License 1.1)
+
+The GUI bundles three fonts under `app/assets/fonts/`, all under the SIL Open Font
+License 1.1 (the full text ships as `app/assets/fonts/OFL.txt`):
+
+- **Inter** (c) Rasmus Andersson -- https://github.com/rsms/inter
+- **JetBrains Mono** (c) JetBrains s.r.o. -- https://github.com/JetBrains/JetBrainsMono
+- **Noto Sans SC** (subset to this app's glyphs) (c) Google -- https://fonts.google.com/noto

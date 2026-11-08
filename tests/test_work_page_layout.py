@@ -78,7 +78,7 @@ def test_the_page_is_two_segments_over_a_fixed_action_row(qapp, tmp_path, monkey
     assert page.action_row_host.parent() is page
     for control in (page.input_edit, page.model_combo, page.arch_bar, page.output_edit,
                     page.file_list, page.params, page.gpu_check, page.start_button,
-                    page.stop_button, page.settings_button, page.reason_label,
+                    page.stop_button, page.reason_label,
                     page.progress, page.count_label, page.console, page.summary_label,
                     page.device_label, page.compute_label):
         assert page.isAncestorOf(control) or control.parent() is page, control
@@ -289,16 +289,16 @@ def test_an_open_settings_dialog_does_not_survive_a_work_page_write(qapp, tmp_pa
     reason. Closing it is visible; losing an edit to a stale Save is not recoverable."""
     ctrl = _ui_ctrl(qapp, tmp_path, monkeypatch)
     ctrl._on_settings_requested()
-    assert ctrl.settings_dialog is not None
+    assert ctrl.shell.has_settings()
     ctrl.work_page.format_radios["MP3"].setChecked(True)
-    assert ctrl.settings_dialog is None
-    assert "settings dialog closed" in ctrl.work_page.console.toPlainText()
+    assert ctrl.shell.has_settings() is False
+    assert "settings closed" in ctrl.work_page.console.toPlainText()
     # And the dialog the user opens next is built from the object that was just written,
     # so it shows the truth rather than the previous run's numbers -- `field_value` is the
     # settings page's own "what this would save right now", which is exactly the half a
     # stale draft used to get wrong.
     ctrl._on_settings_requested()
-    assert ctrl.settings_dialog.page.field_value("save_format") == "MP3"
+    assert ctrl.shell._settings_page.field_value("save_format") == "MP3"
 
 
 def test_the_summary_strip_repeats_nothing_it_can_get_wrong(qapp, tmp_path, monkeypatch):
@@ -362,11 +362,11 @@ def test_a_settings_save_republishes_the_two_choices_the_work_page_shows(qapp, t
     ctrl = _ui_ctrl(qapp, tmp_path, monkeypatch)
     page = ctrl.work_page
     ctrl._on_settings_requested()
-    dlg = ctrl.settings_dialog
-    dlg.page.set_field_value("save_format", "FLAC")
-    dlg.page.set_field_value("gpu_conversion", True)
+    dlg = ctrl.shell._settings_page
+    dlg.set_field_value("save_format", "FLAC")
+    dlg.set_field_value("gpu_conversion", True)
     before = settings_module.config_file().read_bytes()
-    ctrl.save_settings(dlg.page, dlg)
+    ctrl.save_settings(dlg)
     assert ctrl.settings.save_format == "FLAC"
     assert page._checked_format() == "FLAC"
     assert page.gpu_check.isChecked() is True
@@ -392,11 +392,11 @@ def test_a_settings_save_mid_run_says_which_run_it_applies_to(qapp, tmp_path, mo
     page.add_extra_files([str(files[1])])
     monkeypatch.setattr(page.job, "start", lambda request: None)   # still in flight
     ctrl._on_settings_requested()
-    dlg = ctrl.settings_dialog
-    dlg.page.set_field_value("save_format", "FLAC")
+    dlg = ctrl.shell._settings_page
+    dlg.set_field_value("save_format", "FLAC")
     page.run_requested.emit()
     assert page._busy is True
-    ctrl.save_settings(dlg.page, dlg)
+    ctrl.save_settings(dlg)
     text = page.console.toPlainText()
     assert "the run in flight keeps the plan it started with" in text, text
     assert page._checked_format() == "FLAC", "the page shows what the next run will use"

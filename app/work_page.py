@@ -3,7 +3,8 @@
 Layout is a Fluent `Card` because a plain QWidget would keep the native palette while
 its children follow the theme (spec §5.3). No NavigationView: the Python binding
 exposes no item/selection API (spec §5.2), so the arch switch is a `Pivot` and the
-settings page is a dialog opened from a button. (It was a `SelectorBar` until ruling
+settings page is a full-page view swapped in from the window's right rail
+(`app/shell.py`). (It was a `SelectorBar` until ruling
 R-T6-archtabs measured that `SelectorBar` ellipsizes the third label to `m…` at every
 width -- see the note on the bar below.)
 
@@ -171,6 +172,7 @@ class WorkPage(fluentqt.Card):
         self._build()
         self.refresh_models()
         self._sync_from_state()
+        self._apply_mono()
 
     # -- construction ---------------------------------------------------------- #
 
@@ -363,11 +365,16 @@ class WorkPage(fluentqt.Card):
         self.arch_bar.setMinimumWidth(self.arch_bar.sizeHint().width())
         self.arch_bar.currentChanged.connect(self._on_arch_changed)
         self.arch_bar.setSelectedIndex(0)
+        two.addWidget(self._field_label(tr("architecture"), self.segment_two_host))
         two.addWidget(self.arch_bar)
 
         two.addWidget(self._field_label(tr("model"), self.segment_two_host))
         self.model_combo = fluentqt.ComboBox(self.segment_two_host)
         two.addWidget(self.model_combo)
+        self.model_hint = self._caption("", fluentqt.Label.TextColorRole.Tertiary,
+                                        parent=self.segment_two_host)
+        self.model_hint.setWordWrap(True)
+        two.addWidget(self.model_hint)
 
         # The output format, where the user is choosing output. `save_format` was a free
         # text box until Plan 2's wave 1 made it a combo on the settings page, and C1 is
@@ -417,6 +424,13 @@ class WorkPage(fluentqt.Card):
         self.gpu_check.toggled.connect(self.gpu_requested.emit)
         device_row = QHBoxLayout()
         device_row.setSpacing(8)
+        self.gpu_icon = fluentqt.Button("", self.segment_two_host)
+        self.gpu_icon.setIconGlyph(fluentqt.Icons.Desktop)
+        self.gpu_icon.setFluentStyle(fluentqt.Button.ButtonStyle.Subtle)
+        self.gpu_icon.setFixedSize(28, 28)
+        self.gpu_icon.setToolTip(tr("gpu_check"))
+        self.gpu_icon.clicked.connect(self.gpu_check.toggle)
+        device_row.addWidget(self.gpu_icon)
         device_row.addWidget(self.gpu_check)
         device_row.addStretch(1)
         self.device_combo = fluentqt.ComboBox(self.segment_two_host)
@@ -482,15 +496,8 @@ class WorkPage(fluentqt.Card):
         self.stop_button.clicked.connect(self.cancel_requested.emit)
         buttons.addWidget(self.start_button)
         buttons.addWidget(self.stop_button)
-        # The one entry to the settings page. It asks the controller for the dialog and
-        # does nothing else: the page itself owns the fields, and this page keeps no copy
-        # of them. Subtle, because it is the quiet door to the other 48 fields -- START and
-        # STOP are the loud ones.
-        self.settings_button = self._icon_button(tr("settings"), fluentqt.Icons.Settings,
-                                                 self.action_row_host,
-                                                 style=fluentqt.Button.ButtonStyle.Subtle)
-        self.settings_button.clicked.connect(self.settings_requested.emit)
-        buttons.addWidget(self.settings_button)
+        # Settings is not here: it lives in the window's right rail (`app/shell.py`), which
+        # swaps the whole main content to the full-page settings view.
         # Language: persisted and applied at the next launch, because re-translating an
         # already-built widget tree in place would leave half the page in the old language.
         # The combo lists native names plus a "follow the OS" entry; changing it saves the
@@ -522,9 +529,16 @@ class WorkPage(fluentqt.Card):
         self.progress = fluentqt.ProgressBar(self.action_row_host)
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
-        self.progress.setTrackThickness(6)
+        self.progress.setTrackThickness(8)
         self.progress.setRailVisible(True)
-        band.addWidget(self.progress)
+        progress_row = QHBoxLayout()
+        progress_row.setSpacing(10)
+        progress_row.addWidget(self.progress, 1)
+        self.progress_label = self._caption("0%", fluentqt.Label.TextColorRole.Secondary,
+                                            parent=self.action_row_host)
+        self.progress_label.setMinimumWidth(40)
+        progress_row.addWidget(self.progress_label)
+        band.addLayout(progress_row)
         # One line that repeats what the widgets already say, so the answer to "what am I
         # about to do" does not require reading six controls -- derived, never cached:
         # see `truth_summary`.
@@ -607,6 +621,16 @@ class WorkPage(fluentqt.Card):
         if size is not None:
             btn.setFluentSize(size)
         return btn
+
+    def _apply_mono(self) -> None:
+        """The data/status lines read as data: switch them to the bundled monospace face
+        (the machine line, the truth strip, the queue count and the console)."""
+        from PySide6.QtGui import QFont
+        for widget in (self.device_label, self.compute_label, self.summary_label,
+                       self.count_label, self.console, self.file_list):
+            font = widget.font()
+            font.setFamilies(["JetBrains Mono", "Noto Sans SC"])
+            widget.setFont(font)
 
     def _on_language_changed(self, index: int) -> None:
         """Persist the choice; the running page keeps its language until relaunch."""
@@ -771,6 +795,8 @@ class WorkPage(fluentqt.Card):
         self.model_combo.addItems([catalog.NO_MODEL, *names])
         current = getattr(self.selections, MAIN_MODEL_FIELD[arch], catalog.NO_MODEL)
         self.model_combo.setCurrentText(current if current in names else catalog.NO_MODEL)
+        self.model_hint.setText(tr("models_installed", n=len(names)) if names
+                                else tr("models_none"))
         self.refresh_parameter_summary()
 
     def parameter_summary(self) -> str:
@@ -822,7 +848,7 @@ class WorkPage(fluentqt.Card):
         # finishes is legitimate, and `_Batch.files` is already a copy of the paths.
         for widget in (self.output_edit, self.browse_output, self.default_output_check,
                        self.model_combo, self.arch_bar, self.gpu_check,
-                       self.device_combo, self.settings_button, self.params_edit,
+                       self.device_combo, self.params_edit,
                        *self.format_radios.values()):
             widget.setEnabled(not self._busy)
 
@@ -973,8 +999,10 @@ class WorkPage(fluentqt.Card):
         engine's arithmetic for the models inside one file, and this is the GUI's
         aggregation of the per-file signal. Two different denominators, one bar.
         """
-        self.progress.setValue(max(0, min(100, int(
-            (self._files_done + pct / 100.0) * 100 / max(1, self._batch_total)))))
+        value = max(0, min(100, int(
+            (self._files_done + pct / 100.0) * 100 / max(1, self._batch_total))))
+        self.progress.setValue(value)
+        self.progress_label.setText(f"{value}%")
 
     def end_file(self) -> None:
         """One file is over, however it ended. Called by the root before it advances.

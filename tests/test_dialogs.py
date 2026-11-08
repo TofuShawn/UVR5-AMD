@@ -103,9 +103,10 @@ def _page(qapp, tmp_path, monkeypatch, *, weights=None):
     monkeypatch.setattr(backends, "resolve", lambda force=None: _cpu_backend())
     root = weights if weights is not None else tmp_path / "nope"
     cat = separate_cli.make_catalog(root, tmp_path / "w")
-    ctrl = controller.Controller(cat=cat, st=settings_module.Settings(),
-                                 selections=selections_module.Selections())
-    return ctrl, ctrl.work_page
+    from app import work_page as work_page_mod
+    page = work_page_mod.WorkPage(cat=cat, settings_obj=settings_module.Settings(),
+                                  selections_obj=selections_module.Selections())
+    return None, page
 
 
 def _settle(qapp, rounds: int = 8) -> None:

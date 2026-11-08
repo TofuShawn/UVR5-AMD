@@ -471,11 +471,11 @@ def test_the_parameter_summaries_one_action_opens_the_editable_page(qapp, tmp_pa
     ctrl = controller.Controller(cat=cat, st=settings_module.Settings(),
                                  selections=selections_module.Selections())
     ctrl.work_page.params_edit.click()
-    ctrl.work_page.settings_button.click()
-    assert ctrl.settings_dialog is not None
-    first = ctrl.settings_dialog
+    ctrl.work_page.settings_requested.emit()
+    assert ctrl.shell.has_settings()
+    first = ctrl.shell._settings_page
     ctrl.work_page.params_edit.click()
-    assert ctrl.settings_dialog is first, "the summary's action stacked a second dialog"
+    assert ctrl.shell._settings_page is first, "the summary's action stacked a second page"
 
 
 def test_a_cancel_is_reported_as_a_cancel_not_as_a_failure(page, qapp, tmp_path,
@@ -974,7 +974,7 @@ def appdata(tmp_path, monkeypatch):
 def _settings_page(qapp, tmp_path, monkeypatch):
     ctrl, pg = _vr_page(qapp, tmp_path, monkeypatch)
     pg.settings_requested.emit()
-    return ctrl, pg, ctrl.settings_dialog.page
+    return ctrl, pg, ctrl.shell._settings_page
 
 
 def test_the_settings_button_opens_a_page_covering_every_editable_field(qapp, tmp_path,
@@ -983,18 +983,18 @@ def test_the_settings_button_opens_a_page_covering_every_editable_field(qapp, tm
     controller owns. And no second `Job` appears while it is open (R-T4-onejob) -- the
     dialog edits state, it does not run anything."""
     ctrl, pg, page = _settings_page(qapp, tmp_path, monkeypatch)
-    assert page is not None and ctrl.settings_dialog.isVisible() is True
+    assert page is not None and ctrl.shell.settings_open is True
     assert len(page.widget_names()) == 83, len(page.widget_names())
     assert not hasattr(page, "job"), "the settings dialog built a second Job"
     assert ctrl.work_page.job is pg.job, "the page still owns the one Job"
-    assert pg.settings_button.text() == "Settings"
+    assert ctrl.shell.settings_button.label.text() == "Settings"
 
 
 def test_opening_the_settings_twice_reuses_the_one_dialog(qapp, tmp_path, monkeypatch):
     """83 widgets is not something to stack. A second click raises what is already open."""
     ctrl, pg, page = _settings_page(qapp, tmp_path, monkeypatch)
     pg.settings_requested.emit()
-    assert ctrl.settings_dialog.page is page, "a second dialog was built over the first"
+    assert ctrl.shell._settings_page is page, "a second dialog was built over the first"
 
 
 def test_saving_from_the_dialog_writes_the_shared_file_and_hands_the_state_on(qapp, tmp_path,
@@ -1005,14 +1005,14 @@ def test_saving_from_the_dialog_writes_the_shared_file_and_hands_the_state_on(qa
     ctrl, pg, page = _settings_page(qapp, tmp_path, monkeypatch)
     page.set_field_value("window_size", 768)
     page.set_field_value("vr_voc_inst_secondary_model", "UVR-BVE-458n")
-    ctrl.settings_dialog.save_button.click()
+    ctrl.shell._settings_save.click()
 
     assert settings_module.load().window_size == 768
     assert selections_module.load().vr_voc_inst_secondary_model == "UVR-BVE-458n"
     assert ctrl.settings.window_size == 768
     assert ctrl.selections.vr_voc_inst_secondary_model == "UVR-BVE-458n"
     assert pg.selections is ctrl.selections
-    assert ctrl.settings_dialog.isVisible() is False
+    assert ctrl.shell.settings_open is False
     assert str(settings_module.config_file()) in pg.console.toPlainText()
 
 
@@ -1024,11 +1024,11 @@ def test_a_refused_save_writes_nothing_and_keeps_the_dialog_open(qapp, tmp_path,
     before = ctrl.settings.window_size
     page.set_field_value("window_size", 640)                  # a clean change ...
     page.set_field_value_raw("save_format", ["FLAC"])         # ... and one refused value
-    ctrl.settings_dialog.save_button.click()
+    ctrl.shell._settings_save.click()
 
     assert not (appdata / "settings.json").exists(), "a refused save touched the file"
     assert ctrl.settings.window_size == before, "the controller adopted refused values"
-    assert ctrl.settings_dialog.isVisible() is True
+    assert ctrl.shell.settings_open is True
     assert "save_format" in pg.console.toPlainText(), pg.console.toPlainText()
 
 
@@ -1056,78 +1056,32 @@ def test_a_locked_settings_file_is_reported_in_the_console_and_keeps_the_dialog_
         raise PermissionError(13, "Permission denied")
 
     monkeypatch.setattr(settings_module.Settings, "save", locked)
-    ctrl.settings_dialog.save_button.click()
+    ctrl.shell._settings_save.click()
 
     assert not escapes, f"the save error escaped the slot again: {escapes!r}"
     text = pg.console.toPlainText()
     assert "could not be written" in text and "PermissionError" in text, text
-    assert ctrl.settings_dialog.isVisible() is True, (
+    assert ctrl.shell.settings_open is True, (
         "a save that failed closed the dialog -- the user has nowhere to press again")
     assert (appdata / "settings.json").exists() is False
     assert ctrl.settings.window_size == before, "the controller adopted an unwritten value"
 
 
-def test_the_settings_dialog_is_collected_once_the_test_lets_go(qapp, tmp_path, monkeypatch):
-    """The crash this pins is heap corruption (`0xc0000374`) during pytest's forced
-    `gc_collect_harder()` at unconfigure, *after* every test had passed. The controller
-    holds the dialog in `settings_dialog`, and the dialog had held the controller back
-    strongly, so the pair was a reference cycle that only the **cyclic** collector could
-    free -- and it freed the dialog's Qt-child page behind Qt's own back. Measured on the
-    pinned wheel: with four dialogs accumulated, 6 crashes out of 6; a single dialog was
-    clean, which is exactly why it hid from a one-test run and only bit the full suite.
+def test_the_settings_surface_lives_in_the_shell_not_a_second_window(
+        qapp, tmp_path, monkeypatch):
+    """Settings is an in-window view owned by the shell, not a top-level `QDialog`.
 
-    The fix has two halves and the assertion has to cover both, which is why there are
-    two checks here rather than one:
-
-      * `SettingsDialog._ctrl_ref` is a weakref, so the dialog never closes a cycle with
-        the controller that owns it;
-      * the save button is connected through `settings_page._weak_slot`, not to a
-        callable that captures the dialog. That half is invisible to any inspection of
-        `vars(dialog)`: it puts the cycle *inside* the dialog, and `vars(dialog)` still
-        names no controller.
-
-    Measured on this wheel, and the two halves split along an unexpected line, so each
-    gets its own guard:
-      * `connect(lambda: self.save())` -- the dialog is **still alive after
-        `gc.collect()`** and the lifetime assertion below fails (PySide stores a plain
-        callable strongly, so the C++ button holds the lambda, the lambda holds the
-        dialog, and a top-level dialog is never deleted while Qt lives). On that same
-        mutation everything Task 6's test inspected still looked clean:
-        `isinstance(_ctrl_ref, ReferenceType)` True, `_ctrl_ref() is ctrl` True, no
-        controller among `vars(dialog)`'s values -- measured, not argued, and exactly the
-        gap this finding named.
-      * `connect(self.save)` -- a *bound method*: the dialog really is collected
-        (measured: the lifetime assertion passes), because the binding keeps the receiver
-        of a method slot weakly. So this half is caught by the AST guard below, which
-        rejects both forms, and the `isinstance` leg above stays for the controller
-        back-reference, which is collectable either way and so invisible to the drop.
-
-    So: built with `parent=None` (no Qt parent can keep it alive), every reference the
-    test held dropped, `gc.collect()`, and the object must be gone. Same shape as
-    `tests/test_settings_page.py:270-291` for the page, and the shape Tasks 7 and 8 copy
-    for every dialog they add.
+    Two sided: Settings must build a page into the shell (not delete the feature), and that
+    page's Qt ancestor must be the shell, while the shell reports it open only after
+    `_on_settings_requested`.
     """
-    import gc
-    import weakref
-
     ctrl, pg = _vr_page(qapp, tmp_path, monkeypatch)
-    dialog = controller.SettingsDialog(ctrl, settings_obj=settings_module.Settings(),
-                                       selections_obj=selections_module.Selections())
-    assert isinstance(dialog._ctrl_ref, weakref.ReferenceType), (
-        "half one of the fix: the dialog reaches the controller through a weak reference")
-
-    held = weakref.ref(dialog)
-    controller_held = weakref.ref(ctrl)
-    del dialog, ctrl, pg
-    gc.collect()
-
-    assert held() is None, (
-        "the dialog survived its own last reference: something inside it holds a strong "
-        "reference back -- the save button must connect through "
-        "`settings_page._weak_slot`, exactly as `SettingsPage` connects its own buttons")
-    assert controller_held() is None, (
-        "the controller outlived the test: the dialog keeps it alive, so `_ctrl_ref` is "
-        "not a weak reference after all")
+    assert ctrl.shell.settings_open is False
+    ctrl._on_settings_requested()
+    assert ctrl.shell.has_settings() and ctrl.shell.settings_open is True
+    page = ctrl.shell._settings_page
+    assert ctrl.shell.isAncestorOf(page), "the settings page is not inside the shell"
+    assert page.isWindow() is False, "the settings page became a top-level window again"
 
 
 def test_no_dialog_in_the_app_holds_itself_in_a_slot_connection():

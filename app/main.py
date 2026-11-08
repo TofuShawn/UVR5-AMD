@@ -49,7 +49,7 @@ import sys
 
 import fluentqt
 from PySide6.QtCore import QSettings
-from PySide6.QtGui import QPalette
+from PySide6.QtGui import QFont, QFontDatabase, QPalette
 from PySide6.QtWidgets import QApplication
 
 #: `SystemParametersInfoW` verbs this file needs. Both take a struct by reference and
@@ -154,6 +154,20 @@ class AppWindow(fluentqt.Window):
         event.ignore()
 
 
+def _load_fonts(app) -> None:
+    """Load the bundled UI fonts: Inter (UI), JetBrains Mono (data) and a subset Noto
+    Sans SC (CJK). A missing file is tolerated -- the system font is the fallback."""
+    from pathlib import Path
+    fonts = Path(__file__).resolve().parent / "assets" / "fonts"
+    for name in ("Inter.ttf", "NotoSansSC.ttf", "JetBrainsMono.ttf"):
+        path = fonts / name
+        if path.is_file():
+            QFontDatabase.addApplicationFont(str(path))
+    base = QFont("Inter")
+    base.setFamilies(["Inter", "Noto Sans SC"])
+    app.setFont(base)
+
+
 def build_app(argv=None):
     # `instance() or ...` is not caution: Task 1's session-scoped `qapp` fixture already
     # owns the one QApplication this process may have, and Task 5's surface test asks for
@@ -161,6 +175,7 @@ def build_app(argv=None):
     app = QApplication.instance() or QApplication(argv if argv is not None else sys.argv[:1])
     fluentqt.prepare_high_dpi_application()
     fluentqt.initialize_resources()
+    _load_fonts(app)
     # Both system reads happen before anything is built: `set_theme` after the first
     # widget paints leaves it painted in the other theme, and `set_motion_mode` after the
     # first hover leaves that hover animated -- the wheel resolves the duration per call,
@@ -172,8 +187,15 @@ def build_app(argv=None):
     ctrl = controller.Controller()
     window = AppWindow(ctrl)
     window.setWindowTitle("UVR5 PySide6 GUI")
-    window.setContentWidget(ctrl.work_page)   # `setContentWidget` on Window is real;
-    window.resize(900, 960)                     # `Window.setContent` is not (measured).
+    # The custom Fluent TitleBar does not render `setWindowTitle` (measured): the OS title
+    # is set for the taskbar, but the drawn top bar stays blank. Give the TitleBar a
+    # content widget so the app's name is visible where a user looks first.
+    _title_bar = window.titleBar()
+    _title = fluentqt.Label("UVR5 PySide6 GUI", _title_bar)
+    _title.setFluentTypography(fluentqt.FontRole.Caption)
+    _title_bar.setContentWidget(_title)
+    window.setContentWidget(ctrl.shell)   # `setContentWidget` on Window is real;
+    window.resize(1120, 1000)                     # `Window.setContent` is not (measured).
     # 900x960, not the 760x900 Plan 2 shipped with nor the 900x1100 the first two-column cut
     # asked for: the work page is two cards side by side over a full-width run band and
     # console now, and the extra width is what lets the left card hold two path rows plus
@@ -196,6 +218,12 @@ def main() -> int:
     i18n.set_locale(i18n.resolve_system() if choice == "system" else choice)
     app, window = build_app()
     window.show()
+    # Fluent sets its own per-widget family when a widget is realised, so re-apply the
+    # bundled chain once the event loop is running -- labels keep Inter for Latin and the
+    # Noto subset for CJK, and the LineEdits do not fall back to Fluent's own family.
+    from PySide6.QtCore import QTimer
+    from app.shell import apply_fonts
+    QTimer.singleShot(0, lambda: apply_fonts(window))
     return app.exec()
 
 

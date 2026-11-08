@@ -30,9 +30,9 @@ import separate_cli
 import selections as selections_module
 import settings as settings_module
 import ui_prefs as ui_prefs_module
-from PySide6.QtWidgets import QDialog, QVBoxLayout
+from PySide6.QtWidgets import QVBoxLayout
 
-from app import dialogs, job, session, settings_page, work_page
+from app import dialogs, job, session, settings_page, shell, work_page
 
 
 @dataclasses.dataclass
@@ -59,57 +59,6 @@ class _Batch:
     @property
     def current(self) -> Path:
         return self.files[self.index]
-
-
-class SettingsDialog(QDialog):
-    """The shell around `SettingsPage` -- still a `QDialog`, and still on purpose.
-
-    Task 7 delivered `app/dialogs.py` (the tier-3 form, the failure surfaces, the
-    pickers) and did not take this shell over: a plain `QDialog` and not a
-    `fluentqt.ContentDialog` is what the plan allows for the settings page, because
-    `ContentDialog` is modal and the page has to keep printing while it is open. The
-    guard in `tests/test_ui_surfaces.py` treats a `QDialog` as an allowed surface for the
-    same reason, and everything *inside* this one is Fluent: the page is a `Card`, its
-    fields are Fluent widgets.
-
-    Non-modal on purpose. `SettingsPage.refresh_tables` prints four fetch lines into the
-    page's own status box and a refused save is reported in the work page's console, so a
-    modal `exec()` loop would hide the output this dialog exists to produce -- and would
-    also stop the user watching a run they started before opening it.
-    """
-
-    def __init__(self, ctrl, *, settings_obj, selections_obj, parent=None):
-        super().__init__(parent)
-        # A weak reference to the controller, not a strong one. `Controller` holds this
-        # dialog in `self.settings_dialog`, so a strong `self.controller = ctrl` closes a
-        # Python cycle (controller -> dialog -> controller) that only the *cyclic*
-        # collector can free -- and pytest's `gc_collect_harder()` at unconfigure runs
-        # exactly that collector. Measured: with the strong back-reference the dialog and
-        # its page were collected there and the process died with heap corruption
-        # (`0xc0000374`) during "Garbage-collecting", 6 runs out of 6 once four dialogs
-        # had accumulated; a single dialog was clean, which is why it hides from a
-        # one-test run and bites the full suite. Held weakly, the dialog's lifetime is the
-        # Qt parent chain's alone, and the collector never finalises it behind Qt's back.
-        self._ctrl_ref = weakref.ref(ctrl)
-        self.setWindowTitle("Settings")
-        self.page = settings_page.SettingsPage(settings_obj=settings_obj,
-                                               selections_obj=selections_obj, parent=self)
-        self.save_button = fluentqt.Button("Save settings", self)
-        # Connected through a weak reference for the same reason as the back-reference
-        # above, and the same reason `SettingsPage` connects its own refresh button (see
-        # `settings_page._weak_slot`): a bound `self.save` held by the child button is a
-        # second dialog -> button -> bound-method -> dialog cycle.
-        self.save_button.clicked.connect(
-            settings_page._weak_slot(weakref.ref(self), "save"))
-        layout = QVBoxLayout(self)
-        layout.addWidget(self.page, 1)
-        layout.addWidget(self.save_button)
-
-    def save(self) -> list[str]:
-        ctrl = self._ctrl_ref()
-        if ctrl is None:
-            return []
-        return ctrl.save_settings(self.page, self)
 
 
 class Controller:
@@ -158,10 +107,10 @@ class Controller:
         # widget rather than letting it keep showing what did not get stored.
         self.work_page.format_requested.connect(self._on_format_requested)
         self.work_page.gpu_requested.connect(self._on_gpu_requested)
-        # The settings dialog, kept so it is not collected while it is on screen. One at a
-        # time: a second click re-raises the dialog it already opened rather than stacking
-        # another copy of 83 fields over the first.
-        self.settings_dialog: SettingsDialog | None = None
+        # The one window's shell: a right rail that swaps the main content between the work
+        # page and a full-page settings view, replacing the old second (dialog) window.
+        self.shell = shell.AppShell(self, self.work_page, settings_obj=self.settings,
+                                    selections_obj=self.selections)
         self.work_page.settings_requested.connect(self._on_settings_requested)
 
     # -- START ---------------------------------------------------------------- #
@@ -404,11 +353,10 @@ class Controller:
         self.settings = new
         page.settings = new
         page.refresh_parameter_summary()
-        if self.settings_dialog is not None:
-            self.settings_dialog.close()
-            self.settings_dialog = None
+        if self.shell.has_settings():
+            self.shell.reset_settings()
             page.console.appendPlainText(
-                "settings dialog closed: it still held the values from before this change"
+                "settings closed: it still held the values from before this change"
                 " -- open Settings again to edit them")
         republish(getattr(new, field))
         page.console.appendPlainText(f"settings saved: {field} = {value}")
@@ -492,27 +440,22 @@ class Controller:
     # -- SETTINGS -------------------------------------------------------------- #
 
     def _on_settings_requested(self) -> None:
-        """One dialog, re-raised rather than stacked.
+        """Swap the one window's main content to the full-page settings view.
 
-        Built lazily: the page is 83 widgets, and a user who never opens it should not
-        pay for it at start-up -- which also keeps it out of `tests/test_ui_surfaces.py`'s
-        tree until something asks for it.
+        The shell builds the 83-field page lazily on first open (a user who never opens
+        Settings does not pay for it at start-up) and `Work` in the right rail swaps back;
+        the old separate settings window is gone.
         """
-        if self.settings_dialog is None:
-            self.settings_dialog = SettingsDialog(self, settings_obj=self.settings,
-                                                  selections_obj=self.selections,
-                                                  parent=self.work_page)
-        self.settings_dialog.show()
-        self.settings_dialog.raise_()
+        self.shell.show_settings()
 
-    def save_settings(self, page, dialog) -> list[str]:
+    def save_settings(self, page) -> list[str]:
         """Write what the page validated, then hand the new objects to every later reader.
 
         The destination is the fork's own settings file -- `config_file()`, the same path
         `load()` read at start-up. `apply(path)` takes the destination precisely so a test
         can point the page somewhere else; nothing here writes a second format.
 
-        A refusal means the dialog stays open with the message in the console, because the
+        A refusal means the settings view stays open with the message in the console, because the
         user has to be able to act on it. `SettingsPage.apply` reports both ways a save can
         fail -- a value the type system refused (nothing was written) and a file that
         refused to be written (a `settings.json` open in an editor is the everyday Windows
@@ -532,7 +475,7 @@ class Controller:
             for line in messages:
                 console(line)
             console("settings not applied: see the line above, fix it, and press Save "
-                    "again -- the dialog stayed open for that")
+                    "again -- the settings view stayed open for that")
             return messages
         self.settings, self.selections = page.st, page.sel
         self.work_page.selections = self.selections
@@ -551,13 +494,12 @@ class Controller:
         self.work_page.set_gpu(bool(self.settings.gpu_conversion))
         console(f"settings saved to {settings_module.config_file()}")
         if self._batch is not None:
-            # The dialog is non-modal, so Save can land mid-run. The batch keeps the plan it
+            # The settings view is non-modal, so Save can land mid-run. The batch keeps the plan it
             # assembled once, and a bare "settings saved" over a running job reads as a
             # change to that job -- the deferred-write lie the page's own controls are
             # frozen against while busy.
             console("the run in flight keeps the plan it started with; these values are "
                     "the next run's")
-        dialog.close()
         return messages
 
     # -- teardown ------------------------------------------------------------- #

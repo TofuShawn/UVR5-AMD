@@ -122,6 +122,8 @@ UI_MODULE_FUNCTIONS = frozenset({
     # the wheel's own roles, which is exactly what ruling A permits (the ban is on
     # `apply_theme_overrides` / `set_widget_theme_overrides`, checked below).
     "FontRole", "Icons",
+    # shell.py custom-paints the nav accent bar with the system accent colour.
+    "accent_color",
 })
 
 #: Qt base classes the app may never *construct* itself. `QWidget(` keeps the native
@@ -245,8 +247,8 @@ def test_the_settings_page_adds_no_bare_surface_of_its_own(qapp):
     """
     app_obj, window = main.build_app([])
     window.controller.work_page.settings_requested.emit()
-    dialog = window.controller.settings_dialog
-    page = dialog.page
+    dialog = window.controller.shell
+    page = dialog._settings_page
     assert _is_fluent(page), f"the settings page is a {type(page).__name__}"
     assert _is_fluent(page._body), (
         f"the scrollable body of the settings page is a {type(page._body).__name__}, "

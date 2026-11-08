@@ -82,7 +82,8 @@ def test_pending_files_is_typed_file_first_then_extras_deduped(qapp, tmp_path, m
     """The queue has one source. `input_edit` stays file #1 because every existing test in
     this suite sets it the way a user types it, and a second list that also holds it is
     how a batch comes to run the same file twice."""
-    page = _ui_ctrl(qapp, tmp_path, monkeypatch).work_page
+    ctrl = _ui_ctrl(qapp, tmp_path, monkeypatch)
+    page = ctrl.work_page
     a, b = _wav_files(tmp_path, ["a.wav", "b.wav"])
     page.input_edit.setText(str(a))
     page.add_extra_files([str(b), str(a)])
@@ -125,7 +126,8 @@ def test_blockers_are_the_words_the_refusal_uses(qapp, tmp_path, monkeypatch):
     like it did nothing. The strings are the pre-existing refusal's verbatim, so nothing
     a user read last week changed wording. The page builds on an empty catalog, where the
     combo holds only `NO_MODEL`, so the first blocker is the model and it stays first."""
-    page = _ui_ctrl(qapp, tmp_path, monkeypatch).work_page
+    ctrl = _ui_ctrl(qapp, tmp_path, monkeypatch)
+    page = ctrl.work_page
     assert page.blockers() == ["pick a model from the Model list first",
                                "choose an input audio file first"]
     assert not page.start_button.isEnabled()
@@ -142,7 +144,8 @@ def test_blockers_are_the_words_the_refusal_uses(qapp, tmp_path, monkeypatch):
 def test_a_batch_of_missing_files_names_three_and_counts_the_rest(qapp, tmp_path,
                                                                   monkeypatch):
     """400 stale paths must not print 400 paths into a label."""
-    page = _ui_ctrl(qapp, tmp_path, monkeypatch).work_page
+    ctrl = _ui_ctrl(qapp, tmp_path, monkeypatch)
+    page = ctrl.work_page
     _stub_assemble(monkeypatch, page)
     page.input_edit.setText("")
     page.add_extra_files([str(tmp_path / f"gone{n}.wav") for n in range(12)])
@@ -284,7 +287,8 @@ def test_progress_spreads_one_files_percent_over_the_batch(qapp, tmp_path, monke
     and read as a saw-tooth". It does reset per file -- so the published number is not the
     file's, it is `(files done + this file's fraction) / total`. `session.progress_percent`
     keeps its own `total_files` term untouched; this is the GUI aggregating the signal."""
-    page = _ui_ctrl(qapp, tmp_path, monkeypatch).work_page
+    ctrl = _ui_ctrl(qapp, tmp_path, monkeypatch)
+    page = ctrl.work_page
     page.begin_batch(4)
     assert page.count_label.text() == "0 / 4 file(s)", page.count_label.text()
     page._on_progress(50)
@@ -393,7 +397,7 @@ def test_the_choices_a_run_froze_cannot_be_changed_mid_run(qapp, tmp_path, monke
     _queued_files(page, files)
     monkeypatch.setattr(page.job, "start", lambda request: None)   # no terminal: still running
     frozen = [page.output_edit, page.browse_output, page.default_output_check,
-              page.gpu_check, page.model_combo, page.arch_bar, page.settings_button,
+              page.gpu_check, page.model_combo, page.arch_bar,
               page.params_edit, *page.format_radios.values()]
 
     page.run_requested.emit()
@@ -421,7 +425,8 @@ def test_the_buttons_are_wired_to_the_pickers_not_to_nothing(qapp, tmp_path, mon
     dropped."""
     import fluentqt
 
-    page = _ui_ctrl(qapp, tmp_path, monkeypatch).work_page
+    ctrl = _ui_ctrl(qapp, tmp_path, monkeypatch)
+    page = ctrl.work_page
     asked: list[str] = []
     files = _wav_files(tmp_path, ["a.wav", "b.wav", "c.wav"])
     page.input_edit.setText(str(files[0]))
