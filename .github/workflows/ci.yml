@@ -1,0 +1,45 @@
+name: CI
+
+# The fork is Windows-only (ROCm / DirectML wheels are win_amd64, cp312), so the lane
+# runs on windows-latest with Python 3.12 and a CPU torch: CI has no AMD GPU and must
+# not download the ~2 GB ROCm stack. The committed `models/` tree (baked tables + one VR
+# weight) backs the weight-free subset below; golden-audio, GPU/VRAM and installed-root
+# tests are local-only and are excluded here, not skipped silently.
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install CPU torch trio (no GPU in CI)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install the rest of the stack
+        run: |
+          python -m pip install -r requirements.txt
+          python -m pip install pytest
+
+      - name: Weight-free test subset
+        env:
+          UVR_MODEL_ROOT: ${{ github.workspace }}/models
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          python -m pytest `
+            tests/test_work_page.py tests/test_work_page_batch.py `
+            tests/test_work_page_layout.py tests/test_ui_surfaces.py `
+            tests/test_fluent_binding.py tests/test_i18n.py tests/test_ui_prefs.py `
+            tests/test_settings_page.py tests/test_job.py tests/test_selections.py `
+            tests/test_settings.py tests/test_dialogs.py tests/test_model_refresh.py `
+            -q -k "not vram" `
+            --deselect tests/test_job.py::test_one_real_job_on_the_worker_thread `
+            --deselect tests/test_selections.py::test_a_selection_reaches_the_plan_only_when_its_switch_is_on
