@@ -404,15 +404,28 @@ class WorkPage(fluentqt.Card):
         two.addLayout(format_row)
 
         # The device switch, same argument as the format: it is one bool of the plan input
-        # that nothing else in the GUI can reach, because the GUI passes
-        # `force_device=None` and `effective_settings`' override only fires with a flag
-        # (`separate_cli.py:284-286`). `CheckBox` for the measured `ToggleSwitch` hole.
+        # that nothing else in the GUI can reach, because `effective_settings`' override
+        # only fires with a force_device (`separate_cli.py:284-286`). `CheckBox` for the
+        # measured `ToggleSwitch` hole. Beside it, the compute-backend selector: Auto lets
+        # backends.resolve pick (ROCm if the torch build is hip, else CUDA/CPU, ONNX on
+        # DirectML when an AMD GPU is present); DirectML pins ONNX to the DX12 GPU with
+        # torch on CPU so a machine without ROCm is still usable; CPU pins both down.
         self.gpu_check = fluentqt.CheckBox(tr("gpu_check"), self.segment_two_host)
         self.gpu_check.blockSignals(True)
         self.gpu_check.setChecked(bool(self.settings.gpu_conversion))
         self.gpu_check.blockSignals(False)
         self.gpu_check.toggled.connect(self.gpu_requested.emit)
-        two.addWidget(self.gpu_check)
+        device_row = QHBoxLayout()
+        device_row.setSpacing(8)
+        device_row.addWidget(self.gpu_check)
+        device_row.addStretch(1)
+        self.device_combo = fluentqt.ComboBox(self.segment_two_host)
+        self.device_combo.setToolTip(tr("compute_device"))
+        self._device_codes = [None, "rocm", "dml", "cpu"]
+        self.device_combo.addItems(["Auto", "ROCm", "DirectML", "CPU"])
+        self.device_combo.setCurrentIndex(0)
+        device_row.addWidget(self.device_combo)
+        two.addLayout(device_row)
 
         # M1. This Expander was Task 5's placeholder -- "no content until Task 6" -- and
         # Task 6 put the fields on the settings page without removing it, so the primary
@@ -662,6 +675,10 @@ class WorkPage(fluentqt.Card):
     def selected_model(self) -> str:
         return self.model_combo.currentText()
 
+    def selected_force_device(self) -> "str | None":
+        """The compute-backend override for the next run; Auto means let resolve pick."""
+        return self._device_codes[self.device_combo.currentIndex()]
+
     # -- the queue ------------------------------------------------------------- #
 
     def add_extra_files(self, paths: list[str]) -> None:
@@ -805,7 +822,7 @@ class WorkPage(fluentqt.Card):
         # finishes is legitimate, and `_Batch.files` is already a copy of the paths.
         for widget in (self.output_edit, self.browse_output, self.default_output_check,
                        self.model_combo, self.arch_bar, self.gpu_check,
-                       self.settings_button, self.params_edit,
+                       self.device_combo, self.settings_button, self.params_edit,
                        *self.format_radios.values()):
             widget.setEnabled(not self._busy)
 

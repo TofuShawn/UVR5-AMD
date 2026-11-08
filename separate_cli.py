@@ -282,7 +282,9 @@ def effective_settings(st: settings_module.Settings, spec: catalog.ModelSpec,
     if spec.process_method and st.chosen_process_method != spec.process_method:
         updates["chosen_process_method"] = spec.process_method
     if device is not None:
-        updates["gpu_conversion"] = device != "cpu"
+        # Only the torch-GPU devices turn gpu_conversion on; `dml` accelerates ONNX but
+        # runs torch on CPU, so it must not claim the torch GPU path.
+        updates["gpu_conversion"] = device in ("rocm", "cuda")
     return dataclasses.replace(st, **updates) if updates else st
 
 
@@ -602,9 +604,11 @@ def build_parser() -> argparse.ArgumentParser:
                              "root declares the name)")
     parser.add_argument("-m", "--model", default=None, metavar="NAME",
                         help="model name or weight file name to resolve through the catalog")
-    parser.add_argument("-d", "--device", default=None, choices=("cpu", "rocm", "cuda"),
+    parser.add_argument("-d", "--device", default=None,
+                        choices=("cpu", "rocm", "cuda", "dml"),
                         help="device to ask for, through backends.resolve(); a GPU that "
-                             "cannot be opened is reported, never silently downgraded")
+                             "cannot be opened is reported, never silently downgraded. "
+                             "'dml' runs ONNX on DirectML and torch on CPU (no ROCm needed)")
     parser.add_argument("-s", "--settings", default=None, metavar="PATH",
                         help="settings JSON to load (default: the fork's config dir, "
                              "then built-in defaults)")

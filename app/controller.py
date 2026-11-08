@@ -191,7 +191,8 @@ class Controller:
 
         try:
             sess = session.assemble(st=self.settings, cat=self.catalog, model=model,
-                                    arch=page.current_arch(), force_device=None,
+                                    arch=page.current_arch(),
+                                    force_device=page.selected_force_device(),
                                     # The line that makes secondary models reachable from a
                                     # GUI for the first time: Task 3's 33 fields, in the shape
                                     # `plan.build` documents.

@@ -56,6 +56,7 @@ CATALOG: dict[str, tuple[str, str, str]] = {
     "output_format": ("Output format", "輸出格式", "输出格式"),
     "console": ("Console", "主控台", "控制台"),
     "language": ("Language", "語言", "语言"),
+    "compute_device": ("Compute device", "運算裝置", "计算设备"),
     "lang_system": ("System (follow OS)", "跟隨系統", "跟随系统"),
     # buttons
     "browse": ("Browse", "瀏覽", "浏览"),

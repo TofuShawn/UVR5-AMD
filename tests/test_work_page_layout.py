@@ -132,6 +132,28 @@ def test_no_scroll_view_is_built_by_the_page(qapp, tmp_path, monkeypatch):
     assert page.sizeHint().height() < 900, page.sizeHint().height()
 
 
+def test_the_device_selector_reaches_assemble_as_force_device(qapp, tmp_path, monkeypatch):
+    """Auto must stay `None` (backends.resolve picks), and DirectML must arrive as the
+    `dml` force so a machine without ROCm can run ONNX on the DX12 GPU with torch on CPU."""
+    ctrl = _ui_ctrl(qapp, tmp_path, monkeypatch)
+    page = ctrl.work_page
+    started: list = []
+    monkeypatch.setattr(session, "assemble",
+                        lambda **kw: started.append(kw) or session.Session(
+                            spec=None, backend=_cpu_backend(), rp=_Rp(),
+                            engine_class=SlowEngine, compute_lines=()))
+    monkeypatch.setattr(page, "selected_model", lambda: "UVR-MDX-NET-Inst_HQ_3")
+    _stub_job_start(page, monkeypatch, [], failing=set())
+    page.input_edit.setText(str(_wav_files(tmp_path, ["one.wav"])[0]))
+    assert page.selected_force_device() is None
+    page.run_requested.emit()
+    assert started[-1]["force_device"] is None
+    page.device_combo.setCurrentIndex(page._device_codes.index("dml"))
+    assert page.selected_force_device() == "dml"
+    page.run_requested.emit()
+    assert started[-1]["force_device"] == "dml"
+
+
 def test_no_stem_scope_control_exists_on_the_page(qapp, tmp_path, monkeypatch):
     """The 5.6 left column's Vocal/Instrumental/4-Stems radios are deliberately absent,
     and this test is what keeps the absence a decision instead of an oversight: adding a

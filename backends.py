@@ -22,7 +22,8 @@ from dataclasses import dataclass
 _ROCM = "rocm"
 _CUDA = "cuda"
 _CPU = "cpu"
-_VALID_FORCE = (_ROCM, _CUDA, _CPU)
+_DML = "dml"
+_VALID_FORCE = (_ROCM, _CUDA, _CPU, _DML)
 _AMD_PCI_VENDOR = "VEN_1002"          # PCI vendor id 0x1002 == AMD
 
 
@@ -152,7 +153,7 @@ def _once(probe):
 
 def resolve(force: str | None = None) -> Backend:
     if force is not None and force not in _VALID_FORCE:
-        raise ValueError(f"unknown backend {force!r}; expected rocm|cuda|cpu")
+        raise ValueError(f"unknown backend {force!r}; expected rocm|cuda|cpu|dml")
 
     # ROCm speaks the CUDA API, so a hip build IS the cuda device. Therefore
     # "rocm" is decided by the torch build, never by the PCI vendor: an AMD GPU
@@ -163,10 +164,21 @@ def resolve(force: str | None = None) -> Backend:
     else:
         name = _ROCM if _hip_version() else (_CUDA if _cuda_available() else _CPU)
 
-    torch_device = _CPU if name == _CPU else _CUDA
+    # DirectML is an ONNX-only accelerator here (no torch-directml dependency): torch
+    # stays on CPU while the ONNX models run on the DX12 GPU. That is the no-ROCm fallback.
+    torch_device = _CPU if name in (_CPU, _DML) else _CUDA
 
     avail = _once(_available_ort)
-    if _once(_is_amd_device) and "DmlExecutionProvider" in avail:
+    if name == _DML:
+        if "DmlExecutionProvider" in avail:
+            providers = ["DmlExecutionProvider", "CPUExecutionProvider"]
+        else:
+            warn_degradation(
+                "DirectML was requested but onnxruntime reports no "
+                "DmlExecutionProvider (install onnxruntime-directml on Windows). "
+                "ONNX models fall back to CPUExecutionProvider.")
+            providers = ["CPUExecutionProvider"]
+    elif _once(_is_amd_device) and "DmlExecutionProvider" in avail:
         providers = ["DmlExecutionProvider", "CPUExecutionProvider"]
     elif name == _CUDA and "CUDAExecutionProvider" in avail:
         providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]

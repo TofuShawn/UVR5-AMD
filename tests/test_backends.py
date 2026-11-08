@@ -125,6 +125,29 @@ def test_force_cpu_overrides_torch_but_not_onnx(monkeypatch):
     assert b.ort_providers[0] == "DmlExecutionProvider"
 
 
+def test_force_dml_puts_onnx_on_directml_and_torch_on_cpu(monkeypatch):
+    """The no-new-dependency fallback: DirectML accelerates the ONNX models on any DX12
+    GPU while torch (demucs/apollo) stays on CPU, so a machine without ROCm is usable."""
+    monkeypatch.setattr(backends, "_hip_version", lambda: "7.2.42141")
+    monkeypatch.setattr(backends, "_cuda_available", lambda: True)
+    monkeypatch.setattr(backends, "_is_amd_device", lambda: False)
+    b = backends.resolve(force="dml")
+    assert b.name == "dml"
+    assert b.torch_device == "cpu"
+    assert b.ort_providers[0] == "DmlExecutionProvider"
+
+
+def test_force_dml_without_the_provider_falls_back_to_cpu_and_says_so(monkeypatch):
+    monkeypatch.setattr(backends, "_available_ort",
+                        lambda: frozenset({"CPUExecutionProvider"}))
+    monkeypatch.setattr(backends, "_is_amd_device", lambda: False)
+    with pytest.warns(RuntimeWarning):
+        b = backends.resolve(force="dml")
+    assert b.name == "dml"
+    assert b.torch_device == "cpu"
+    assert b.ort_providers == ["CPUExecutionProvider"]
+
+
 def test_force_rejects_unknown_backend():
     with pytest.raises(ValueError, match="expected rocm|cuda|cpu"):
         backends.resolve(force="opencl")
