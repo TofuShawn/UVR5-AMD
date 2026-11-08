@@ -195,7 +195,7 @@ def build_app(argv=None):
     _title.setFluentTypography(fluentqt.FontRole.Caption)
     _title_bar.setContentWidget(_title)
     window.setContentWidget(ctrl.shell)   # `setContentWidget` on Window is real;
-    window.resize(1120, 1000)                     # `Window.setContent` is not (measured).
+    window.resize(1280, 980)                     # `Window.setContent` is not (measured).
     # 900x960, not the 760x900 Plan 2 shipped with nor the 900x1100 the first two-column cut
     # asked for: the work page is two cards side by side over a full-width run band and
     # console now, and the extra width is what lets the left card hold two path rows plus

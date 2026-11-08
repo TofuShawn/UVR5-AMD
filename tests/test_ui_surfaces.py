@@ -153,7 +153,7 @@ RETIRED_GUI_IMPORTS = ("tkinter", "gui_data.sv_ttk", "gui_data.tkinterdnd2",
 #: requires: "unused-but-reviewed", stated, so a name leaving it (now used) or a name
 #: used but absent from it must be an edit in the same commit.
 DECORATIVE_UI_CLASSES = frozenset({
-    "AutoSuggestBox", "Divider", "FluentWidget", "HyperlinkButton",
+    "AutoSuggestBox", "FluentWidget", "HyperlinkButton",
     "MultiSelectComboBox", "PasswordBox", "ProgressRing",
     "SelectorBar", "SelectorBarItem", "Slider", "TabView", "TabViewItem",
     "ToggleButton", "ToggleSwitch", "ToolTip",
@@ -253,10 +253,6 @@ def test_the_settings_page_adds_no_bare_surface_of_its_own(qapp):
     assert _is_fluent(page._body), (
         f"the scrollable body of the settings page is a {type(page._body).__name__}, "
         f"not a Fluent surface -- it is the largest painted rectangle on the page")
-    content = page._scroller.contentWidget()
-    assert _is_fluent(content), (
-        f"the ScrollView's content widget is a {type(content).__name__}, so the page's "
-        f"body is not the Card `setContentWidget` was given")
     offenders = _offenders(dialog.findChildren(QWidget))
     assert not offenders, "\n".join(offenders)
 

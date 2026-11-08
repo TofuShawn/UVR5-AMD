@@ -28,7 +28,7 @@ import fluentqt
 import selections as selections_module
 import settings as settings_module
 import ui_prefs
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 # `QButtonGroup` is a QObject, not a widget: the surface census walks widgets, so it never
 # sees this, and `BARE_QT_CONSTRUCTIBLES` (QWidget/QDialog/QFrame) does not cover it. It is
 # here because the format radios need an exclusivity guarantee the binding's parent-based
@@ -177,65 +177,30 @@ class WorkPage(fluentqt.Card):
     # -- construction ---------------------------------------------------------- #
 
     def _build(self) -> None:
-        """Two labelled cards side by side, over a run band and a console that span both.
+        """One column of expandable groups of setting rows (Wintoys/Windows Settings).
 
-        The order is construction-then-attachment throughout, because `refresh_queue()` at
-        the end reads every widget in both groups and `set_busy` reads two of them: a
-        control added before it exists is an `AttributeError` inside a constructor, which
-        the suite would report as forty failures and a launched app would report as a
-        window that never appears.
-
-        The shape is the fix for the complaint that started this pass ("現在這 UI 真的是
-        難看"): the previous single column stretched every control to the full 900 px --
-        three format radios a third of a screen apart, three batch buttons each wider than
-        their labels, and a page tall enough to overflow its own window. Two cards give the
-        eye two groups instead of one wall, the controls sit at their own width, and the
-        run band + console stay full-width below because they are about the *run*, not
-        about either half of the configuration.
-
-        No `ScrollView`, which is a measured result rather than a preference: two pages
-        each holding one segfault at interpreter exit (739 passed, rc 139, inside
-        `QWidget::destroy`), because `setContentWidget` transfers ownership of the content
-        widget and a page built per test is a scroll area Qt and Shiboken both try to
-        destroy. Eight builds go clean with a plain `Card` around the same body. The two
-        columns are also what make skipping it honest -- the page's `sizeHint()` now fits
-        the window `app/main.py` asks for (see `test_no_scroll_view_is_built_by_the_page`
-        for the measured number). If a future control pushes past it, the scroll area
-        belongs at the *window* level, one per process, not one per page.
+        Each row is a leading icon, a title + secondary description, and the control on the
+        right; the groups (Input / Model & output / Device) collapse. Same widget attributes
+        and signals as the earlier two-column form -- behaviour unchanged, arrangement only.
         """
         self.setAppearance(fluentqt.Card.Appearance.Canvas)
         root = QVBoxLayout(self)
-        root.setContentsMargins(20, 16, 20, 16)
-        root.setSpacing(12)
+        root.setContentsMargins(24, 20, 24, 20)
+        root.setSpacing(14)
 
-        # Masthead: the app's name, and beside it the one sentence a first-time user needs
-        # ("what is this and what do I do first"). The window chrome paints no title of its
-        # own (TitleBar exposes no title setter, measured), so the identity lives here in
-        # the content where it is guaranteed visible. The name says what this front end IS
-        # -- the PySide6 GUI fork, not official UVR's tkinter -- with the AMD/ROCm target as
-        # a quiet badge; the orientation maps straight onto the two numbered cards and
-        # START below, so an empty page still reads as a three-step task.
         masthead = QHBoxLayout()
         masthead.setSpacing(12)
         self.app_title = fluentqt.Label("UVR5 PySide6 GUI", self)
         self.app_title.setFluentTypography(fluentqt.FontRole.Title)
         masthead.addWidget(self.app_title)
-        self.fork_label = self._caption(tr("fork_badge"),
-                                        fluentqt.Label.TextColorRole.Tertiary)
+        self.fork_label = self._caption(tr("fork_badge"), fluentqt.Label.TextColorRole.Tertiary)
         masthead.addWidget(self.fork_label)
         masthead.addStretch(1)
-        self.orientation_label = self._caption(
-            tr("orientation"),
-            fluentqt.Label.TextColorRole.Secondary)
+        self.orientation_label = self._caption(tr("orientation"),
+                                               fluentqt.Label.TextColorRole.Secondary)
         self.orientation_label.setWordWrap(True)
         masthead.addWidget(self.orientation_label)
         root.addLayout(masthead)
-
-        # The machine-derived lines, compact and quiet: they answer "what is this computing
-        # on" and must not be scrolled away, but they are context, not a control, so they
-        # take the caption role and a secondary ink. One row, not two: the pair repeats what
-        # the truth strip below already says, so spending two full lines on it at the top
-        # would tax every screen for information the summary carries anyway.
         machine_row = QHBoxLayout()
         machine_row.setSpacing(8)
         self.device_label = self._caption("", fluentqt.Label.TextColorRole.Tertiary)
@@ -246,160 +211,129 @@ class WorkPage(fluentqt.Card):
 
         columns = QHBoxLayout()
         columns.setSpacing(12)
-        # Left is wider: it holds two path rows and the queue, which are the longest text
-        # on the page. Right holds the arch switch, one combo and three short radios.
-        self.segment_one_host = fluentqt.Card(self)
-        self.segment_one_host.setAppearance(fluentqt.Card.Appearance.Layer)
-        self.segment_one_host.setBorderVisible(True)
-        self.segment_two_host = fluentqt.Card(self)
-        self.segment_two_host.setAppearance(fluentqt.Card.Appearance.Layer)
-        self.segment_two_host.setBorderVisible(True)
-        columns.addWidget(self.segment_one_host, 3)
-        columns.addWidget(self.segment_two_host, 2)
-        root.addLayout(columns, 1)
-        one = QVBoxLayout(self.segment_one_host)
-        one.setContentsMargins(16, 14, 16, 16)
-        one.setSpacing(8)
-        two = QVBoxLayout(self.segment_two_host)
-        two.setContentsMargins(16, 14, 16, 16)
-        two.setSpacing(8)
+        left = QVBoxLayout()
+        right = QVBoxLayout()
+        columns.addLayout(left, 1)
+        columns.addLayout(right, 1)
 
-        # -- segment 1: what to process --------------------------------------- #
-        self.segment_one = self._heading(tr("seg1"), self.segment_one_host)
-        one.addWidget(self.segment_one)
+        def group(container, title):
+            exp = fluentqt.Expander(self)
+            exp.setHeaderText(title)
+            exp.setAnimationEnabled(False)
+            body = fluentqt.Card()
+            col = QVBoxLayout(body)
+            col.setContentsMargins(16, 6, 16, 12)
+            col.setSpacing(8)
+            exp.setContentWidget(body)
+            exp.setExpanded(True)
+            container.addWidget(exp)
+            return col
 
-        one.addWidget(self._field_label(tr("input_file"), self.segment_one_host))
-        path_row = QHBoxLayout()
-        path_row.setSpacing(8)
-        self.input_edit = fluentqt.LineEdit(self.segment_one_host)
+        def row(col, icon, title, desc, *controls):
+            bar = QHBoxLayout()
+            bar.setContentsMargins(4, 8, 4, 8)
+            bar.setSpacing(12)
+            ic = fluentqt.Button("")
+            ic.setIconGlyph(icon)
+            ic.setFluentStyle(fluentqt.Button.ButtonStyle.Subtle)
+            ic.setFixedSize(32, 32)
+            ic.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            bar.addWidget(ic)
+            text = QVBoxLayout()
+            text.setSpacing(2)
+            lead = fluentqt.Label(title)
+            lead.setFluentTypography(fluentqt.FontRole.BodyStrong)
+            text.addWidget(lead)
+            if desc:
+                sub = fluentqt.Label(desc)
+                sub.setFluentTypography(fluentqt.FontRole.Caption)
+                sub.setTextColorRole(fluentqt.Label.TextColorRole.Secondary)
+                text.addWidget(sub)
+            bar.addLayout(text, 1)
+            for control in controls:
+                if isinstance(control, (QHBoxLayout, QVBoxLayout)):
+                    bar.addLayout(control)
+                else:
+                    bar.addWidget(control)
+            col.addLayout(bar)
+            col.addWidget(fluentqt.Divider())
+            return bar
+
+        # -- Input ------------------------------------------------------------- #
+        g = group(left, tr("group_input"))
+        self.input_edit = fluentqt.LineEdit()
         self.input_edit.setPlaceholderText(tr("input_ph"))
         self.input_edit.setClearButtonEnabled(True)
-        self.browse_input = self._icon_button(tr("browse"), fluentqt.Icons.Folder,
-                                              self.segment_one_host)
+        self.browse_input = self._icon_button(tr("browse"), fluentqt.Icons.Folder, None)
         self.browse_input.clicked.connect(self._pick_input)
+        path_row = QHBoxLayout()
+        path_row.setSpacing(8)
         path_row.addWidget(self.input_edit, 1)
         path_row.addWidget(self.browse_input)
-        one.addLayout(path_row)
+        row(g, fluentqt.Icons.File, tr("input_file"), tr("row_input_desc"), path_row)
 
-        # Batch mode, in the shape official UVR 5.6 has it: a queue you can see. The list
-        # below is that queue *rendered*, never a second source of it -- `pending_files()`
-        # is the only reader, and both START and the reason label go through it. The three
-        # buttons sit at their own width with a stretch after them, rather than each
-        # taking a third of the column as they did when the row had no stretch.
-        batch_row = QHBoxLayout()
-        batch_row.setSpacing(8)
-        self.add_files_button = self._icon_button(tr("add_files"), fluentqt.Icons.Add,
-                                                  self.segment_one_host)
-        self.add_folder_button = self._icon_button(tr("add_folder"), fluentqt.Icons.Folder,
-                                                   self.segment_one_host)
-        self.clear_files_button = self._icon_button(tr("clear"), fluentqt.Icons.Delete,
-                                                    self.segment_one_host,
+        self.add_files_button = self._icon_button(tr("add_files"), fluentqt.Icons.Add, None)
+        self.add_folder_button = self._icon_button(tr("add_folder"), fluentqt.Icons.Folder, None)
+        self.clear_files_button = self._icon_button(tr("clear"), fluentqt.Icons.Delete, None,
                                                     style=fluentqt.Button.ButtonStyle.Subtle)
         self.add_files_button.clicked.connect(self._pick_more_inputs)
         self.add_folder_button.clicked.connect(self._pick_input_folder)
         self.clear_files_button.clicked.connect(lambda: self.add_extra_files([]))
+        batch_row = QHBoxLayout()
+        batch_row.setSpacing(8)
         batch_row.addWidget(self.add_files_button)
         batch_row.addWidget(self.add_folder_button)
         batch_row.addWidget(self.clear_files_button)
-        batch_row.addStretch(1)
-        one.addLayout(batch_row)
-        self.file_list = fluentqt.TextEdit(self.segment_one_host)
+        row(g, fluentqt.Icons.Add, tr("row_batch"), tr("row_batch_desc"), batch_row)
+        self.file_list = fluentqt.TextEdit()
         self.file_list.setReadOnly(True)
         self.file_list.setFontRole(fluentqt.FontRole.Caption)
         self.file_list.setPlaceholderText(tr("queue_ph"))
         self.file_list.setMinVisibleLines(3)
         self.file_list.setMaxVisibleLines(6)
-        one.addWidget(self.file_list, 1)
+        g.addWidget(self.file_list)
 
-        one.addWidget(self._field_label(tr("output_dir"), self.segment_one_host))
-        out_row = QHBoxLayout()
-        out_row.setSpacing(8)
-        self.output_edit = fluentqt.LineEdit(self.segment_one_host)
+        self.output_edit = fluentqt.LineEdit()
         self.output_edit.setPlaceholderText(tr("output_ph"))
         self.output_edit.setClearButtonEnabled(True)
-        self.browse_output = self._icon_button(tr("browse"), fluentqt.Icons.Folder,
-                                               self.segment_one_host)
+        self.browse_output = self._icon_button(tr("browse"), fluentqt.Icons.Folder, None)
         self.browse_output.clicked.connect(self._pick_output)
+        out_row = QHBoxLayout()
+        out_row.setSpacing(8)
         out_row.addWidget(self.output_edit, 1)
         out_row.addWidget(self.browse_output)
-        one.addLayout(out_row)
-
-        # The default output folder, in the place a user is looking at when they want it.
-        # `CheckBox` and not `ToggleSwitch`: measured on the pinned wheel the switch has
-        # `setIsOn` and `toggled` but no `setText`, no `setChecked` and no `isChecked`, so
-        # its state cannot be read back and its label cannot be set from a persisted
-        # value -- a toggle that cannot be told what it currently is would have to be
-        # shown as *something*, and the something would be a guess.
-        self.default_output_check = fluentqt.CheckBox(tr("default_output_check"),
-                                                      self.segment_one_host)
+        row(g, fluentqt.Icons.Folder, tr("output_dir"), tr("row_output_desc"), out_row)
+        self.default_output_check = fluentqt.CheckBox(tr("default_output_check"))
         self.default_output_check.setChecked(bool(self.ui.export_path))
         self.default_output_check.toggled.connect(self._on_default_output_toggled)
-        one.addWidget(self.default_output_check)
-        self.default_output_label = self._caption("", fluentqt.Label.TextColorRole.Tertiary,
-                                                  parent=self.segment_one_host)
-        one.addWidget(self.default_output_label)
-        one.addStretch(1)
+        g.addWidget(self.default_output_check)
+        self.default_output_label = self._caption("", fluentqt.Label.TextColorRole.Tertiary)
+        g.addWidget(self.default_output_label)
 
-        # -- segment 2: how to separate --------------------------------------- #
-        self.segment_two = self._heading(tr("seg2"), self.segment_two_host)
-        two.addWidget(self.segment_two)
-
-        self.arch_bar = fluentqt.Pivot(self.segment_two_host)
+        # -- Model & output ---------------------------------------------------- #
+        g = group(right, tr("group_model"))
+        self.arch_bar = fluentqt.Pivot()
         self._arch_names = self._archs()
         for arch in self._arch_names:
-            self.arch_bar.addItem(fluentqt.PivotItem(arch))   # header-only form:
-            # PivotItem('vr', parent) hits the same Shiboken overload defect as
-            # Expander('title') (spec §5.2.1), so the parent is never passed here.
-        # Ruling R-T6-archtabs. This bar was a `SelectorBar` and Task 5's launch
-        # photograph showed the third arch label ellipsized to `m…` at the 760 px
-        # default. Measured on the pinned wheel (four probes, offscreen, comparing the
-        # *painted* pixels to `fontMetrics.horizontalAdvance`, not to `itemGeometry`):
-        # `SelectorBar` elides `mdx` to `m…` at 520, 728, 1200 and 2000 px alike -- the
-        # elision is a rule of the control itself, so sizing it to content, bounding its
-        # width or widening the window cannot reach it. `Pivot` paints all four labels in
-        # full at every width tested; the arch switch needs only headers plus
-        # `currentChanged`/`selectedIndex`, so its lack of a content setter costs nothing.
-        # The two sizing lines keep the bar at its own content height (44 px, not the
-        # 158 px band Task 5 photographed); the labels stay `Catalog.archs()`' own strings.
+            self.arch_bar.addItem(fluentqt.PivotItem(arch))
         self.arch_bar.setFixedHeight(self.arch_bar.sizeHint().height())
         self.arch_bar.setMinimumWidth(self.arch_bar.sizeHint().width())
         self.arch_bar.currentChanged.connect(self._on_arch_changed)
         self.arch_bar.setSelectedIndex(0)
-        two.addWidget(self._field_label(tr("architecture"), self.segment_two_host))
-        two.addWidget(self.arch_bar)
-
-        two.addWidget(self._field_label(tr("model"), self.segment_two_host))
-        self.model_combo = fluentqt.ComboBox(self.segment_two_host)
-        two.addWidget(self.model_combo)
-        self.model_hint = self._caption("", fluentqt.Label.TextColorRole.Tertiary,
-                                        parent=self.segment_two_host)
+        row(g, fluentqt.Icons.Grid, tr("architecture"), tr("row_arch_desc"), self.arch_bar)
+        self.model_combo = fluentqt.ComboBox()
+        row(g, fluentqt.Icons.Music, tr("model"), tr("row_model_desc"), self.model_combo)
+        self.model_hint = self._caption("", fluentqt.Label.TextColorRole.Tertiary)
         self.model_hint.setWordWrap(True)
-        two.addWidget(self.model_hint)
-
-        # The output format, where the user is choosing output. `save_format` was a free
-        # text box until Plan 2's wave 1 made it a combo on the settings page, and C1 is
-        # the record of what the free-text version did: a value the engine has no branch
-        # for converts nothing and deletes the wav anyway (`session.check_save_format`'s
-        # docstring). Three radios cannot express that value, so it cannot be reached from
-        # here -- and the set is `session.SAVE_FORMATS`, the same tuple the engine-side
-        # gate refuses anything outside of. One list, two guards.
-        self.format_radios: dict[str, fluentqt.RadioButton] = {}
-        # `QButtonGroup` rather than Qt's auto-exclusive-by-parent: the requirement is
-        # "one format is checked", and a Fluent child widget's parent behaviour inside a
-        # nested layout is not something this suite can promise. It is a `QObject`, not a
-        # widget, so the surface census never sees it and `BARE_QT_CONSTRUCTIBLES`
-        # (QWidget/QDialog/QFrame) does not cover it.
+        g.addWidget(self.model_hint)
+        self.format_radios = {}
         format_group = QButtonGroup(self)
         format_group.setExclusive(True)
-        self.format_group = format_group        # `set_stem_format` lifts exclusivity to clear it
-        two.addWidget(self._field_label(tr("output_format"), self.segment_two_host))
+        self.format_group = format_group
         format_row = QHBoxLayout()
         format_row.setSpacing(16)
         for fmt in session.SAVE_FORMATS:
-            radio = fluentqt.RadioButton(fmt, self.segment_two_host)
-            # Blocked, then wired: `setChecked` on the initialising radio would otherwise
-            # emit through a slot that writes `settings.json`, so opening the window would
-            # report a change nobody made -- `test_building_the_page_writes_nothing_to_disk`.
+            radio = fluentqt.RadioButton(fmt)
             radio.blockSignals(True)
             radio.setChecked(fmt == self.settings.save_format)
             radio.blockSignals(False)
@@ -407,52 +341,37 @@ class WorkPage(fluentqt.Card):
             format_group.addButton(radio)
             self.format_radios[fmt] = radio
             format_row.addWidget(radio)
-        format_row.addStretch(1)        # the three sit together, not a third of a screen apart
-        two.addLayout(format_row)
+        row(g, fluentqt.Icons.Save, tr("output_format"), tr("row_format_desc"), format_row)
 
-        # The device switch, same argument as the format: it is one bool of the plan input
-        # that nothing else in the GUI can reach, because `effective_settings`' override
-        # only fires with a force_device (`separate_cli.py:284-286`). `CheckBox` for the
-        # measured `ToggleSwitch` hole. Beside it, the compute-backend selector: Auto lets
-        # backends.resolve pick (ROCm if the torch build is hip, else CUDA/CPU, ONNX on
-        # DirectML when an AMD GPU is present); DirectML pins ONNX to the DX12 GPU with
-        # torch on CPU so a machine without ROCm is still usable; CPU pins both down.
-        self.gpu_check = fluentqt.CheckBox(tr("gpu_check"), self.segment_two_host)
+        # -- Device ------------------------------------------------------------ #
+        g = group(right, tr("group_device"))
+        self.gpu_check = fluentqt.CheckBox(tr("gpu_check"))
         self.gpu_check.blockSignals(True)
         self.gpu_check.setChecked(bool(self.settings.gpu_conversion))
         self.gpu_check.blockSignals(False)
         self.gpu_check.toggled.connect(self.gpu_requested.emit)
-        device_row = QHBoxLayout()
-        device_row.setSpacing(8)
-        self.gpu_icon = fluentqt.Button("", self.segment_two_host)
+        self.gpu_icon = fluentqt.Button("")
         self.gpu_icon.setIconGlyph(fluentqt.Icons.Desktop)
         self.gpu_icon.setFluentStyle(fluentqt.Button.ButtonStyle.Subtle)
         self.gpu_icon.setFixedSize(28, 28)
         self.gpu_icon.setToolTip(tr("gpu_check"))
         self.gpu_icon.clicked.connect(self.gpu_check.toggle)
-        device_row.addWidget(self.gpu_icon)
-        device_row.addWidget(self.gpu_check)
-        device_row.addStretch(1)
-        self.device_combo = fluentqt.ComboBox(self.segment_two_host)
+        self.device_combo = fluentqt.ComboBox()
         self.device_combo.setToolTip(tr("compute_device"))
         self._device_codes = [None, "rocm", "dml", "cpu"]
         self.device_combo.addItems(["Auto", "ROCm", "DirectML", "CPU"])
         self.device_combo.setCurrentIndex(0)
+        device_row = QHBoxLayout()
+        device_row.setSpacing(8)
+        device_row.addWidget(self.gpu_check)
         device_row.addWidget(self.device_combo)
-        two.addLayout(device_row)
+        row(g, fluentqt.Icons.Desktop, tr("row_device"), tr("row_device_desc"), device_row)
 
-        # M1. This Expander was Task 5's placeholder -- "no content until Task 6" -- and
-        # Task 6 put the fields on the settings page without removing it, so the primary
-        # page carried a control that opened onto nothing and no test named it. Spec §10
-        # assigns the arch's engine parameters to the work page, so what it opens onto now
-        # is a read-only summary of the arch's own parameter group plus the one action that
-        # goes where they are editable. `string-first ctor raises` (spec §5.2.1) and there
-        # is no `setTitle` on Expander, so the header is set after.
-        self.params = fluentqt.Expander(self.segment_two_host)
+        self.params = fluentqt.Expander(self)
         self.params.setHeaderText(tr("params_header"))
-        self.params.setAnimationEnabled(False)
-        self.params_host = fluentqt.Card()                # a widget, never a bare QWidget
-        params_form = QVBoxLayout(self.params_host)       # (spec §5.3, Task 5's guard)
+        self.params.setAnimationEnabled(True)
+        self.params_host = fluentqt.Card()
+        params_form = QVBoxLayout(self.params_host)
         params_form.setContentsMargins(12, 10, 12, 12)
         params_form.setSpacing(8)
         self.params_summary = self._caption("", fluentqt.Label.TextColorRole.Secondary,
@@ -464,15 +383,12 @@ class WorkPage(fluentqt.Card):
         params_form.addWidget(self.params_summary)
         params_form.addWidget(self.params_edit)
         self.params.setContentWidget(self.params_host)
-        two.addWidget(self.params)
-        two.addStretch(1)
+        right.addWidget(self.params)
+        left.addStretch(1)
+        right.addStretch(1)
+        root.addLayout(columns)
 
-        # -- the run band: what you press, and what the run is doing ----------- #
-        # A sibling of both columns and parented to the page, not into either card: what
-        # you press, the reason you may not, the progress and the engine's text are about
-        # the run, so they span the full width below the configuration. A `Card` and not a
-        # `QWidget`, for the same reason the page is one (§5.3). `LayerAlt` lifts it off the
-        # two `Layer` cards above so the action area reads as its own region.
+        # -- the run band ------------------------------------------------------ #
         self.action_row_host = fluentqt.Card(self)
         self.action_row_host.setAppearance(fluentqt.Card.Appearance.LayerAlt)
         self.action_row_host.setBorderVisible(True)
@@ -488,20 +404,10 @@ class WorkPage(fluentqt.Card):
         self.stop_button = self._icon_button(tr("stop"), fluentqt.Icons.Stop,
                                              self.action_row_host)
         self.stop_button.setCriticalOnHover(True)
-        # START asks the controller for one run of the queue; the percentage this page
-        # then shows is the queue's (`_on_progress`). STOP only *asks*: cancellation is
-        # cooperative at the engine's own batch granularity (`separate.py:1383`), and the
-        # busy state releases when the run ends, not when the button is pressed.
         self.start_button.clicked.connect(self.run_requested.emit)
         self.stop_button.clicked.connect(self.cancel_requested.emit)
         buttons.addWidget(self.start_button)
         buttons.addWidget(self.stop_button)
-        # Settings is not here: it lives in the window's right rail (`app/shell.py`), which
-        # swaps the whole main content to the full-page settings view.
-        # Language: persisted and applied at the next launch, because re-translating an
-        # already-built widget tree in place would leave half the page in the old language.
-        # The combo lists native names plus a "follow the OS" entry; changing it saves the
-        # choice and says so, rather than silently half-applying.
         self.language_combo = fluentqt.ComboBox(self.action_row_host)
         self.language_combo.setToolTip(tr("language"))
         self._lang_codes = ["system", *[code for code, _name in LANGUAGES]]
@@ -519,9 +425,6 @@ class WorkPage(fluentqt.Card):
         self.count_label.setFluentTypography(fluentqt.FontRole.BodyStrong)
         buttons.addWidget(self.count_label)
         band.addLayout(buttons)
-        # The disabled-START explanation, on its own line under the buttons it explains --
-        # beside them it was squeezed into whatever width three buttons left over. Enabled
-        # always, because the *reason* has to be readable and selectable for a bug report.
         self.reason_label = self._caption("", fluentqt.Label.TextColorRole.Secondary,
                                           parent=self.action_row_host)
         self.reason_label.setWordWrap(True)
@@ -539,22 +442,12 @@ class WorkPage(fluentqt.Card):
         self.progress_label.setMinimumWidth(40)
         progress_row.addWidget(self.progress_label)
         band.addLayout(progress_row)
-        # One line that repeats what the widgets already say, so the answer to "what am I
-        # about to do" does not require reading six controls -- derived, never cached:
-        # see `truth_summary`.
         self.summary_label = self._caption("", fluentqt.Label.TextColorRole.Secondary,
                                            parent=self.action_row_host)
         self.summary_label.setWordWrap(True)
         band.addWidget(self.summary_label)
         root.addWidget(self.action_row_host)
 
-        # Ruling R-T7-infobar. The band is a *layout*, not a widget: a plain QWidget here
-        # would keep the native palette (spec §5.3) and the surface census would rightly
-        # refuse it. A layout sibling of the console also cannot overlap it, which is the
-        # property the ruling asks for -- Task 5's bars laid out at (0,0) over the content,
-        # none ever closed, and a run with several left a pile that hid the output. An
-        # empty nested layout has no size, so a page with nothing to say pays nothing.
-        # `app/dialogs.py`'s queue puts at most one bar in it at a time.
         self.notification_band = QVBoxLayout()
         self.notification_band.setContentsMargins(0, 0, 0, 0)
         root.addLayout(self.notification_band)
@@ -566,6 +459,7 @@ class WorkPage(fluentqt.Card):
         self.console.setMinVisibleLines(4)
         self.console.setMaxVisibleLines(8)
         root.addWidget(self.console)
+        root.addStretch(1)
 
         self.job.progress.connect(self._on_progress)
         self.job.console.connect(self._on_line)
@@ -574,17 +468,10 @@ class WorkPage(fluentqt.Card):
         self.job.failed.connect(self._on_failed)
         self.job.cancelled.connect(self._on_cancelled)
 
-        # Everything that can change the answer republishes it. A control the user moves
-        # without the reason label moving is the "button that did nothing" complaint
-        # arriving again in a different widget, and `Lambda` here rather than a partial
-        # because `textChanged` passes the new text and `refresh_queue` takes none.
         self.input_edit.textChanged.connect(lambda _text: self.refresh_queue())
         self.model_combo.currentTextChanged.connect(lambda _text: self.refresh_queue())
         self.output_edit.textChanged.connect(lambda _text: self.refresh_queue())
         self.refresh_default_output()
-        # Once here, at the end: every widget both groups need now exists, and this single
-        # call is what makes the queue, the reason, the count, the summary and START's
-        # enablement agree before the window has even been shown.
         self.refresh_queue()
 
     # -- the page's typographic voice ----------------------------------------- #

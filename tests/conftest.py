@@ -75,3 +75,9 @@ def qapp():
 
     app = QApplication.instance() or QApplication([])
     yield app
+    # Destroy surviving top-level windows before Qt tears the QApplication down, so
+    # Shiboken's visitAllPyObjects during destroyQCoreApplication has no live widget to
+    # crash on (the interpreter-exit segfault a larger widget tree can surface).
+    for widget in app.topLevelWidgets():
+        widget.deleteLater()
+    app.processEvents()

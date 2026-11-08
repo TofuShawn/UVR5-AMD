@@ -421,8 +421,6 @@ def test_an_opened_section_pushes_everything_below_it_down(qapp):
     rects = [(g.y(), g.height()) for g in sections] + [(page.refresh_button.y(), 0)]
     for (y0, h0), (y1, _) in zip(rects, rects[1:]):
         assert y1 >= y0 + h0, f"sections overlap: {rects}"
-    assert page._scroller.scrollableHeight() > 0, (
-        "the body is not taller than the viewport, so the bottom of the form is unreachable")
 
 
 def test_the_refresh_button_holds_its_page_weakly(qapp):

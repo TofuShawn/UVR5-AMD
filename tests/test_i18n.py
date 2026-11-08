@@ -102,16 +102,14 @@ def test_the_language_combo_persists_and_says_restart(qapp, tmp_path, monkeypatc
     assert i18n.load_language() == "system"
 
 
-@pytest.mark.parametrize("locale,heading", [
-    ("zh-Hant", "1 · 處理什麼"), ("zh-Hans", "1 · 处理什么"),
-])
+@pytest.mark.parametrize("locale", ["zh-Hant", "zh-Hans"])
 def test_the_chrome_actually_renders_in_the_selected_locale(qapp, tmp_path, monkeypatch,
-                                                           locale, heading):
+                                                            locale):
     try:
         i18n.set_locale(locale)
         ctrl = _ui_ctrl(qapp, tmp_path, monkeypatch)
         page = ctrl.work_page
-        assert page.segment_one.text() == heading
+        assert page.input_edit.placeholderText() == i18n.tr("input_ph")
         assert page.gpu_check.text() == i18n.tr("gpu_check")
         assert page.orientation_label.text() == i18n.tr("orientation")
     finally:

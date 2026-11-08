@@ -115,7 +115,7 @@ class AppShell(fluentqt.Card):
         self._content.setAppearance(fluentqt.Card.Appearance.Canvas)
         self._content_layout = QVBoxLayout(self._content)
         self._content_layout.setContentsMargins(0, 0, 0, 0)
-        self._content_layout.addWidget(work_page, 1)
+        self._content_layout.addWidget(work_page)
 
         self.rail = fluentqt.Card(self)
         self.rail.setAppearance(fluentqt.Card.Appearance.Layer)

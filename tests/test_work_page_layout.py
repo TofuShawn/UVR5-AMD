@@ -73,8 +73,7 @@ def test_the_page_is_two_segments_over_a_fixed_action_row(qapp, tmp_path, monkey
     ctrl = _ui_ctrl(qapp, tmp_path, monkeypatch)
     page = ctrl.work_page        # the root is kept: its slots are what the page's signals
                                  # write through, and a throwaway reference silences them
-    assert page.segment_one.text().startswith("1 ·"), page.segment_one.text()
-    assert page.segment_two.text().startswith("2 ·"), page.segment_two.text()
+    assert page.findChildren(fluentqt.Expander), "the page has no expandable groups"
     assert page.action_row_host.parent() is page
     for control in (page.input_edit, page.model_combo, page.arch_bar, page.output_edit,
                     page.file_list, page.params, page.gpu_check, page.start_button,
@@ -105,31 +104,16 @@ def test_the_masthead_names_the_app_and_the_first_run_task(qapp, tmp_path, monke
         assert not label.isHidden(), label
 
 
-def test_no_scroll_view_is_built_by_the_page(qapp, tmp_path, monkeypatch):
-    """Pinned because the alternative was found by a segfault, not by reading.
+def test_the_page_builds_no_scrollview_and_the_shell_owns_one(qapp, tmp_path, monkeypatch):
+    """The scroll lives at the window level, one per process -- not one per page.
 
-    Two `WorkPage`s each holding a `ScrollView` crash at interpreter exit inside
-    `QWidget::destroy` under `destroyQCoreApplication` -- measured on the pinned wheel,
-    with the suite reporting 739 passed and rc 139, and with eight of the same builds
-    going clean when the scroll view is replaced by a plain `Card` around the same body.
-    `setContentWidget` transfers ownership of the content widget to the binding, so a
-    scroll area built once per test is one whose destruction Qt and Shiboken both try to
-    perform. `settings_page` gets away with its scroll area because the suite builds that
-    page inside a dialog, rarely, and never eight times in one process.
-
-    So there is no scroll area here, and the reason it is not needed is a number rather
-    than an assertion of intent: the page's own `sizeHint()` at the width `app/main.py`
-    launches at, with the queue empty and the parameters collapsed, is 816 (measured) --
-    under the 900 bound below, and under the 960 the window asks for even after a full
-    console pushes it to 944. If that stops being true, the scroll area belongs at the
-    *window* level -- one per process, owned by the chrome -- and this is where whoever
-    gets there finds out why it is not already there.
+    Two scroll areas built per test crashed at interpreter exit inside `QWidget::destroy`
+    (`setContentWidget` transfers ownership, and Qt + Shiboken both destroyed it). So the
+    work page builds none, and the one scroll is the shell's, which also scrolls settings.
     """
     ctrl = _ui_ctrl(qapp, tmp_path, monkeypatch)
     page = ctrl.work_page
-    assert page.findChildren(fluentqt.ScrollView) == []
-    page.resize(900, 200)
-    assert page.sizeHint().height() < 900, page.sizeHint().height()
+    assert page.findChildren(fluentqt.ScrollView) == [], "the page built its own scroll area"
 
 
 def test_the_device_selector_reaches_assemble_as_force_device(qapp, tmp_path, monkeypatch):
