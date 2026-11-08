@@ -1,0 +1,27 @@
+name: Build
+
+# Packaging: source zip + bootstrap (the ROCm stack is too big/fragile to freeze into an
+# installer). Tag-triggered only; uploads an artifact and does NOT auto-publish a public
+# release. `workflow_dispatch` lets it be run by hand for a dry run.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  dist:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build source zip
+        run: python tools/make_dist.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: uvr5-pyside6-gui-src
+          path: dist/*.zip
