@@ -39,6 +39,7 @@ import gc
 import contextlib
 from backends import resolve as resolve_backend
 from backends import warn_degradation
+from output_names import replace_wav_suffix
 
 mps_available = torch.backends.mps.is_available() if is_macos else False
 cuda_available = torch.cuda.is_available()
@@ -536,7 +537,7 @@ class SeperateAttributes:
             source = spec_utils.normalize(source, self.is_normalization)
 
             if os.path.isfile(path) and is_not_ensemble:
-                path = path.replace(".wav", f"_{self.overwrite_protect_stamp}.wav")
+                path = replace_wav_suffix(path, f"_{self.overwrite_protect_stamp}.wav")
 
             sf.write(path, source, samplerate, subtype=self.wav_type_set)
 
@@ -573,8 +574,8 @@ class SeperateAttributes:
         def deverb_vocals(stem_path:str, stem_source):
             self.write_to_console(INFERENCE_STEP_DEVERBING, base_text='')
             stem_source_deverbed, stem_source_2 = vr_denoiser(stem_source, self.device, is_deverber=True, model_path=self.DEVERBER_MODEL)
-            save_audio_file(stem_path.replace(".wav", "_deverbed.wav"), stem_source_deverbed)
-            save_audio_file(stem_path.replace(".wav", "_reverb_only.wav"), stem_source_2)
+            save_audio_file(replace_wav_suffix(stem_path, "_deverbed.wav"), stem_source_deverbed)
+            save_audio_file(replace_wav_suffix(stem_path, "_reverb_only.wav"), stem_source_2)
             
         is_bv_model_lead = (self.is_bv_model_rebalenced and self.is_vocal_split_model and stem_name == LEAD_VOCAL_STEM)
         is_bv_rebalance_lead = (self.is_bv_model_rebalenced and self.is_vocal_split_model and stem_name == BV_VOCAL_STEM)
@@ -1554,11 +1555,11 @@ def save_format(audio_path, save_format, mp3_bit_set):
         musfile = pydub.AudioSegment.from_wav(audio_path)
         
         if save_format == FLAC:
-            audio_path_flac = audio_path.replace(".wav", ".flac")
+            audio_path_flac = replace_wav_suffix(audio_path, ".flac")
             musfile.export(audio_path_flac, format="flac")  
         
         if save_format == MP3:
-            audio_path_mp3 = audio_path.replace(".wav", ".mp3")
+            audio_path_mp3 = replace_wav_suffix(audio_path, ".mp3")
             try:
                 musfile.export(audio_path_mp3, format="mp3", bitrate=mp3_bit_set, codec="libmp3lame")
             except Exception as e:

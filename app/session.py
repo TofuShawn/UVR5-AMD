@@ -51,8 +51,8 @@ class Cancelled(RuntimeError):
 SAVE_FORMATS: tuple[str, ...] = ("WAV", "FLAC", "MP3")
 
 #: The suffixes those formats end up on disk with, derived from `SAVE_FORMATS` rather
-#: than listed again: `save_format()` builds each name with
-#: `audio_path.replace(".wav", ".flac")` / `(".wav", ".mp3")`, so every format except
+#: than listed again: `save_format()` drops the trailing `.wav` for `.flac`/`.mp3`
+#: (`separate.replace_wav_suffix`), so every format except
 #: WAV leaves exactly one file and deletes the intermediate. That is why `run_job`
 #: snapshots all three and not just the one the plan asked for -- a FLAC or MP3 run was
 #: invisible to a `rglob("*.wav")` diff and reported "0 file(s) written".

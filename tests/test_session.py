@@ -401,10 +401,12 @@ def test_output_suffixes_are_pinned_to_the_engines_own_literals():
     compares them against the engine's, so a rename upstream that changes no behaviour
     cannot turn the GUI red while a real change in the domain cannot pass unnoticed.
 
-    Two sides are checked. `gui_data/constants.py` for the three format tokens, and
-    `separate.py`'s `save_format()` body for the three file suffixes it writes -- the
-    latter by `ast`, because importing `separate` pulls the whole ROCm graph (ruling
-    R-T2-lazy).
+    Two sides are checked. `gui_data/constants.py` for the three format tokens, and the
+    engine's two writers for the three file suffixes it writes -- `separate.py`'s
+    `save_format()` (the `.flac`/`.mp3` it converts to) and the torch-free
+    `output_names.replace_wav_suffix` it routes them through (which owns the base
+    `.wav`) -- by `ast`, because importing `separate` pulls the whole ROCm graph
+    (ruling R-T2-lazy).
     """
     import ast
 
@@ -419,17 +421,24 @@ def test_output_suffixes_are_pinned_to_the_engines_own_literals():
         f"the app lists {session.SAVE_FORMATS}, the engine defines "
         f"{(const.WAV, const.FLAC, const.MP3)}")
 
-    tree = ast.parse((Path(__file__).resolve().parents[1] / "separate.py")
-                     .read_text(encoding="utf-8"))
+    def _dot_constants(node):
+        return {c.value for c in ast.walk(node)
+                if isinstance(c, ast.Constant) and isinstance(c.value, str)
+                and c.value.startswith(".")}
+
+    root = Path(__file__).resolve().parents[1]
+    tree = ast.parse((root / "separate.py").read_text(encoding="utf-8"))
     body = next((node for node in ast.walk(tree)
                  if isinstance(node, ast.FunctionDef) and node.name == "save_format"),
                 None)
     assert body is not None, "separate.py no longer has a save_format() to diff against"
-    suffixes = {c.value for c in ast.walk(body)
-                if isinstance(c, ast.Constant) and isinstance(c.value, str)
-                and c.value.startswith(".")}
+    # The suffix domain is split across two files now: `save_format()` names the
+    # conversions, and the helper it routes them through owns the base `.wav`. Read both
+    # by `ast` so the set is still the whole domain, not only the converted half.
+    helper = ast.parse((root / "output_names.py").read_text(encoding="utf-8"))
+    suffixes = _dot_constants(body) | _dot_constants(helper)
     assert suffixes == set(session.OUTPUT_SUFFIXES), (
-        f"separate.py's save_format() writes {sorted(suffixes)} but app/session.py "
+        f"the engine writes {sorted(suffixes)} but app/session.py "
         f"diffs {sorted(session.OUTPUT_SUFFIXES)} -- a fourth format would be "
         f"invisibly dropped by run_job again")
 
