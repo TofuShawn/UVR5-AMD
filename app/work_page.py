@@ -745,7 +745,11 @@ class WorkPage(fluentqt.Card):
 
     def refresh_models(self) -> None:
         arch = self.current_arch()
-        names = self.catalog.known_names(arch)
+        # `names()` (weights on disk, resolves right now), not `known_names()` (everything
+        # the baked tables declare). A selectable model with no weight file is a control
+        # that lies: START can only refuse with MissingWeightError ("not started: no
+        # demucs weight file"), and this fork has no downloader to make the ghost real.
+        names = self.catalog.names(arch)
         self.model_combo.clear()
         self.model_combo.addItems([catalog.NO_MODEL, *names])
         current = getattr(self.selections, MAIN_MODEL_FIELD[arch], catalog.NO_MODEL)

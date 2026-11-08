@@ -122,6 +122,11 @@ def _vr_page(qapp, tmp_path, monkeypatch):
     secondary model -- the state a real user reaches by picking, not by clicking."""
     import separate_cli
     monkeypatch.setattr(backends, "resolve", lambda force=None: _cpu_backend())
+    # The combo now offers only installed weights, so the model this helper picks must
+    # actually exist on disk: a stub .pth under the VR dir makes it a real selection.
+    vr_dir = tmp_path / "nope" / "VR_Models"
+    vr_dir.mkdir(parents=True, exist_ok=True)
+    (vr_dir / "UVR-DeNoise-Lite.pth").write_bytes(b"stub")
     cat = separate_cli.make_catalog(tmp_path / "nope", tmp_path / "w")
     sel = selections_module.Selections(vr_voc_inst_secondary_model="UVR-DeNoise-Lite",
                                        vr_voc_inst_secondary_model_scale="0.5")
@@ -144,11 +149,25 @@ def test_arch_selector_offers_every_arch_the_catalog_knows_including_blocked_one
 
 def test_model_combo_is_populated_from_the_catalog_not_hardcoded(page, monkeypatch):
     seen = []
-    monkeypatch.setattr(page.catalog, "known_names",
+    monkeypatch.setattr(page.catalog, "names",
                         lambda arch: seen.append(arch) or ["A", "B"])
     page.refresh_models()
     assert seen == [page.current_arch()]
     assert page.model_combo.count() == 3          # NO_MODEL + the two names
+
+
+def test_model_combo_offers_only_installed_models_not_declared_ghosts(page, monkeypatch):
+    """A selectable model whose weight is not on disk is a control that lies: START can
+    only refuse with `MissingWeightError` ("not started: no demucs weight file"), and this
+    fork has no downloader to make the ghost real. The combo must therefore offer
+    `names()` (resolves right now), not `known_names()` (declared, installed or not)."""
+    monkeypatch.setattr(page.catalog, "known_names",
+                        lambda arch: ["installed.th", "ghost.th"])
+    monkeypatch.setattr(page.catalog, "names", lambda arch: ["installed.th"])
+    page.refresh_models()
+    assert page.model_combo.count() == 2, "NO_MODEL + the one installed weight"
+    page.model_combo.setCurrentText("installed.th")
+    assert page.model_combo.currentText() == "installed.th"
 
 
 def test_device_summary_says_only_what_the_backend_reports():
