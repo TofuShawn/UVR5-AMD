@@ -13,10 +13,11 @@ def _env_path(name: str, default: Path) -> Path:
 MODEL_ROOT = _env_path("UVR_MODEL_ROOT", REPO / "models")
 
 # Fixed golden input. Tasks 4, 7 and 13 all read this.
-INPUT_FILE = _env_path(
-    "UVR_INPUT_FILE",
-    Path.home() / "Documents/UVR5/1_Circle With Me_(Instrumental).flac",
-)
+#: The golden harness' input, and nothing else: the GUI gets its file from the picker.
+#: A committed CC0 excerpt (provenance in `tests/fixtures/PROVENANCE.md`) rather than a
+#: commercial track, so a fresh clone can run the gate without referencing copyrighted
+#: audio. Override with `UVR_INPUT_FILE` to test against your own library.
+INPUT_FILE = _env_path("UVR_INPUT_FILE", REPO / "tests/fixtures/golden_30s.flac")
 
 WEIGHT_GLOBS = ("*.pth", "*.th", "*.pt", "*.ckpt", "*.onnx")
 

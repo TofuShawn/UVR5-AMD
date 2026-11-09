@@ -18,7 +18,7 @@
     "crop_channels": 2,
     "crop_frames": 1323000,
     "crop_sample_rate": 44100,
-    "crop_sha256": "6c56f6b1bc9cb8c8227ac4c736487decd9cbd04c4a88ccbe407bcea234f21e04",
+    "crop_sha256": "964b20dbbb3a4123c0f1369897f126ea70973aa61da95d445bd9a9bf1b4bf339",
     "device": "cpu",
     "gpu_name": "AMD Radeon RX 7900 XTX",
     "librosa": "1.0.0",
@@ -40,28 +40,28 @@
         "bytes": 5292044,
         "duration_seconds": 30.0,
         "frames": 1323000,
-        "sha256": "aae538221db3030905197fd162a18405dbb7bea2a011d215d89c645941ce9444",
+        "sha256": "8ec136484c3e3611f5762834c1f4b332d9fd949523b5f7877c6c84d0b790dc1d",
         "subtype": "PCM_16"
       },
       "Drums": {
         "bytes": 5292044,
         "duration_seconds": 30.0,
         "frames": 1323000,
-        "sha256": "d9e4f6f980187dbabc87a846d2f8d4d6aa6533e302c793156cc857d95ce28f5f",
+        "sha256": "a68e55a7fdb2cc030ddfd74ac1cbec9c94ac980571a4d5f0ea5f88a67d08cbe6",
         "subtype": "PCM_16"
       },
       "Other": {
         "bytes": 5292044,
         "duration_seconds": 30.0,
         "frames": 1323000,
-        "sha256": "7770d12f75a9b3b2bb83e82ee65e3508d0843fae769155c441d02e17200b7096",
+        "sha256": "2ce6c6b3d806066f9aed9f8eac807fab3b342cf9d1611b4c68702b2095c3c3f5",
         "subtype": "PCM_16"
       },
       "Vocals": {
         "bytes": 5292044,
         "duration_seconds": 30.0,
         "frames": 1323000,
-        "sha256": "0deb9eb6b7215a2b89fd22eb6667c4e33c62f8361524fd75d1d5f9cc1ecd4282",
+        "sha256": "9b7761de5d2f671a97bcbac07308118b6a25b1c027528af60c85b4bfef67f3c5",
         "subtype": "PCM_16"
       }
     },
@@ -70,14 +70,14 @@
         "bytes": 5290028,
         "duration_seconds": 29.988571,
         "frames": 1322496,
-        "sha256": "e8dd1e461049d8a8f383d9dbd4d2d6fd96d7bc060237eb440f4e3c79461bd5c2",
+        "sha256": "1dff17d8b59a3be028e856be8817f1c6780a6d404e8547b84481e6e0658ec58a",
         "subtype": "PCM_16"
       },
       "Vocals": {
         "bytes": 5290028,
         "duration_seconds": 29.988571,
         "frames": 1322496,
-        "sha256": "aba5607811f260541ff6ae43c18c7e79a594ea3d1335bf4eef5a4273de641cb8",
+        "sha256": "353f8b04ccda56242917bb878fcce5c20f410ea0c7f92e9f975935532d03b03c",
         "subtype": "PCM_16"
       }
     }
@@ -86,84 +86,84 @@
     "absorbed_audio_delta": {
       "demucs": {
         "Bass": {
-          "changed_fraction": 0.0,
-          "deviation_above_1_pcm16_lsb": false,
+          "changed_fraction": 0.99854497,
+          "deviation_above_1_pcm16_lsb": true,
           "frames_equal": true,
-          "max_abs_dev": 0.0,
+          "max_abs_dev": 0.627685546875,
           "one_pcm16_lsb": 3.0517578125e-05,
           "samples_compared": 2646000,
-          "samples_differing": 0,
-          "snr_below_40db_gate": false,
-          "snr_db": null,
-          "snr_is_infinite": true
+          "samples_differing": 2642150,
+          "snr_below_40db_gate": true,
+          "snr_db": -0.008,
+          "snr_is_infinite": false
         },
         "Drums": {
-          "changed_fraction": 0.0,
-          "deviation_above_1_pcm16_lsb": false,
+          "changed_fraction": 0.99958541,
+          "deviation_above_1_pcm16_lsb": true,
           "frames_equal": true,
-          "max_abs_dev": 0.0,
+          "max_abs_dev": 1.254730224609375,
           "one_pcm16_lsb": 3.0517578125e-05,
           "samples_compared": 2646000,
-          "samples_differing": 0,
-          "snr_below_40db_gate": false,
-          "snr_db": null,
-          "snr_is_infinite": true
+          "samples_differing": 2644903,
+          "snr_below_40db_gate": true,
+          "snr_db": -0.415,
+          "snr_is_infinite": false
         },
         "Other": {
-          "changed_fraction": 0.0,
-          "deviation_above_1_pcm16_lsb": false,
+          "changed_fraction": 0.99985185,
+          "deviation_above_1_pcm16_lsb": true,
           "frames_equal": true,
-          "max_abs_dev": 0.0,
+          "max_abs_dev": 0.761077880859375,
           "one_pcm16_lsb": 3.0517578125e-05,
           "samples_compared": 2646000,
-          "samples_differing": 0,
-          "snr_below_40db_gate": false,
-          "snr_db": null,
-          "snr_is_infinite": true
+          "samples_differing": 2645608,
+          "snr_below_40db_gate": true,
+          "snr_db": -0.121,
+          "snr_is_infinite": false
         },
         "Vocals": {
-          "changed_fraction": 0.0,
-          "deviation_above_1_pcm16_lsb": false,
+          "changed_fraction": 0.99970559,
+          "deviation_above_1_pcm16_lsb": true,
           "frames_equal": true,
-          "max_abs_dev": 0.0,
+          "max_abs_dev": 0.69647216796875,
           "one_pcm16_lsb": 3.0517578125e-05,
           "samples_compared": 2646000,
-          "samples_differing": 0,
-          "snr_below_40db_gate": false,
-          "snr_db": null,
-          "snr_is_infinite": true
+          "samples_differing": 2645221,
+          "snr_below_40db_gate": true,
+          "snr_db": -47.394,
+          "snr_is_infinite": false
         }
       },
       "vr": {
         "Instrumental": {
-          "changed_fraction": 0.0,
-          "deviation_above_1_pcm16_lsb": false,
+          "changed_fraction": 0.99988129,
+          "deviation_above_1_pcm16_lsb": true,
           "frames_equal": true,
-          "max_abs_dev": 0.0,
+          "max_abs_dev": 1.42205810546875,
           "one_pcm16_lsb": 3.0517578125e-05,
           "samples_compared": 2644992,
-          "samples_differing": 0,
-          "snr_below_40db_gate": false,
-          "snr_db": null,
-          "snr_is_infinite": true
+          "samples_differing": 2644678,
+          "snr_below_40db_gate": true,
+          "snr_db": -0.163,
+          "snr_is_infinite": false
         },
         "Vocals": {
-          "changed_fraction": 0.0,
-          "deviation_above_1_pcm16_lsb": false,
+          "changed_fraction": 0.81249622,
+          "deviation_above_1_pcm16_lsb": true,
           "frames_equal": true,
-          "max_abs_dev": 0.0,
+          "max_abs_dev": 0.659393310546875,
           "one_pcm16_lsb": 3.0517578125e-05,
           "samples_compared": 2644992,
-          "samples_differing": 0,
-          "snr_below_40db_gate": false,
-          "snr_db": null,
-          "snr_is_infinite": true
+          "samples_differing": 2149046,
+          "snr_below_40db_gate": true,
+          "snr_db": -19.609,
+          "snr_is_infinite": false
         }
       }
     },
     "elapsed_seconds": {
-      "demucs": 54.302,
-      "vr": 8.458
+      "demucs": 52.295,
+      "vr": 8.205
     },
     "reason": "explicit operator re-pin (UVR_REPIN=1) for the Task 5 ruling: CPU baselines re-captured with device forced to 'cpu' on the torch wheel this fork ships (2.9.1+rocm7.2.1), so Task 7's gate varies device only, never device + torch version. Lineage: Task 4 pinned torch 2.15.0+cpu (stem shas 01ee2cdfd480, e12c9f904e0a, c9ad85d18ce3, a1e429496cd7, d86869223c88, b15c877ae5f4). The 2.15 -> 2.9.1 move shifted CPU output by exactly 1 PCM_16 LSB on 0.002-0.23% of samples at SNR 53.45-125.88 dB (task-5-report.md section 6.3) and the self-healing fixture that used to read its own manifest as the pin store absorbed it, so the 2.15 WAVs no longer exist on disk; the delta stored beside this note is therefore 2.9.1-vs-2.9.1 and is zero by construction.",
     "superseded_pins": {
@@ -199,10 +199,10 @@
         "torch_cuda_version": null,
         "torch_hip": "7.2.53211-158bd99533"
       },
-      "reason": "explicit operator re-pin (UVR_REPIN=1): baselines re-captured with device forced to cpu under the torch wheel this fork ships, so Task 7's only variable is device and not device + torch version.",
+      "reason": "explicit operator re-pin (UVR_REPIN=1) for the Task 5 ruling: CPU baselines re-captured with device forced to 'cpu' on the torch wheel this fork ships (2.9.1+rocm7.2.1), so Task 7's gate varies device only, never device + torch version. Lineage: Task 4 pinned torch 2.15.0+cpu (stem shas 01ee2cdfd480, e12c9f904e0a, c9ad85d18ce3, a1e429496cd7, d86869223c88, b15c877ae5f4). The 2.15 -> 2.9.1 move shifted CPU output by exactly 1 PCM_16 LSB on 0.002-0.23% of samples at SNR 53.45-125.88 dB (task-5-report.md section 6.3) and the self-healing fixture that used to read its own manifest as the pin store absorbed it, so the 2.15 WAVs no longer exist on disk; the delta stored beside this note is therefore 2.9.1-vs-2.9.1 and is zero by construction.",
       "written_at_utc": null
     },
-    "written_at_utc": "2026-11-03T11:04:54Z"
+    "written_at_utc": "2026-11-09T08:14:47Z"
   },
   "purpose": "Committed CPU fingerprints for the golden gate. The ONLY pin store tests/golden reads; _artifacts/baseline/manifest.json is a run report, not a pin. Rewritten only by an operator passing UVR_REPIN=1 -- see tests/golden/runner.write_pins.",
   "schema": 1

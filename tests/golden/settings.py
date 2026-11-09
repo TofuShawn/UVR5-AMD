@@ -57,7 +57,8 @@ import uvr_paths
 
 #: Runtime bounding ruling (plan Task 4): every capture -- Task 4 CPU baselines,
 #: Task 7 ROCm comparison and Task 11 refactor re-run -- uses the same 30-second
-#: crop of ``uvr_paths.INPUT_FILE``, never the full ~4-minute track.
+#: crop of ``uvr_paths.INPUT_FILE`` (the committed CC0 excerpt, which is exactly this
+#: long -- see ``tests/fixtures/PROVENANCE.md``).
 CROP_SECONDS = 30
 
 ARTIFACTS_DIR = Path(__file__).resolve().parent / "_artifacts"
