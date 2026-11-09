@@ -79,7 +79,9 @@ def test_the_page_is_two_segments_over_a_fixed_action_row(qapp, tmp_path, monkey
                     page.file_list, page.params, page.gpu_check, page.start_button,
                     page.stop_button, page.reason_label,
                     page.progress, page.count_label, page.console, page.summary_label,
-                    page.device_label, page.compute_label):
+                    page.device_label, page.compute_label, page.output_list,
+                    page.open_output_button, page.reveal_output_button,
+                    page.delete_output_button):
         assert page.isAncestorOf(control) or control.parent() is page, control
 
 

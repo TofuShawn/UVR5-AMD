@@ -30,9 +30,12 @@ import separate_cli
 import selections as selections_module
 import settings as settings_module
 import ui_prefs as ui_prefs_module
+from PySide6.QtCore import QUrl
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QVBoxLayout
 
 from app import dialogs, job, session, settings_page, shell, work_page
+from app.i18n import tr
 
 
 @dataclasses.dataclass
@@ -107,6 +110,12 @@ class Controller:
         # widget rather than letting it keep showing what did not get stored.
         self.work_page.format_requested.connect(self._on_format_requested)
         self.work_page.gpu_requested.connect(self._on_gpu_requested)
+        # The run-output list's three buttons. The page shows this session's stems and
+        # asks; opening a file, revealing its folder and deleting it are desktop effects
+        # with a confirmation and an error report, so they live in the root.
+        self.work_page.open_output_requested.connect(self._on_open_output)
+        self.work_page.reveal_output_requested.connect(self._on_reveal_output)
+        self.work_page.delete_output_requested.connect(self._on_delete_output)
         # The one window's shell: a right rail that swaps the main content between the work
         # page and a full-page settings view, replacing the old second (dialog) window.
         self.shell = shell.AppShell(self, self.work_page, settings_obj=self.settings,
@@ -206,8 +215,49 @@ class Controller:
     def _on_file_done(self, written: list) -> None:
         if self._batch is None:
             return                                  # the "a job is already running" report
+        self.work_page.add_written(written)
         self._batch.written += len(written)
         self._advance()
+
+    # -- run output ------------------------------------------------------------ #
+
+    def _on_open_output(self, path: str) -> None:
+        self._reveal(Path(path), Path(path))
+
+    def _on_reveal_output(self, path: str) -> None:
+        self._reveal(Path(path), Path(path).parent)
+
+    def _reveal(self, source: Path, target: Path) -> None:
+        """Hand `target` to the desktop; say so when the desktop refuses.
+
+        `openUrl` answers False for a missing handler (a file type with no association,
+        a folder the shell will not open). Swallowing that leaves a button that appears
+        to do nothing, which is the failure mode this page keeps being written against.
+        """
+        if QDesktopServices.openUrl(QUrl.fromLocalFile(str(target))):
+            return
+        self.work_page.console.appendPlainText(
+            tr("open_failed", path=str(source)))
+
+    def _on_delete_output(self, path: str) -> None:
+        """Delete one stem, after a confirmation.
+
+        The path is the list's selection, and the list only ever holds what
+        `Job.succeeded` reported, so this cannot reach an input file. A refused unlink
+        (a file open in a player, a read-only folder) keeps both the file and its row,
+        because a row removed over a file still on disk is the list lying about the disk.
+        """
+        target = Path(path)
+        if not dialogs.confirm_delete(target, parent=self.shell):
+            return
+        try:
+            target.unlink()
+        except OSError as exc:
+            self.work_page.console.appendPlainText(
+                tr("delete_failed", name=target.name, err=exc))
+            return
+        self.work_page.forget_written(str(target))
+        self.work_page.console.appendPlainText(tr("deleted", name=target.name))
 
     def _on_file_failed(self, text: str) -> None:
         """Continue on error, and name the file that errored.

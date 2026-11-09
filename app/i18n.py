@@ -91,6 +91,25 @@ CATALOG: dict[str, tuple[str, str, str]] = {
         "設為我的預設輸出資料夾", "设为我的默认输出文件夹"),
     "gpu_check": ("Use GPU", "使用 GPU", "使用 GPU"),
     "params_header": ("Model parameters", "模型參數", "模型参数"),
+    "group_outputs": ("Run output", "輸出檔案", "输出文件"),
+    "outputs_empty": (
+        "stems written by this run appear here",
+        "本次執行寫出的檔案會顯示在這裡", "本次运行写出的文件会显示在这里"),
+    "open_file": ("Open", "打開", "打开"),
+    "show_in_folder": ("Show in folder", "開啟所在資料夾", "打开所在文件夹"),
+    "delete_file": ("Delete", "刪除", "删除"),
+    "cancel": ("Cancel", "取消", "取消"),
+    "delete_title": ("Delete this stem?", "刪除這個檔案?", "删除这个文件?"),
+    "delete_body": (
+        "{name} will be removed from disk. This cannot be undone.",
+        "{name} 會從磁碟刪除,無法復原。", "{name} 会从磁盘删除,无法恢复。"),
+    "deleted": ("deleted {name}", "已刪除 {name}", "已删除 {name}"),
+    "delete_failed": (
+        "could not delete {name}: {err}",
+        "無法刪除 {name}:{err}", "无法删除 {name}:{err}"),
+    "open_failed": (
+        "could not open {path}",
+        "無法開啟 {path}", "无法打开 {path}"),
     # placeholders
     "input_ph": (
         "path to an audio file, or add a batch below",

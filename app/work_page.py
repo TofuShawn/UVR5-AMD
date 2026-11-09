@@ -33,6 +33,7 @@ from PySide6.QtCore import Qt, Signal
 # sees this, and `BARE_QT_CONSTRUCTIBLES` (QWidget/QDialog/QFrame) does not cover it. It is
 # here because the format radios need an exclusivity guarantee the binding's parent-based
 # auto-exclusive behaviour does not provide -- see the comment at their construction.
+from PySide6.QtGui import QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import QButtonGroup, QHBoxLayout, QVBoxLayout
 
 from app import dialogs, job, session, settings_page
@@ -146,6 +147,13 @@ class WorkPage(fluentqt.Card):
     #: the same seam `default_output_requested` documents above, and for the same reason.
     format_requested = Signal(str)
     gpu_requested = Signal(bool)
+    #: One stem's path, for the three buttons under the run-output list. The page shows
+    #: the list and asks; opening, revealing and deleting belong to the root, because
+    #: deletion is a destructive act with a confirmation and a failure report, and none
+    #: of that belongs in a widget slot.
+    open_output_requested = Signal(str)
+    reveal_output_requested = Signal(str)
+    delete_output_requested = Signal(str)
 
     def __init__(self, *, cat: catalog.Catalog, settings_obj, selections_obj,
                  ui_obj: ui_prefs.UiPrefs | None = None, parent=None):
@@ -385,6 +393,7 @@ class WorkPage(fluentqt.Card):
         params_form.addWidget(self.params_edit)
         self.params.setContentWidget(self.params_host)
         right.addWidget(self.params)
+
         left.addStretch(1)
         right.addStretch(1)
         root.addLayout(columns)
@@ -452,14 +461,59 @@ class WorkPage(fluentqt.Card):
         self.notification_band = QVBoxLayout()
         self.notification_band.setContentsMargins(0, 0, 0, 0)
         root.addLayout(self.notification_band)
-        root.addWidget(self._field_label(tr("console"), self))
+        # Console and run output share one row. Not a style choice: the page has no
+        # scroll area, and at 1280x980 the four groups plus band plus console already
+        # need 940 of 944 available pixels -- a 167 px list stacked anywhere above the
+        # band painted over it (measured). Beside the console costs zero height.
+        results = QHBoxLayout()
+        results.setSpacing(12)
+        console_col = QVBoxLayout()
+        console_col.setSpacing(4)
+        console_col.addWidget(self._field_label(tr("console"), self))
         self.console = fluentqt.TextEdit(self)
         self.console.setReadOnly(True)
         self.console.setFontRole(fluentqt.FontRole.Caption)
         self.console.setPlaceholderText(tr("console_ph"))
         self.console.setMinVisibleLines(4)
         self.console.setMaxVisibleLines(8)
-        root.addWidget(self.console)
+        console_col.addWidget(self.console, 1)
+        results.addLayout(console_col, 5)
+
+        outputs_host = fluentqt.Card(self)
+        outputs_host.setAppearance(fluentqt.Card.Appearance.LayerAlt)
+        outputs_host.setBorderVisible(True)
+        outputs_box = QVBoxLayout(outputs_host)
+        outputs_box.setContentsMargins(12, 8, 12, 8)
+        outputs_box.setSpacing(6)
+        outputs_box.addWidget(self._field_label(tr("group_outputs"), outputs_host))
+        outputs_row = QHBoxLayout()
+        outputs_row.setSpacing(8)
+        self.output_list = fluentqt.ListView()
+        self._output_model = QStandardItemModel(self.output_list)
+        self.output_list.setModel(self._output_model)
+        self.output_list.setPlaceholderText(tr("outputs_empty"))
+        self.output_list.setMinimumHeight(72)
+        self.output_list.selectionModel().selectionChanged.connect(
+            self._sync_output_buttons)
+        outputs_row.addWidget(self.output_list, 1)
+        output_buttons = QVBoxLayout()
+        output_buttons.setSpacing(2)
+        self.open_output_button = self._icon_button(tr("open_file"), fluentqt.Icons.Document,
+                                                    None)
+        self.reveal_output_button = self._icon_button(tr("show_in_folder"),
+                                                      fluentqt.Icons.Folder, None)
+        self.delete_output_button = self._icon_button(tr("delete_file"), fluentqt.Icons.Delete,
+                                                      None)
+        for button, signal in ((self.open_output_button, self.open_output_requested),
+                               (self.reveal_output_button, self.reveal_output_requested),
+                               (self.delete_output_button, self.delete_output_requested)):
+            button.clicked.connect(lambda _=False, sig=signal: self._emit_selected(sig))
+            output_buttons.addWidget(button)
+        outputs_row.addLayout(output_buttons)
+        outputs_box.addLayout(outputs_row, 1)
+        results.addWidget(outputs_host, 3)
+        root.addLayout(results)
+        self._sync_output_buttons()
         root.addStretch(1)
 
         self.job.progress.connect(self._on_progress)
@@ -515,7 +569,7 @@ class WorkPage(fluentqt.Card):
         (the machine line, the truth strip, the queue count and the console)."""
         from PySide6.QtGui import QFont
         for widget in (self.device_label, self.compute_label, self.summary_label,
-                       self.count_label, self.console, self.file_list):
+                       self.count_label, self.console, self.file_list, self.output_list):
             font = widget.font()
             font.setFamilies(["JetBrains Mono", "Noto Sans SC"])
             widget.setFont(font)
@@ -590,6 +644,70 @@ class WorkPage(fluentqt.Card):
     def selected_force_device(self) -> "str | None":
         """The compute-backend override for the next run; Auto means let resolve pick."""
         return self._device_codes[self.device_combo.currentIndex()]
+
+    # -- run output ------------------------------------------------------------ #
+
+    def add_written(self, paths) -> None:
+        """Append the stems one file produced; the list is this session's record.
+
+        Paths repeat across a batch only if the engine overwrote its own output, which
+        would make two identical rows act on one file -- so an already-listed path is
+        skipped rather than shown twice.
+        """
+        known = set(self.written_paths())
+        for path in paths:
+            text = str(path)
+            if text in known:
+                continue
+            known.add(text)
+            # The row shows the file name; the full path is the tooltip and the
+            # buttons' target. A batch writes into one folder, so the name is the
+            # only part that differs -- and a 168 px list clipped `Z:\...\` prefixes
+            # to identical rows (measured).
+            item = QStandardItem(Path(text).name)
+            item.setEditable(False)
+            item.setData(text, Qt.UserRole)
+            item.setToolTip(text)
+            self._output_model.appendRow(item)
+        self._sync_output_buttons()
+
+    def written_paths(self) -> list[str]:
+        return [self._output_model.item(row).data(Qt.UserRole)
+                for row in range(self._output_model.rowCount())]
+
+    def selected_output(self) -> "str | None":
+        selection = self.output_list.selectionModel()
+        rows = selection.selectedRows() if selection is not None else []
+        if not rows:
+            return None
+        return self._output_model.item(rows[0].row()).data(Qt.UserRole)
+
+    def forget_written(self, path) -> None:
+        """Drop a row this page no longer has a file for (a deleted stem)."""
+        index = self._output_model.rowCount() - 1
+        while index >= 0:
+            if self._output_model.item(index).data(Qt.UserRole) == str(path):
+                self._output_model.removeRow(index)
+            index -= 1
+        self._sync_output_buttons()
+
+    def _emit_selected(self, signal) -> None:
+        path = self.selected_output()
+        if path is not None:
+            signal.emit(path)
+
+    def _sync_output_buttons(self) -> None:
+        """The three buttons act on the selection, so they need one.
+
+        Busy is the second half: `session.run_job` decides what it wrote by diffing the
+        export folder before and after, so a stem deleted mid-run would be attributed to
+        the running file -- or counted as a failure. The buttons therefore do nothing
+        until the batch ends, the same rule the rest of the run's controls follow.
+        """
+        enabled = not getattr(self, "_busy", False) and self.selected_output() is not None
+        for button in (self.open_output_button, self.reveal_output_button,
+                       self.delete_output_button):
+            button.setEnabled(enabled)
 
     def _on_device_changed(self, index: int) -> None:
         """A device pick is also a GPU yes/no: keep the switch beside it truthful.
@@ -759,6 +877,7 @@ class WorkPage(fluentqt.Card):
         """Whether a run is in flight -- one of the two halves of START's enablement."""
         self._busy = busy
         self._publish_run_state(self.blockers())
+        self._sync_output_buttons()
 
     def show_compute(self, lines: tuple[str, ...]) -> None:
         """Publish the plan-derived compute line. The controller calls this the moment

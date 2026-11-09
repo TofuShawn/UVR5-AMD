@@ -44,6 +44,9 @@ FLUENT_INTERNALS: dict[str, set[str]] = {
     "TitleBar": {"QWidget"},
     "ComboBox": {"QWidget", "QFrame", "QListView", "QScrollBar"},
     "TextEdit": {"QWidget", "QScrollBar", "QTextEdit"},
+    # `fluentqt.ListView` is a `QListView` facade; Qt installs its own scroll bars in
+    # the scroll area, measured alongside the named widgets above.
+    "ListView": {"QScrollBar"},
 }
 
 #: The `ScrollView` Task 6 scrolls the settings body through and the `Expander` it puts
@@ -68,6 +71,15 @@ NAMED_INTERNALS: dict[str, frozenset[str]] = {
         "FluentScrollViewTransparentCorner",
     }),
     "Expander": frozenset({"fluentExpanderClip"}),
+    # The run-output list (2026-11-09). Same Qt scroll-area parts as the settings
+    # ScrollView, measured on the built page: `qt_scrollarea_viewport`,
+    # `qt_scrollarea_hcontainer`, `qt_scrollarea_vcontainer`. Its two `QScrollBar`s are
+    # in FLUENT_INTERNALS above by class; the wheel's own `ScrollBar` is Fluent already.
+    "ListView": frozenset({
+        "qt_scrollarea_viewport",
+        "qt_scrollarea_hcontainer",
+        "qt_scrollarea_vcontainer",
+    }),
 }
 
 

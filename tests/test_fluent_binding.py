@@ -24,6 +24,9 @@ UI_CLASSES = frozenset({
     "ProgressRing", "CheckBox", "ToggleSwitch", "RadioButton", "Expander",
     "ContentDialog", "InfoBar", "ToolTip", "SelectorBar", "SelectorBarItem",
     "Pivot", "PivotItem", "TabView", "TabViewItem", "Divider", "ScrollView",
+    # The work page's run-output list (2026-11-09). Reviewed as a surface in
+    # tests/test_ui_surfaces.py, which licenses its Qt scroll-area internals by name.
+    "ListView",
 })
 
 #: Classes that need more than an optional parent to construct.

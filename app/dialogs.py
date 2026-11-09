@@ -33,6 +33,8 @@ import fluentqt
 from PySide6.QtCore import QObject, QTimer
 from PySide6.QtWidgets import QFileDialog, QVBoxLayout
 
+from app.i18n import tr
+
 #: The per-arch param fields the legacy popups collected. This is the field list read
 #: out of `UVR.py`'s popup bodies before Plan 2 Task 8 deleted them, so it is the last
 #: copy -- and the line numbers cited throughout this block are line numbers *in that
@@ -346,6 +348,30 @@ def notify(title: str, text: str, parent=None, *, band=None,
     the failure vocabulary has no category for)."""
     return DEFAULT_NOTIFIER.post(title, text, parent=parent, band=band,
                                  dismiss_ms=dismiss_ms)
+
+
+def confirm_delete(path, *, parent=None) -> bool:
+    """Ask before a stem leaves the disk; True only for the primary button.
+
+    Deleting an output is the one irreversible action on the work page, and the file it
+    removes is the point of the run. The dialog names the file rather than the folder
+    because the folder is usually shared by every stem of the batch.
+
+    A plain function, not a method, so the controller can be tested with it replaced:
+    `exec()` enters a nested event loop, and a unit test that calls it would sit there.
+    """
+    dlg = fluentqt.ContentDialog(parent)
+    dlg.setTitle(tr("delete_title"))
+    host = fluentqt.Card(dlg)
+    body = QVBoxLayout(host)
+    label = fluentqt.Label(tr("delete_body", name=Path(path).name), host)
+    label.setWordWrap(True)
+    body.addWidget(label)
+    dlg.setContent(host)
+    dlg.setPrimaryButtonText(tr("delete_file"))
+    dlg.setCloseButtonText(tr("cancel"))
+    dlg.exec()
+    return dlg.result() == fluentqt.ContentDialog.ResultPrimary
 
 
 def report_failure(kind: str, text: str, parent=None, *, band=None,
