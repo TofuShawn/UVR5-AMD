@@ -402,7 +402,6 @@ class Controller:
             return False
         self.settings = new
         page.settings = new
-        page.refresh_parameter_summary()
         if self.shell.has_settings():
             self.shell.reset_settings()
             page.console.appendPlainText(
@@ -529,13 +528,10 @@ class Controller:
             return messages
         self.settings, self.selections = page.st, page.sel
         self.work_page.selections = self.selections
-        # The work page now *shows* settings values (M1's parameter summary), so the
-        # object it reads has to be the one that was just saved. `refresh_models()` is
-        # still deliberately not called -- the Model combo is a per-run pick that may
-        # legitimately differ from the persisted `*_model` selection -- but the summary
-        # has no such excuse for going stale.
+        # The object the page reads has to be the one that was just saved. `refresh_models()`
+        # is still deliberately not called -- the Model combo is a per-run pick that may
+        # legitimately differ from the persisted `*_model` selection.
         self.work_page.settings = self.settings
-        self.work_page.refresh_parameter_summary()
         # Two of these fields are now *displayed* on the work page, and the truth strip reads
         # the widgets rather than the object -- so they follow the save. Both republish with
         # signals blocked: showing a stored value is not a user action, and a `toggled` here

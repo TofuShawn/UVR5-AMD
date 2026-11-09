@@ -84,13 +84,11 @@ CATALOG: dict[str, tuple[str, str, str]] = {
     "start": ("START", "START", "START"),
     "stop": ("STOP", "STOP", "STOP"),
     "settings": ("Settings", "設定", "设置"),
-    "params_edit": ("Edit these in Settings", "到設定編輯", "到设置编辑"),
     # checkboxes / expander
     "default_output_check": (
         "Use this as my default output folder",
         "設為我的預設輸出資料夾", "设为我的默认输出文件夹"),
     "gpu_check": ("Use GPU", "使用 GPU", "使用 GPU"),
-    "params_header": ("Model parameters", "模型參數", "模型参数"),
     "group_outputs": ("Run output", "輸出檔案", "输出文件"),
     "outputs_empty": (
         "stems written by this run appear here",
@@ -150,16 +148,29 @@ CATALOG: dict[str, tuple[str, str, str]] = {
         "folder first, then tick the box",
         "預設輸出未設定:輸出目錄欄是空的 -- 先選資料夾,再勾選",
         "默认输出未设置:输出目录栏是空的 -- 先选文件夹,再勾选"),
-    # parameter summary
-    "params_none": (
-        "{arch} reads no per-arch engine parameters; the general group's "
-        "format and device choices are what apply to it.",
-        "{arch} 不讀取各架构引擎參數;套用的一般群組格式與裝置選擇即為其設定。",
-        "{arch} 不读取各架构引擎参数;套用的通用组格式与设备选择即为其设置。"),
-    "params_line": (
-        "{arch}: {n} engine parameters (read-only here -- use the button below)",
-        "{arch}:{n} 個引擎參數(此处唯讀 -- 使用下方按鈕)",
-        "{arch}:{n} 个引擎参数(此处只读 -- 使用下方按钮)"),
+    # settings page
+    "settings_general": ("General", "一般", "常规"),
+    "settings_vr": ("VR architecture", "VR 架構", "VR 架构"),
+    "settings_mdx": ("MDX architecture", "MDX 架構", "MDX 架构"),
+    "settings_demucs": ("Demucs architecture", "Demucs 架構", "Demucs 架构"),
+    "settings_selections": (
+        "Secondary models and splitters",
+        "次要模型與分離器", "次要模型与分离器"),
+    "settings_refresh": ("Refresh model tables", "重新整理模型表", "刷新模型表"),
+    # notification titles and failure bands
+    "notify_done": ("Done", "完成", "完成"),
+    "notify_failed": ("Failed", "失敗", "失败"),
+    "notify_cancelled": ("Stopped", "已停止", "已停止"),
+    "notify_degraded": ("Degraded", "已降級", "已降级"),
+    "notify_warning": ("Warning", "警告", "警告"),
+    "failure_vram": ("Out of video memory", "顯示記憶體不足", "显存不足"),
+    "failure_weight": ("Weight file not found", "找不到權重檔", "找不到权重文件"),
+    "failure_cpu": ("Not running on the GPU", "未使用 GPU 運算", "未使用 GPU 计算"),
+    "failure_cancelled": ("Stopped by user", "使用者已停止", "用户已停止"),
+    "params_dialog_title": (
+        "{arch} params for {name}", "{arch} 參數:{name}", "{arch} 参数:{name}"),
+    "params_save": ("Save params", "儲存參數", "保存参数"),
+    "params_cancel": ("Cancel", "取消", "取消"),
     "lang_restart": (
         "language saved; restart the app to apply it",
         "語言已儲存;重新啟動應用程式後生效", "语言已保存;重启应用后生效"),

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from app import dialogs, job, session, work_page
+from app import dialogs, i18n, job, session, work_page
 from tests.test_work_page import SlowEngine, _Rp, _spy_notify, _ui_ctrl
 
 
@@ -180,7 +180,7 @@ def test_batch_runs_sequentially_continues_on_error_and_tallies(qapp, tmp_path, 
     assert page.count_label.text() == "3 file(s) queued", page.count_label.text()
     assert page.start_button.isEnabled(), "the batch releases busy, not file 2"
     assert page.stop_button.isEnabled() is False
-    assert shown == [(work_page.FAILED_TITLE,
+    assert shown == [(i18n.tr(work_page.FAILED_TITLE),
                       "1 of 3 file(s) failed -- see the console lines above")], shown
 
 
@@ -203,7 +203,7 @@ def test_a_single_file_batch_reports_exactly_as_it_did_before(qapp, tmp_path, mo
     # it, so a bare `"batch" not in text` would fail on a path and prove nothing.
     text = page.console.toPlainText()
     assert "batch started" not in text and "batch finished" not in text, text
-    assert shown == [(work_page.DONE_TITLE, "1 file(s) written")], shown
+    assert shown == [(i18n.tr(work_page.DONE_TITLE), "1 file(s) written")], shown
     assert page.progress.value() == 100
 
 
@@ -248,7 +248,7 @@ def test_a_stopped_batch_gets_a_surface_and_not_only_a_console_line(qapp, tmp_pa
     page.run_requested.emit()
 
     assert [p.name for p in started] == ["a.wav"], started
-    assert shown == [(work_page.CANCELLED_TITLE,
+    assert shown == [(i18n.tr(work_page.CANCELLED_TITLE),
                       "batch stopped after 1 file(s); the rest were not run")], shown
     assert ("batch stopped after 1 file(s); the rest were not run"
             in page.console.toPlainText())
@@ -398,7 +398,7 @@ def test_the_choices_a_run_froze_cannot_be_changed_mid_run(qapp, tmp_path, monke
     monkeypatch.setattr(page.job, "start", lambda request: None)   # no terminal: still running
     frozen = [page.output_edit, page.browse_output, page.default_output_check,
               page.gpu_check, page.model_combo, page.arch_bar,
-              page.params_edit, *page.format_radios.values()]
+              *page.format_radios.values()]
 
     page.run_requested.emit()
     assert all(not w.isEnabled() for w in frozen), \

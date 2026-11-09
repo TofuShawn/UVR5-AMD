@@ -391,91 +391,25 @@ def test_the_fallback_state_comes_from_the_backend_and_not_from_a_needle(qapp, t
         "the invented needle is still a producer for the degraded surface")
 
 
-# -- M1: the arch's engine parameters, on the page spec §10 puts them on -------- #
+# -- the parameter summary left the page ----------------------------------------- #
 
-def test_the_model_parameters_expander_is_not_a_dead_control(qapp, tmp_path, monkeypatch):
-    """Task 5 shipped this Expander as a placeholder -- "no content until Task 6" -- and
-    Task 6 put the fields on the settings page without removing it, so the primary page
-    carried a control that opened onto nothing and no test named it. Spec §10 assigns the
-    arch's engine parameters to the work page, so it now shows a read-only summary of
-    them plus one action that goes where they are editable."""
+def test_the_work_page_no_longer_carries_a_parameter_expander(qapp, tmp_path,
+                                                              monkeypatch):
+    """Removed on request: the expander could not be edited where it stood, and its
+    read-only summary duplicated values the settings page owns. Two-sided -- the page
+    has no `params_*` surface left, while the settings page still builds every field,
+    so this is a deletion of the summary and not of the editing surface.
+    """
     import separate_cli
     from app import settings_page
 
     monkeypatch.setattr(backends, "resolve", lambda force=None: _cpu_backend())
     cat = separate_cli.make_catalog(tmp_path / "nope", tmp_path / "w")
-    pg = work_page.WorkPage(cat=cat, settings_obj=settings_module.Settings(),
-                            selections_obj=None)
-    assert pg.params.contentWidget() is pg.params_host, "the expander is still empty"
-    assert pg.params_summary.isVisibleTo(pg)
-    pg.arch_bar.setSelectedIndex(pg.arch_names().index("vr"))
-    text = pg.params_summary.text()
-    for name in settings_page.ARCH_FIELD_GROUPS["vr"]:
-        assert name in text, (name, text)
-    assert repr(settings_module.Settings().window_size) in text, text
-    # An arch the parameter table has no group for says so instead of borrowing numbers.
-    pg.arch_bar.setSelectedIndex(pg.arch_names().index("apollo"))
-    assert "apollo" in pg.params_summary.text()
-    for name in settings_page.ARCH_FIELD_GROUPS["vr"]:
-        assert name not in pg.params_summary.text(), name
-
-
-def test_the_parameter_summary_follows_the_arch_and_reads_the_settings_object(
-        qapp, tmp_path, monkeypatch):
-    """One source, no second table: the names come from the same
-    `settings_page.ARCH_FIELD_GROUPS` the editable page is built from, and the values
-    from the `Settings` the controller assembled with -- so the summary cannot disagree
-    with what a run will actually use."""
-    import separate_cli
-    from app import controller, settings_page
-
-    monkeypatch.setattr(backends, "resolve", lambda force=None: _cpu_backend())
-    cat = separate_cli.make_catalog(tmp_path / "nope", tmp_path / "w")
-    ctrl = controller.Controller(cat=cat, st=settings_module.Settings(segment="70"),
-                                 selections=selections_module.Selections())
-    pg = ctrl.work_page
-    pg.arch_bar.setSelectedIndex(pg.arch_names().index("demucs"))
-    _deliver(qapp)
-    text = pg.params_summary.text()
-    assert "segment = '70'" in text, text
-    for name in settings_page.ARCH_FIELD_GROUPS["demucs"]:
-        assert name in text, (name, text)
-    for name in settings_page.ARCH_FIELD_GROUPS["vr"]:
-        assert name not in text, (name, text)
-
-    # and a settings save, which hands the controller new objects, moves the summary too
-    pg.arch_bar.setSelectedIndex(pg.arch_names().index("vr"))
-    _deliver(qapp)
-    pg.settings = settings_module.Settings(window_size=1024)
-    pg.refresh_parameter_summary()
-    assert "window_size = 1024" in pg.params_summary.text(), pg.params_summary.text()
-
-
-def test_the_parameter_summaries_one_action_opens_the_editable_page(qapp, tmp_path,
-                                                                    monkeypatch):
-    """One editable surface, restated: the work page shows the numbers and the button is
-    the only way to change them -- it emits the same `settings_requested` the Settings
-    button emits, so the dialog stays the controller's one dialog (R-T4-onejob, and the
-    one-dialog rule in `Controller._on_settings_requested`)."""
-    import separate_cli
-
-    monkeypatch.setattr(backends, "resolve", lambda force=None: _cpu_backend())
-    cat = separate_cli.make_catalog(tmp_path / "nope", tmp_path / "w")
     pg = work_page.WorkPage(cat=cat, settings_obj=None, selections_obj=None)
-    asked = []
-    pg.settings_requested.connect(lambda: asked.append(True))
-    pg.params_edit.click()
-    assert asked == [True], asked
-    # The summary's action is the *same signal*, so the dialog stays the controller's
-    # one dialog (R-T4-onejob and `Controller._on_settings_requested`'s one-at-a-time).
-    ctrl = controller.Controller(cat=cat, st=settings_module.Settings(),
-                                 selections=selections_module.Selections())
-    ctrl.work_page.params_edit.click()
-    ctrl.work_page.settings_requested.emit()
-    assert ctrl.shell.has_settings()
-    first = ctrl.shell._settings_page
-    ctrl.work_page.params_edit.click()
-    assert ctrl.shell._settings_page is first, "the summary's action stacked a second page"
+    for name in ("params", "params_summary", "params_edit"):
+        assert not hasattr(pg, name), name
+    assert "window_size" in settings_page.ARCH_FIELD_GROUPS["vr"], (
+        "the fields are still editable in Settings")
 
 
 def test_a_cancel_is_reported_as_a_cancel_not_as_a_failure(page, qapp, tmp_path,

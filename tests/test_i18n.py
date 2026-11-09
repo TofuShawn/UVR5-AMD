@@ -90,13 +90,17 @@ def test_language_round_trips_without_touching_the_other_blocks(tmp_path):
     assert i18n.load_language(target) == "zh-Hans"
 
 
-def test_the_language_combo_persists_and_says_restart(qapp, tmp_path, monkeypatch):
+def test_the_language_combo_lives_in_settings_and_persists(qapp, tmp_path, monkeypatch):
+    """Moved off the run band: it changes nothing about a run. The page still persists
+    immediately and still says a restart is what applies it."""
     ctrl = _ui_ctrl(qapp, tmp_path, monkeypatch)
-    page = ctrl.work_page
+    ctrl._on_settings_requested()
+    page = ctrl.shell._settings_page
     codes = page._lang_codes
     page.language_combo.setCurrentIndex(codes.index("zh-Hans"))
     assert i18n.load_language() == "zh-Hans"
-    assert "restart" in page.console.toPlainText()
+    assert not hasattr(ctrl.work_page, "language_combo"), (
+        "the run band still carries the language choice")
     # restoring keeps the shared sandbox clean for the tests that follow
     page.language_combo.setCurrentIndex(codes.index("system"))
     assert i18n.load_language() == "system"

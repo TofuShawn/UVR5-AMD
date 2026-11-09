@@ -76,7 +76,7 @@ def test_the_page_is_two_segments_over_a_fixed_action_row(qapp, tmp_path, monkey
     assert page.findChildren(fluentqt.Expander), "the page has no expandable groups"
     assert page.action_row_host.parent() is page
     for control in (page.input_edit, page.model_combo, page.arch_bar, page.output_edit,
-                    page.file_list, page.params, page.gpu_check, page.start_button,
+                    page.file_list, page.gpu_check, page.start_button,
                     page.stop_button, page.reason_label,
                     page.progress, page.count_label, page.console, page.summary_label,
                     page.device_label, page.compute_label, page.output_list,

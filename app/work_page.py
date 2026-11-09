@@ -36,8 +36,8 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import QButtonGroup, QHBoxLayout, QVBoxLayout
 
-from app import dialogs, job, session, settings_page
-from app.i18n import LANGUAGES, load_language, save_language, tr
+from app import dialogs, job, session
+from app.i18n import tr
 
 #: The page's own terminal vocabulary. These are the titles the terminal handlers speak
 #: to `_notify` with, and the seam the suite spies on: `Stopped` *is* the cancel surface
@@ -45,11 +45,13 @@ from app.i18n import LANGUAGES, load_language, save_language, tr
 #: `Degraded` and `Warning` are the two halves the I4 warning path chooses between --
 #: the first is spec §8's CPU-fallback surface, the second what a warning the failure
 #: vocabulary has no category for gets. The widget's own title comes from `app/dialogs.py`.
-DONE_TITLE = "Done"
-FAILED_TITLE = "Failed"
-CANCELLED_TITLE = "Stopped"
-DEGRADED_TITLE = "Degraded"
-WARNING_TITLE = "Warning"
+#: i18n keys, not copy: `_notify` is handed `tr(...)` at the call site so the title
+#: follows the selected locale while the tests keep pinning the English default.
+DONE_TITLE = "notify_done"
+FAILED_TITLE = "notify_failed"
+CANCELLED_TITLE = "notify_cancelled"
+DEGRADED_TITLE = "notify_degraded"
+WARNING_TITLE = "notify_warning"
 
 #: arch -> the `Selections` field holding this arch's main model pick.
 MAIN_MODEL_FIELD = {"vr": "vr_model", "mdx": "mdx_net_model", "demucs": "demucs_model",
@@ -376,24 +378,6 @@ class WorkPage(fluentqt.Card):
         device_row.addWidget(self.device_combo)
         row(g, fluentqt.Icons.Desktop, tr("row_device"), tr("row_device_desc"), device_row)
 
-        self.params = fluentqt.Expander(self)
-        self.params.setHeaderText(tr("params_header"))
-        self.params.setAnimationEnabled(True)
-        self.params_host = fluentqt.Card()
-        params_form = QVBoxLayout(self.params_host)
-        params_form.setContentsMargins(12, 10, 12, 12)
-        params_form.setSpacing(8)
-        self.params_summary = self._caption("", fluentqt.Label.TextColorRole.Secondary,
-                                            parent=self.params_host)
-        self.params_summary.setWordWrap(True)
-        self.params_edit = self._icon_button(tr("params_edit"), fluentqt.Icons.Edit,
-                                             self.params_host)
-        self.params_edit.clicked.connect(self.settings_requested.emit)
-        params_form.addWidget(self.params_summary)
-        params_form.addWidget(self.params_edit)
-        self.params.setContentWidget(self.params_host)
-        right.addWidget(self.params)
-
         left.addStretch(1)
         right.addStretch(1)
         root.addLayout(columns)
@@ -418,18 +402,6 @@ class WorkPage(fluentqt.Card):
         self.stop_button.clicked.connect(self.cancel_requested.emit)
         buttons.addWidget(self.start_button)
         buttons.addWidget(self.stop_button)
-        self.language_combo = fluentqt.ComboBox(self.action_row_host)
-        self.language_combo.setToolTip(tr("language"))
-        self._lang_codes = ["system", *[code for code, _name in LANGUAGES]]
-        names = [tr("lang_system"), *[name for _code, name in LANGUAGES]]
-        self.language_combo.blockSignals(True)
-        self.language_combo.addItems(names)
-        saved = load_language()
-        self.language_combo.setCurrentIndex(
-            self._lang_codes.index(saved) if saved in self._lang_codes else 0)
-        self.language_combo.blockSignals(False)
-        self.language_combo.currentIndexChanged.connect(self._on_language_changed)
-        buttons.addWidget(self.language_combo)
         buttons.addStretch(1)
         self.count_label = fluentqt.Label("", self.action_row_host)
         self.count_label.setFluentTypography(fluentqt.FontRole.BodyStrong)
@@ -573,11 +545,6 @@ class WorkPage(fluentqt.Card):
             font = widget.font()
             font.setFamilies(["JetBrains Mono", "Noto Sans SC"])
             widget.setFont(font)
-
-    def _on_language_changed(self, index: int) -> None:
-        """Persist the choice; the running page keeps its language until relaunch."""
-        save_language(self._lang_codes[index])
-        self.console.appendPlainText(tr("lang_restart"))
 
     def _archs(self) -> list[str]:
         return sorted(self.catalog.archs())
@@ -818,30 +785,6 @@ class WorkPage(fluentqt.Card):
         self.model_combo.setCurrentText(current if current in names else catalog.NO_MODEL)
         self.model_hint.setText(tr("models_installed", n=len(names)) if names
                                 else tr("models_none"))
-        self.refresh_parameter_summary()
-
-    def parameter_summary(self) -> str:
-        """The selected arch's engine parameters and what each one currently is.
-
-        Read-only, and derived: the *names* are `settings_page.ARCH_FIELD_GROUPS`' own
-        tuple for this arch -- the same table the editable page builds its widgets from,
-        so the two cannot drift apart -- and the *values* come from the `Settings` object
-        the controller assembles runs with, which is why `Controller.save_settings` hands
-        this page the new one. An arch the table has no group for (apollo) is said so,
-        rather than shown another arch's numbers.
-        """
-        arch = self.current_arch()
-        group = settings_page.ARCH_FIELD_GROUPS.get(arch)
-        if group is None:
-            return tr("params_none", arch=arch)
-        lines = [tr("params_line", arch=arch, n=len(group))]
-        lines += [f"{name} = {getattr(self.settings, name, '?')!r}" for name in group]
-        return "\n".join(lines)
-
-    def refresh_parameter_summary(self) -> None:
-        """Re-publish `parameter_summary()` -- on an arch change and after a settings
-        save, the two moments the numbers can move under the page."""
-        self.params_summary.setText(self.parameter_summary())
 
     def _publish_run_state(self, blockers: list[str]) -> None:
         """The one expression that decides whether START is pressable.
@@ -869,7 +812,7 @@ class WorkPage(fluentqt.Card):
         # finishes is legitimate, and `_Batch.files` is already a copy of the paths.
         for widget in (self.output_edit, self.browse_output, self.default_output_check,
                        self.model_combo, self.arch_bar, self.gpu_check,
-                       self.device_combo, self.params_edit,
+                       self.device_combo,
                        *self.format_radios.values()):
             widget.setEnabled(not self._busy)
 
@@ -1070,7 +1013,7 @@ class WorkPage(fluentqt.Card):
             # The one ending the user caused gets the same surface as the two they did
             # not: `_notify_for_file` stayed silent for every file of this batch, so
             # without this a STOP is a console line nobody is looking at.
-            self._notify(CANCELLED_TITLE, line)
+            self._notify(tr(CANCELLED_TITLE), line)
             return
         self.console.appendPlainText(
             f"batch finished: {total} file(s) attempted, {written} file(s) written"
@@ -1078,13 +1021,13 @@ class WorkPage(fluentqt.Card):
         for line in failures:
             self.console.appendPlainText(f"  failed: {line}")
         if failures:
-            self._notify(FAILED_TITLE, f"{len(failures)} of {size} file(s) failed -- "
+            self._notify(tr(FAILED_TITLE), f"{len(failures)} of {size} file(s) failed -- "
                                        f"see the console lines above")
         else:
             # The batch gets one surface, at the end, in the batch's own words: a run of
             # forty files that never said anything until the console went quiet is a run
             # the user has to go and inspect.
-            self._notify(DONE_TITLE, f"{total} file(s) done, {written} file(s) written")
+            self._notify(tr(DONE_TITLE), f"{total} file(s) done, {written} file(s) written")
 
     def show_cancelled(self, text: str) -> None:      # used by the tier-3 dismissal
         self.set_busy(False)
@@ -1168,7 +1111,7 @@ class WorkPage(fluentqt.Card):
         dropped or dressed up as one of the four.
         """
         self.console.appendPlainText(f"warning: {text}")
-        self._notify(DEGRADED_TITLE if self.is_cpu_fallback() else WARNING_TITLE, text)
+        self._notify(tr(DEGRADED_TITLE) if self.is_cpu_fallback() else tr(WARNING_TITLE), text)
 
     def _notify_for_file(self, title: str, text: str) -> None:
         """A terminal's surface, unless a batch is speaking -- then the tally speaks.
@@ -1211,7 +1154,7 @@ class WorkPage(fluentqt.Card):
         self._file_ended()
         for path in written:
             self.console.appendPlainText(f"wrote {path} ({path.stat().st_size} bytes)")
-        self._notify_for_file(DONE_TITLE, f"{len(written)} file(s) written")
+        self._notify_for_file(tr(DONE_TITLE), f"{len(written)} file(s) written")
 
     def _on_failed(self, text: str) -> None:
         # The console is the permanent record and the surface is the one that gets your
@@ -1220,7 +1163,7 @@ class WorkPage(fluentqt.Card):
         # which answers None for text nobody recognises -- and that stays `Failed`.
         self._file_ended()
         self.console.appendPlainText(f"failed: {text}")
-        self._notify_for_file(FAILED_TITLE, text)
+        self._notify_for_file(tr(FAILED_TITLE), text)
 
     def _on_cancelled(self, text: str) -> None:
         # Zeroed only when the run ended here: mid-batch that would erase the position the
@@ -1229,7 +1172,7 @@ class WorkPage(fluentqt.Card):
         self._file_ended()
         if self._terminal_releases():
             self.progress.setValue(0)
-        self._notify_for_file(CANCELLED_TITLE, text)
+        self._notify_for_file(tr(CANCELLED_TITLE), text)
 
     def _notify(self, title: str, text: str):
         """Hand a terminal message to the queue in `app/dialogs.py`.
@@ -1249,11 +1192,11 @@ class WorkPage(fluentqt.Card):
         it is `_on_warning`'s, because that state is a warning and not a crash.
         """
         kind = None
-        if title == CANCELLED_TITLE:
+        if title == tr(CANCELLED_TITLE):
             kind = "cancelled"
-        elif title == FAILED_TITLE:
+        elif title == tr(FAILED_TITLE):
             kind = _classify_failure(text)
-        elif title == DEGRADED_TITLE:
+        elif title == tr(DEGRADED_TITLE):
             kind = "cpu_fallback"
         if kind is None:
             return dialogs.notify(title, text, parent=self)

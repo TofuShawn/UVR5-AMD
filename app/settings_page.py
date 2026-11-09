@@ -54,6 +54,7 @@ from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout
 
 from app import session
+from app.i18n import LANGUAGES, load_language, save_language, tr
 
 #: The str fields whose legal values the engine itself publishes, and those values as
 #: the *text* the field holds (ruling R-T9-types: these are the strings the tkinter var
@@ -181,6 +182,12 @@ ARCH_FIELD_GROUPS: dict[str, tuple[str, ...]] = {
 #: choices that decide what the other three mean.
 SECTION_ORDER: tuple[str, ...] = ("common", "vr", "mdx", "demucs")
 
+#: i18n keys for the section headers. The field names below them stay as the engine
+#: spells them: they are what `settings.json` and the CLI print, and translating a
+#: stored key would make the page's label stop matching the file it edits.
+_SECTION_TITLES = {"common": "settings_general", "vr": "settings_vr",
+                   "mdx": "settings_mdx", "demucs": "settings_demucs"}
+
 #: Strict numeric text -- deliberately narrower than Python's parsers, which also accept
 #: PEP 515 separators (`float('1_000')` == 1000.0). See `_read`.
 _NUMERIC_TEXT = re.compile(r"[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?")
@@ -285,14 +292,15 @@ class SettingsPage(fluentqt.Card):
         self._body = fluentqt.Card()
         form = QVBoxLayout(self._body)
         page_ref = weakref.ref(self)
+        form.addWidget(self._language_row())
         for arch in SECTION_ORDER:
             form.addWidget(self._section(
-                "General" if arch == "common" else arch.upper(),
+                tr(_SECTION_TITLES[arch]),
                 ARCH_FIELD_GROUPS[arch], self._types, self.st))
         form.addWidget(self._section(
-            "Secondary models and splitters",
+            tr("settings_selections"),
             tuple(sorted(self._stypes)), self._stypes, self.sel))
-        self.refresh_button = fluentqt.Button("Refresh model tables", self._body)
+        self.refresh_button = fluentqt.Button(tr("settings_refresh"), self._body)
         self.refresh_button.clicked.connect(_weak_slot(page_ref, "_on_refresh_clicked"))
         form.addWidget(self.refresh_button)
         # Where a refresh says what it fetched and wrote. The page has no other voice,
@@ -304,6 +312,39 @@ class SettingsPage(fluentqt.Card):
         self._scroller.setContentWidget(self._body)
         root.addWidget(self._scroller, 1)
         self._fit_body()
+
+    def _language_row(self) -> "fluentqt.Card":
+        """The language choice, on the page that owns settings rather than the run band.
+
+        It changes nothing about a run, and it was the only control in the START/STOP
+        row that had nothing to do with starting. Persisted immediately (same
+        `i18n` block as before); the running window keeps its language until relaunch,
+        which the caption says out loud.
+        """
+        host = fluentqt.Card(self._body)
+        box = QVBoxLayout(host)
+        box.setContentsMargins(12, 8, 12, 8)
+        row = QHBoxLayout()
+        row.addWidget(fluentqt.Label(tr("language"), host))
+        self.language_combo = fluentqt.ComboBox(host)
+        self._lang_codes = ["system", *[code for code, _name in LANGUAGES]]
+        self.language_combo.addItems([tr("lang_system"),
+                                      *[name for _code, name in LANGUAGES]])
+        saved = load_language()
+        self.language_combo.setCurrentIndex(
+            self._lang_codes.index(saved) if saved in self._lang_codes else 0)
+        self.language_combo.currentIndexChanged.connect(self._on_language_changed)
+        row.addWidget(self.language_combo, 1)
+        box.addLayout(row)
+        hint = fluentqt.Label(tr("lang_restart"), host)
+        hint.setFluentTypography(fluentqt.FontRole.Caption)
+        hint.setTextColorRole(fluentqt.Label.TextColorRole.Secondary)
+        box.addWidget(hint)
+        return host
+
+    def _on_language_changed(self, index: int) -> None:
+        """Persist the choice; the running window keeps its language until relaunch."""
+        save_language(self._lang_codes[index])
 
     def _section(self, title: str, names, types: dict, holder) -> "fluentqt.Expander":
         """`Expander(title, parent)` cannot be constructed at all -- the same Shiboken

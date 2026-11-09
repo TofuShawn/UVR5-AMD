@@ -151,10 +151,10 @@ OPTIONAL_KEYS = frozenset({"nout", "nout_lstm"})
 
 FAILURE_KINDS = ("vram", "missing_weight", "cpu_fallback", "cancelled")
 
-_TITLE = {"vram": "Out of video memory",
-          "missing_weight": "Weight file not found",
-          "cpu_fallback": "Not running on the GPU",
-          "cancelled": "Stopped by user"}
+_TITLE = {"vram": "failure_vram",
+          "missing_weight": "failure_weight",
+          "cpu_fallback": "failure_cpu",
+          "cancelled": "failure_cancelled"}
 
 #: How long a notification stays up. The app's own number, not the wheel's: `InfoBar`
 #: exposes no duration at all, so without this line a bar would sit on the page until the
@@ -386,7 +386,7 @@ def report_failure(kind: str, text: str, parent=None, *, band=None,
     """
     if kind not in FAILURE_KINDS:
         raise ValueError(f"unknown failure kind {kind!r}; known: {FAILURE_KINDS}")
-    return notify(_TITLE[kind], text, parent, band=band, dismiss_ms=dismiss_ms)
+    return notify(tr(_TITLE[kind]), text, parent, band=band, dismiss_ms=dismiss_ms)
 
 
 class ModelParamsDialog(fluentqt.ContentDialog):
@@ -421,9 +421,9 @@ class ModelParamsDialog(fluentqt.ContentDialog):
             body.addWidget(editor)
             self.editors[name] = editor
         self.setContent(host)                        # `setContent`, not
-        self.setTitle(f"{spec.arch} params for {spec.name}")
-        self.setPrimaryButtonText("Save params")     # both verbs pinned by Task 1's
-        self.setCloseButtonText("Cancel")            # name assertions
+        self.setTitle(tr("params_dialog_title", arch=spec.arch, name=spec.name))
+        self.setPrimaryButtonText(tr("params_save"))  # both verbs pinned by Task 1's
+        self.setCloseButtonText(tr("params_cancel"))  # name assertions
 
 
 def _make_editor(name: str, typ: type, parent):
