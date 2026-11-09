@@ -164,4 +164,41 @@ if ($Backend -eq "rocm") {
     }
 }
 
+# --- 5. the launcher, only now that the install has proved itself -----------------
+# Written last on purpose: a failed install throws before this block, so it leaves
+# no start.bat to double-click into a broken venv. The file asks whether to delete
+# itself after the app exits, so a user who only wanted the install can clean up
+# without hunting for it. ASCII, not UTF-8: a BOM would print as garbage before
+# `@echo off` takes effect.
+$Launcher = @'
+@echo off
+setlocal EnableExtensions
+title UVR5 PySide6 GUI
+cd /d "%~dp0"
+if not exist ".venv\Scripts\python.exe" (
+    echo [start.bat] .venv is missing -- run bootstrap.ps1 first.
+    pause
+    exit /b 1
+)
+if not defined UVR_MODEL_ROOT set "UVR_MODEL_ROOT=%~dp0models"
+echo [start.bat] launching UVR5 PySide6 GUI
+echo [start.bat] weights: %UVR_MODEL_ROOT%
+".venv\Scripts\python.exe" -m app.main
+set "rc=%errorlevel%"
+if not "%rc%"=="0" (
+    echo.
+    echo [start.bat] app exited with code %rc%. See the traceback above.
+    pause
+)
+echo.
+choice /c YN /n /m "Delete this launcher (start.bat)? [Y/N] "
+if errorlevel 2 exit /b %rc%
+rem `(goto)` drops this batch context, which releases the file handle, and then the
+rem `del` can remove the running script itself.
+(goto) 2>nul & del "%~f0"
+'@
+$StartBat = Join-Path $PSScriptRoot "start.bat"
+Set-Content -LiteralPath $StartBat -Value $Launcher -Encoding ASCII
+Write-Host ">> wrote $StartBat (it offers to delete itself after the app exits)" -ForegroundColor Cyan
+
 Write-Host "done: $Backend" -ForegroundColor Green

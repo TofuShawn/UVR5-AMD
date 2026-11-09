@@ -1,15 +1,17 @@
-"""Build the distributable source zip: repo runtime + bootstrap + a portable launcher.
+"""Build the distributable source zip: repo runtime + bootstrap + install notes.
 
 The ROCm torch stack is ~2-3 GB and freezes badly (PyInstaller/Nuitka miss torch/HIP
 dlls), so the fork ships *source* plus `bootstrap.ps1`: the user runs one bootstrap to
 fetch the backend at install time, and the app itself stays network-free. This script
 assembles exactly the tracked runtime tree (no .venv / .git / docs / tests / dev tools),
-adds a portable `run.bat` and a `START_HERE.txt`, and zips it under `dist/`.
+adds a `START_HERE.txt`, and zips it under `dist/`.
 
 Run from the repo root:  python tools/make_dist.py
-The local double-click `run.bat` is gitignored (it carries this machine's weights path);
-the launcher emitted here is the portable one, defaulting UVR_MODEL_ROOT to the bundled
-`models/` so a fresh unzip works without any machine-specific path.
+
+No launcher is shipped. `bootstrap.ps1` writes `start.bat` itself, and only after its
+install checks pass -- a zip whose bootstrap failed must not leave a launcher pointing
+at a half-built venv. Both `run.bat` (this machine's convenience double-click) and the
+generated `start.bat` are gitignored, so neither can ride along in the tracked tree.
 """
 from __future__ import annotations
 
@@ -24,29 +26,6 @@ _EXCLUDE_PREFIX = ("tests/", "tools/", "docs/", ".github/", ".superpowers/")
 #: Tracked top-level files that are not part of the PySide6 runtime.
 _EXCLUDE_TOP = {"UVR.py", "install_packages.sh", ".gitignore"}
 
-_LAUNCHER = """\
-@echo off
-setlocal EnableExtensions
-title UVR5 PySide6 GUI
-cd /d "%~dp0"
-if not defined UVR_MODEL_ROOT set "UVR_MODEL_ROOT=%~dp0models"
-if not exist ".venv\\Scripts\\python.exe" (
-    echo [run.bat] no .venv yet -- run:  powershell -NoProfile -ExecutionPolicy Bypass -File bootstrap.ps1 -Backend rocm
-    pause
-    exit /b 1
-)
-echo [run.bat] launching UVR5 PySide6 GUI
-echo [run.bat] weights: %UVR_MODEL_ROOT%
-".venv\\Scripts\\python.exe" -m app.main
-set "rc=%errorlevel%"
-if not "%rc%"=="0" (
-    echo.
-    echo [run.bat] app exited with code %rc%. See the traceback above.
-    pause
-)
-exit /b %rc%
-"""
-
 _START_HERE = """\
 UVR5 PySide6 GUI (AMD/ROCm fork) -- source distribution
 ======================================================
@@ -54,9 +33,10 @@ UVR5 PySide6 GUI (AMD/ROCm fork) -- source distribution
 2. Fetch the backend once (network at install time; the app itself never networks):
      powershell -NoProfile -ExecutionPolicy Bypass -File bootstrap.ps1 -Backend rocm
    Use -Backend cpu on a machine with no AMD GPU.
-3. Double-click run.bat.
+   bootstrap.ps1 writes start.bat as its last step, and only if the install passed.
+3. Double-click start.bat. After the app exits it asks whether to delete itself.
 
-Weights: run.bat defaults UVR_MODEL_ROOT to the bundled models/ (tables + one VR
+Weights: start.bat defaults UVR_MODEL_ROOT to the bundled models/ (tables + one VR
 weight). To use your own installed weights, set UVR_MODEL_ROOT before launching, or
 drop weight files under models/<Arch>_Models/. Only models whose weights are present
 are offered in the Model list.
@@ -84,10 +64,9 @@ def main() -> Path:
     with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as zf:
         for rel in sorted(members):
             zf.write(REPO / rel, rel)
-        zf.writestr("run.bat", _LAUNCHER)
         zf.writestr("START_HERE.txt", _START_HERE)
     print(f"wrote {target} ({target.stat().st_size / 1e6:.1f} MB, "
-          f"{len(members) + 2} entries)")
+          f"{len(members) + 1} entries)")
     return target
 
 
