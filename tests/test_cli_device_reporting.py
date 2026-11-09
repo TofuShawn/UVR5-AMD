@@ -167,7 +167,14 @@ def test_un_flagged_default_run_reports_cpu(tmp_path):
     assert line.startswith(COMPUTE_PREFIX + "cpu ("), line
     assert "is_gpu_conversion=-1" in line, line
     assert "from Settings" in line, line
-    assert "pass --device rocm to use the GPU" in line, line
+    # The advice must name a device this box can reach: on a machine whose torch has
+    # no GPU, `--device rocm` would claim a cuda device nothing can open, while
+    # DirectML is exactly what the default install provides.
+    backend = backend_line(text)
+    if "torch_device=cpu" in backend and "DmlExecutionProvider" in backend:
+        assert "pass --device dml" in line, (backend, line)
+    else:
+        assert "pass --device rocm to use the GPU" in line, (backend, line)
     assert plan_field(text, "is_gpu_conversion") == "-1", text
     assert reported_device(line) == "cpu"
 
@@ -222,6 +229,28 @@ def test_device_rocm_reports_the_gpu_and_reaches_the_plan(tmp_path, monkeypatch)
         "engine stays on CPU no matter what this line prints")
     assert separate_cli.effective_settings(
         st, types.SimpleNamespace(process_method=None), "cpu").gpu_conversion is False
+
+
+def test_device_dml_turns_the_gpu_path_on_and_names_directml(tmp_path, monkeypatch):
+    """`--device dml` on the shipped default (CPU torch + DirectML).
+
+    Pinned because the flag used to do nothing: `effective_settings` only turned
+    `gpu_conversion` on for rocm/cuda, so the plan said -1, `separate.py` never read
+    `backend.ort_providers`, and a user who asked for DirectML got CPU inference with
+    no message. The compute line has to name DirectML rather than the old "asks for
+    the GPU but torch_device='cpu'" text, which was true of torch and false of the run.
+    """
+    fake_torch(monkeypatch, cuda=False)
+    text = cli_dry_run(tmp_path, "--device", "dml")
+    line = compute_line(text)
+
+    assert plan_field(text, "is_gpu_conversion") == "0", text
+    assert line.startswith(COMPUTE_PREFIX + "dml ("), (text, line)
+    assert "DirectML" in line, line
+    changed = separate_cli.effective_settings(
+        separate_cli.settings_module.Settings(),
+        types.SimpleNamespace(process_method=None), "dml")
+    assert changed.gpu_conversion is True
 
 
 # --------------------------------------------------------------------------- #

@@ -5,11 +5,29 @@ behind a Fluent-Qt (PySide6) window or a GUI-free CLI. The tkinter GUI is retire
 header in `UVR.py` whose first statement refuses; `THIRD_PARTY_NOTICES.md` names what ships, and
 §License below carries this fork's own licence — MIT, with the `LICENSE` file still to be added.
 
-## 1. `pytest` is supported only on a `-Backend rocm` venv
+## 1. Install: DirectML + CPU by default, ROCm as the optional performance pack
 
+The default install needs no GPU SDK. `bootstrap.ps1` defaults to `-Backend cpu`, which is
+CPU torch plus the `onnxruntime-directml` wheel `requirements.txt` pins; the app then runs
+the ONNX models (MDX) on any DX12 GPU — AMD, NVIDIA or Intel — and the torch models (VR,
+Demucs, roformer) on the CPU. `backends.resolve()` needs no vendor check for this: DirectML
+is chosen whenever no CUDA/iGPU torch device is driving ONNX.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1   # == -Backend cpu
+.venv\Scripts\python.exe -m app.main
+```
+
+**DirectML** in the work page's device box (or `--device dml` on the CLI) turns the GPU path
+on for the ONNX models; **Auto** leaves the Use GPU switch alone; **CPU** turns it off. The
+installer's last step prints the onnxruntime provider list, so "DmlExecutionProvider" there
+is the proof that the default install is a GPU install.
+
+`bootstrap.ps1 -Backend rocm` is the performance pack: ~1.95 GB of ROCm torch, and the only
+route that puts the **torch** models on an AMD GPU. The suite runs only in that venv —
 `tests/golden/pins.json` asserts `torch`/`torch_hip` against the live environment, so a
-`-Backend cuda` or `-Backend cpu` venv fails the suite **by design**, even on byte-identical
-audio — its one GPU-resident test fails rather than skips without this venv (ruling R-T7-vram).
+`-Backend cpu` venv fails it **by design** rather than skipping its GPU-resident test
+(ruling R-T7-vram). The GUI and the CLI themselves do not care which venv they are in.
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1 -Backend rocm

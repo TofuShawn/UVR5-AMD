@@ -282,9 +282,13 @@ def effective_settings(st: settings_module.Settings, spec: catalog.ModelSpec,
     if spec.process_method and st.chosen_process_method != spec.process_method:
         updates["chosen_process_method"] = spec.process_method
     if device is not None:
-        # Only the torch-GPU devices turn gpu_conversion on; `dml` accelerates ONNX but
-        # runs torch on CPU, so it must not claim the torch GPU path.
-        updates["gpu_conversion"] = device in ("rocm", "cuda")
+        # Every explicit device turns the GPU path on, `dml` included: the plan's
+        # `is_gpu_conversion >= 0` is what makes `separate.py` read
+        # `backend.ort_providers`, so leaving dml off that list meant
+        # `--device dml` silently ran the ONNX models on the CPU it was asked to
+        # avoid. Torch still stays on CPU under dml -- `backends.resolve` decides
+        # that, not this flag.
+        updates["gpu_conversion"] = device in ("rocm", "cuda", "dml")
     return dataclasses.replace(st, **updates) if updates else st
 
 
@@ -365,8 +369,14 @@ def describe_compute_device(is_gpu_conversion: int, backend: backends.Backend,
     hip = getattr(torch.version, "hip", None)
 
     if is_gpu_conversion < 0:
+        # The advice has to name a device this machine can actually use. On the
+        # shipped default (CPU torch + DirectML) `--device rocm` would claim a CUDA
+        # device nothing can open, which is the silent-fallback pattern this fork
+        # exists to remove.
+        dml = backend.torch_device == "cpu" and "DmlExecutionProvider" in backend.ort_providers
         why = (f"--device {requested!r} asked for it" if requested == "cpu"
-               else "pass --device rocm to use the GPU")
+               else ("pass --device dml to put the ONNX models on DirectML"
+                     if dml else "pass --device rocm to use the GPU"))
         return [f"[cli] compute device: cpu (is_gpu_conversion={is_gpu_conversion} "
                 f"from Settings; {why})"]
 
@@ -377,6 +387,9 @@ def describe_compute_device(is_gpu_conversion: int, backend: backends.Backend,
                 "separate.py takes the Apple path and sets is_other_gpu)"]
 
     if backend.torch_device == "cpu":
+        if "DmlExecutionProvider" in backend.ort_providers:
+            return [f"[cli] compute device: dml (is_gpu_conversion={is_gpu_conversion}; "
+                    f"torch stays on the CPU and the ONNX models run on DirectML)"]
         return [f"[cli] compute device: cpu (is_gpu_conversion={is_gpu_conversion} "
                 f"asks for the GPU, but backends.resolve() returned "
                 f"torch_device='cpu' (hip={hip!r}), so separate.py keeps its CPU "

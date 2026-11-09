@@ -27,10 +27,17 @@
     cuda  NVIDIA path; PyTorch's cu124 index is used as an extra index so the
           non-torch dependencies still resolve from PyPI.
 
-    cpu   Plain PyPI, for a machine with no GPU or for reference baselines.
+    cpu   THE DEFAULT, and not "CPU only": Plain PyPI torch plus the
+          onnxruntime-directml wheel that requirements.txt pins, so ONNX models
+          (MDX) run on any DX12 GPU -- AMD, NVIDIA or Intel -- while torch models
+          (VR, Demucs, roformer) run on the CPU. No HIP SDK, no 2 GB download, no
+          GPU vendor check. Choose this unless you specifically want the torch
+          models on an AMD GPU, which is what `rocm` buys.
 
     Requirements.txt deliberately contains no torch line (see its header comment),
-    so the backend chosen here is the only torch in the environment.
+    so the backend chosen here is the only torch in the environment. Step 4 now
+    prints the onnxruntime provider list: `DmlExecutionProvider` present is what
+    makes the default install a GPU install for the ONNX models.
 
 .EXAMPLE
     powershell -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1 -Backend rocm
@@ -121,13 +128,22 @@ if ($LASTEXITCODE -ne 0) {
 # --- 4. prove the backend is real ------------------------------------------------
 @'
 import torch
-print("torch.__version__      :", torch.__version__)
-print("torch.version.hip      :", torch.version.hip)
-print("torch.version.cuda     :", torch.version.cuda)
-print("torch.cuda.is_available:", torch.cuda.is_available())
+import onnxruntime as ort
+print("torch.__version__        :", torch.__version__)
+print("torch.version.hip        :", torch.version.hip)
+print("torch.version.cuda       :", torch.version.cuda)
+print("torch.cuda.is_available  :", torch.cuda.is_available())
 if torch.cuda.is_available():
     print("device name              :", torch.cuda.get_device_name(0))
     print("device properties        :", torch.cuda.get_device_properties(0))
+providers = ort.get_available_providers()
+print("onnxruntime providers    :", providers)
+if "DmlExecutionProvider" in providers:
+    print("ONNX route               : DirectML (any DX12 GPU)")
+    if not torch.cuda.is_available():
+        print("torch route              : CPU -- use -Backend rocm to put VR/Demucs on an AMD GPU")
+else:
+    print("ONNX route               : CPU -- onnxruntime-directml is missing from this venv")
 '@ | Set-Content -LiteralPath (Join-Path $env:TEMP "uvr_bootstrap_torch_probe.py") -Encoding UTF8
 
 & $VenvPython (Join-Path $env:TEMP "uvr_bootstrap_torch_probe.py")

@@ -361,6 +361,7 @@ class WorkPage(fluentqt.Card):
         self._device_codes = [None, "rocm", "dml", "cpu"]
         self.device_combo.addItems(["Auto", "ROCm", "DirectML", "CPU"])
         self.device_combo.setCurrentIndex(0)
+        self.device_combo.currentIndexChanged.connect(self._on_device_changed)
         device_row = QHBoxLayout()
         device_row.setSpacing(8)
         device_row.addWidget(self.gpu_check)
@@ -589,6 +590,21 @@ class WorkPage(fluentqt.Card):
     def selected_force_device(self) -> "str | None":
         """The compute-backend override for the next run; Auto means let resolve pick."""
         return self._device_codes[self.device_combo.currentIndex()]
+
+    def _on_device_changed(self, index: int) -> None:
+        """A device pick is also a GPU yes/no: keep the switch beside it truthful.
+
+        Picking DirectML used to leave "Use GPU" off, so `plan.is_gpu_conversion`
+        stayed -1, `separate.py` kept its CPU providers, and the run ignored the
+        pick without saying so. Choosing CPU does the same in reverse, so the two
+        controls cannot disagree. Auto leaves the user's switch alone.
+        """
+        code = self._device_codes[index]
+        if code in ("rocm", "dml"):
+            self.gpu_check.setChecked(True)
+        elif code == "cpu":
+            self.gpu_check.setChecked(False)
+        self.refresh_summary()
 
     # -- the queue ------------------------------------------------------------- #
 

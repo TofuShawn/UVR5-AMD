@@ -1,24 +1,22 @@
 """Task 6: `backends.py` is the single device/provider authority.
 
 Two halves. The first pins the *decision table* -- every probe is monkeypatched,
-so what these tests check is what `resolve()` concludes from
-(hip, cuda, amd-vendor, force), not the real WMI/torch/ORT hardware; Step 7 of
-the brief is the one place the hardware itself is asserted. The failure paths of
-the vendor probe are the exception: they run the real `_is_amd_device()` with
-`subprocess.run` replaced, because "a probe failure warns instead of quietly
-dropping DirectML" is only testable at that boundary.
+so what these tests check is what `resolve()` concludes from (hip, cuda, force)
+and what onnxruntime reports, not the real torch/ORT hardware. The second half
+pins the *consumer*: `separate.SeperateAttributes` must read the authority in
+every mode (no-GPU, GPU, mps), take its providers from it, and warn when a
+resolved GPU claim cannot be honoured.
 
-The second half pins the *consumer*: `separate.SeperateAttributes` must read the
-authority in every mode (no-GPU, GPU, mps), take its providers from it, and warn
-when a resolved GPU claim cannot be honoured.
+The default install is CPU torch + `onnxruntime-directml`, so the decision this
+file protects is: a machine with no torch GPU still puts its ONNX models on
+DirectML. That used to be gated on a WMI scan for AMD's PCI vendor id; the gate
+is gone (DirectML serves any DX12 GPU), and `test_directml_needs_no_vendor_scan`
+is the regression lock for the gate not coming back.
 
-`_no_real_probing` is autouse: `resolve()` must never shell out to WMI or import
-onnxruntime during the unit tests. `test_resolve_probes_at_most_once` overrides
-`_is_amd_device` again with its own counting probe -- that is intentional and it
-is the only test that must.
+`_no_real_probing` is autouse: `resolve()` must never import onnxruntime during
+the unit tests. `test_resolve_probes_at_most_once` installs its own counting
+probe -- that is intentional and it is the only test that must.
 """
-import subprocess
-import sys
 import types
 import warnings
 
@@ -28,47 +26,13 @@ import backends
 import separate
 from tests.golden import runner, settings
 
-#: The real vendor probe, captured before the autouse fixture replaces the module
-#: attribute. The failure-path tests below call it directly -- they are testing
-#: that probe, so they must not be handed the fixture's stub.
-_REAL_VENDOR_PROBE = backends._is_amd_device
-
 
 @pytest.fixture(autouse=True)
 def _no_real_probing(monkeypatch):
-    """resolve() must never shell out to WMI or import onnxruntime in tests."""
+    """resolve() must never import onnxruntime in tests."""
     monkeypatch.setattr(backends, "_available_ort", lambda: {"DmlExecutionProvider",
                                                              "CUDAExecutionProvider",
                                                              "CPUExecutionProvider"})
-    monkeypatch.setattr(backends, "_is_amd_device", lambda: True)
-
-
-def _real_probe_with_fake_scan(monkeypatch, platform, result_or_error, calls=None):
-    """The real `_is_amd_device()` against a replaced `subprocess.run`.
-
-    Returns the callable to invoke, so a test can call it as often as it likes:
-    direct calls bypass `_once`'s memo, which is keyed on the callable and would
-    otherwise hand the second caller a cached answer. Pass `calls` to also record
-    what the fake intercepted -- that is how the "it really does shell out"
-    control stays non-vacuous.
-
-    Note `backends.subprocess` *is* the stdlib module, so this patches
-    `subprocess.run` process-wide for the duration of the test -- harmless here
-    (nothing else runs concurrently, and monkeypatch restores it), but it is the
-    reason to load anything from disk before calling this helper.
-    """
-    monkeypatch.setattr(backends, "_is_amd_device", _REAL_VENDOR_PROBE)
-    monkeypatch.setattr(sys, "platform", platform)
-
-    def fake_run(*args, **kwargs):
-        if calls is not None:
-            calls.append(args)
-        if isinstance(result_or_error, Exception):
-            raise result_or_error
-        return result_or_error
-
-    monkeypatch.setattr(backends.subprocess, "run", fake_run)
-    return backends._is_amd_device
 
 
 def _backend_warnings(records):
@@ -88,29 +52,49 @@ def test_rocm_reports_cuda_device_string(monkeypatch):
 def test_nvidia_keeps_cuda_provider(monkeypatch):
     monkeypatch.setattr(backends, "_hip_version", lambda: None)
     monkeypatch.setattr(backends, "_cuda_available", lambda: True)
-    monkeypatch.setattr(backends, "_is_amd_device", lambda: False)
     b = backends.resolve()
     assert b.name == "cuda"
     assert b.ort_providers[0] == "CUDAExecutionProvider"
 
 
-def test_cpu_fallback(monkeypatch):
+def test_cpu_torch_still_gets_directml_for_onnx(monkeypatch):
+    """The shipped default: CPU torch, ONNX on the DX12 GPU.
+
+    This is the assertion the whole DML+CPU install rests on -- a user who never
+    installs the HIP SDK must still get MDX on the GPU rather than on the CPU.
+    """
     monkeypatch.setattr(backends, "_hip_version", lambda: None)
     monkeypatch.setattr(backends, "_cuda_available", lambda: False)
-    monkeypatch.setattr(backends, "_is_amd_device", lambda: False)
     b = backends.resolve()
     assert b.name == "cpu"
+    assert b.torch_device == "cpu"
+    assert b.ort_providers[0] == "DmlExecutionProvider"
+
+
+def test_cpu_is_the_answer_only_when_onnxruntime_has_no_directml(monkeypatch):
+    monkeypatch.setattr(backends, "_hip_version", lambda: None)
+    monkeypatch.setattr(backends, "_cuda_available", lambda: False)
+    monkeypatch.setattr(backends, "_available_ort",
+                        lambda: frozenset({"CPUExecutionProvider"}))
+    b = backends.resolve()
     assert b.torch_device == "cpu"
     assert b.ort_providers == ["CPUExecutionProvider"]
 
 
-def test_cpu_torch_still_gets_directml_for_onnx(monkeypatch):
+def test_directml_needs_no_vendor_scan(monkeypatch):
+    """Regression lock: the WMI vendor probe is gone.
+
+    It answered "is this an AMD card?" and cost ~0.5 s plus three ways to fail
+    (no powershell, WMI timeout, access denied), while DirectML runs on any DX12
+    GPU. If a future change reintroduces a vendor gate, resolve() no longer
+    selects DirectML on a plain CPU-torch box and this test fails. Asserting the
+    *symbol* is gone is the second half: a re-added probe whose answer nobody
+    reads would still make the module shell out.
+    """
+    assert not hasattr(backends, "_is_amd_device")
     monkeypatch.setattr(backends, "_hip_version", lambda: None)
     monkeypatch.setattr(backends, "_cuda_available", lambda: False)
-    monkeypatch.setattr(backends, "_is_amd_device", lambda: True)
-    b = backends.resolve()
-    assert b.torch_device == "cpu"
-    assert b.ort_providers[0] == "DmlExecutionProvider"
+    assert backends.resolve().ort_providers[0] == "DmlExecutionProvider"
 
 
 def test_force_cpu_overrides_torch_but_not_onnx(monkeypatch):
@@ -130,7 +114,6 @@ def test_force_dml_puts_onnx_on_directml_and_torch_on_cpu(monkeypatch):
     GPU while torch (demucs/apollo) stays on CPU, so a machine without ROCm is usable."""
     monkeypatch.setattr(backends, "_hip_version", lambda: "7.2.42141")
     monkeypatch.setattr(backends, "_cuda_available", lambda: True)
-    monkeypatch.setattr(backends, "_is_amd_device", lambda: False)
     b = backends.resolve(force="dml")
     assert b.name == "dml"
     assert b.torch_device == "cpu"
@@ -140,7 +123,6 @@ def test_force_dml_puts_onnx_on_directml_and_torch_on_cpu(monkeypatch):
 def test_force_dml_without_the_provider_falls_back_to_cpu_and_says_so(monkeypatch):
     monkeypatch.setattr(backends, "_available_ort",
                         lambda: frozenset({"CPUExecutionProvider"}))
-    monkeypatch.setattr(backends, "_is_amd_device", lambda: False)
     with pytest.warns(RuntimeWarning):
         b = backends.resolve(force="dml")
     assert b.name == "dml"
@@ -155,78 +137,24 @@ def test_force_rejects_unknown_backend():
 
 def test_resolve_probes_at_most_once(monkeypatch):
     """SeperateAttributes is constructed once per model per stem, so resolve()
-    runs many times in a single run. The WMI query costs ~0.5 s and ORT provider
-    enumeration is not free; both must be memoised.
-
-    The memoisation has to survive the probe symbol itself being replaced:
-    `monkeypatch.setattr` swaps `_is_amd_device` for a fresh, un-decorated
-    function, so an `@lru_cache` living *on* `_is_amd_device` would be bypassed
-    and the counter would hit 5. `resolve()` therefore keys its memo on the
-    probe callable, not on the module attribute -- see backends._once.
-
-    Both probes named by the cost argument are counted, and each must be called
-    *exactly* once: `<= 1` would also be satisfied by a refactor that stopped
-    consulting the vendor scan at all, which is a different bug.
+    runs many times in a single run. ORT provider enumeration is not free and must
+    be memoised; the memo has to survive the probe symbol itself being replaced
+    (``monkeypatch.setattr`` swaps the module attribute, so an ``@lru_cache`` on
+    the function object would be bypassed and the counter would hit 5).
     """
-    calls = {"wmi": 0, "ort": 0}
-
-    def counting_amd():
-        calls["wmi"] += 1
-        return True
+    calls = {"ort": 0}
 
     def counting_ort():
         calls["ort"] += 1
         return {"DmlExecutionProvider", "CUDAExecutionProvider", "CPUExecutionProvider"}
 
-    monkeypatch.setattr(backends, "_is_amd_device", counting_amd)
     monkeypatch.setattr(backends, "_available_ort", counting_ort)
     for _ in range(5):
         backends.resolve()
-    assert calls == {"wmi": 1, "ort": 1}, calls
+    assert calls == {"ort": 1}, calls
 
 
-# --------------------------------------------------------------------------- #
-# Vendor-probe failure paths (fix round 1, finding 1)
-# --------------------------------------------------------------------------- #
-# `except Exception: return False` used to answer three different events --
-# no powershell, a WMI timeout, WMI access denied -- exactly as "this is not an
-# AMD box", and the only consequence was that DirectML vanished and MDX-C ran on
-# CPU with no message anywhere. The conservative fallback stays; it now speaks.
-
-@pytest.mark.parametrize("failure", [
-    FileNotFoundError(2, "The system cannot find the file specified: 'powershell'"),
-    subprocess.TimeoutExpired(cmd="powershell", timeout=10),
-    PermissionError(13, "WMI access denied"),
-], ids=["no-powershell", "wmi-timeout", "wmi-access-denied"])
-def test_vendor_probe_failure_warns_instead_of_passing_as_no_amd_gpu(monkeypatch, failure):
-    probe = _real_probe_with_fake_scan(monkeypatch, "win32", failure)
-
-    with pytest.warns(RuntimeWarning) as record:
-        assert probe() is False
-
-    # The caught exception has to be *in* the message, or the user cannot act on it.
-    text = str(record[0].message)
-    assert type(failure).__name__ in text, text
-    assert "CPUExecutionProvider" in text and "DirectML" in text, text
-
-
-def test_vendor_probe_warns_when_powershell_runs_but_wmi_refuses(monkeypatch):
-    """A non-zero exit is not "no AMD GPU": stdout is empty for a different reason.
-
-    Without this branch the `returncode`-carrying result of the old
-    ``.stdout``-only read made a locked-down WMI look exactly like an Intel box.
-    """
-    probe = _real_probe_with_fake_scan(
-        monkeypatch, "win32",
-        types.SimpleNamespace(returncode=1, stdout="", stderr="Get-CimInstance : Access denied"))
-
-    with pytest.warns(RuntimeWarning) as record:
-        assert probe() is False
-
-    assert "exit 1" in str(record[0].message) and "Access denied" in str(record[0].message)
-
-
-def test_degradation_warning_survives_the_engines_ambient_ignore_filter(monkeypatch):
+def test_degradation_warning_survives_the_engines_ambient_ignore_filter():
     """Loud, not merely present in the source.
 
     ``separate.py`` runs ``warnings.filterwarnings("ignore")`` at import -- the
@@ -235,50 +163,19 @@ def test_degradation_warning_survives_the_engines_ambient_ignore_filter(monkeypa
     anywhere" in the shipped product. `backends.warn_degradation` tightens the
     filter only inside its own ``catch_warnings`` to escape that, and de-dupes by
     message so a per-model-per-stem run says it once rather than eight times.
-
-    (The exception text below is unique in this file on purpose: the de-dupe keys
-    on the message, so a repeated message would correctly warn nobody twice.)
     """
-    probe = _real_probe_with_fake_scan(monkeypatch, "win32", FileNotFoundError(2, "powershell not on PATH"))
+    message = "probe text unique to this test"
 
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore")
         with pytest.warns(RuntimeWarning) as record:
-            assert probe() is False
-        assert "powershell not on PATH" in str(record[0].message)
+            backends.warn_degradation(message)
+        assert message in str(record[0].message)
 
         with warnings.catch_warnings(record=True) as again:
             warnings.simplefilter("always")
-            assert probe() is False
+            backends.warn_degradation(message)
         assert again == [], [str(w.message) for w in again]
-
-
-def test_vendor_probe_answers_a_working_scan_without_warning(monkeypatch):
-    """Non-vacuous control: the probe really does shell out and read the vendor id."""
-    calls = []
-    probe = _real_probe_with_fake_scan(
-        monkeypatch, "win32",
-        types.SimpleNamespace(returncode=0, stdout="PCI\\VEN_1002&DEV_744C\n", stderr=""),
-        calls=calls)
-
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        assert probe() is True
-
-    assert len(calls) == 1, "the probe must issue exactly one scan"
-    assert [str(w.message) for w in caught] == [], [str(w.message) for w in caught]
-
-
-def test_vendor_probe_is_gated_on_windows_instead_of_discovering_it_by_exception(monkeypatch):
-    """`sys.platform` says the WMI scan cannot run here, so it is not attempted --
-    and no warning is raised, because off Windows there is no DirectML to lose."""
-    probe = _real_probe_with_fake_scan(monkeypatch, "darwin", AssertionError("must not shell out"))
-
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        assert probe() is False
-
-    assert [str(w.message) for w in caught] == [], [str(w.message) for w in caught]
 
 
 # --------------------------------------------------------------------------- #
@@ -295,7 +192,6 @@ def test_force_cuda_keeps_the_cuda_claim_when_no_gpu_is_available(monkeypatch):
     """
     monkeypatch.setattr(backends, "_hip_version", lambda: None)
     monkeypatch.setattr(backends, "_cuda_available", lambda: False)
-    monkeypatch.setattr(backends, "_is_amd_device", lambda: False)
     b = backends.resolve(force="cuda")
     assert b.name == "cuda"
     assert b.torch_device == "cuda"

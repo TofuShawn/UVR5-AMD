@@ -334,6 +334,39 @@ def test_the_controls_are_read_only_at_build_and_live_afterwards(qapp, tmp_path,
         ctrl.settings.gpu_conversion
 
 
+def test_picking_a_gpu_in_the_device_box_turns_the_gpu_switch_on(qapp, tmp_path,
+                                                                monkeypatch):
+    """One decision, two controls -- and before this they disagreed silently.
+
+    Picking DirectML used to leave the switch off, so the plan carried
+    `is_gpu_conversion=-1`, `separate.py` kept CPU providers, and the run ignored the
+    pick while the truth strip said CPU: the user blamed the machine for a UI state.
+    The reverse matters too -- choosing CPU has to turn the switch off, or the same
+    lie runs the other way -- and Auto is the third case: it must leave the user's
+    switch exactly as they set it.
+    """
+    ctrl = _ui_ctrl(qapp, tmp_path, monkeypatch)
+    page = ctrl.work_page
+    page.gpu_check.setChecked(False)
+
+    page.device_combo.setCurrentIndex(2)                  # DirectML
+    assert page.selected_force_device() == "dml"
+    assert page.gpu_check.isChecked() is True
+    assert "GPU" in page.truth_summary(), page.truth_summary()
+
+    page.device_combo.setCurrentIndex(1)                  # ROCm
+    assert page.selected_force_device() == "rocm"
+    assert page.gpu_check.isChecked() is True
+
+    page.device_combo.setCurrentIndex(3)                  # CPU
+    assert page.selected_force_device() == "cpu"
+    assert page.gpu_check.isChecked() is False
+
+    page.device_combo.setCurrentIndex(0)                  # Auto: switch untouched
+    assert page.selected_force_device() is None
+    assert page.gpu_check.isChecked() is False
+
+
 def test_a_settings_save_republishes_the_two_choices_the_work_page_shows(qapp, tmp_path,
                                                                       monkeypatch):
     """The work page now *displays* two `Settings` fields, so a save that came through the
