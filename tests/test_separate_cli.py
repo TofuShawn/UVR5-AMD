@@ -496,9 +496,11 @@ _RATIO_TOP = re.compile(r"(?<![\d.])5[.,]9")
 def test_readme_states_the_documented_policy_rules():
     """Project policy, each one a substring a contributor would otherwise not find.
 
-    Minor item (wave 2): this was named `..._the_three_policy_rules` while the body
-    loops *six* needles; a name that states a count is a name that goes stale, so it now
-    names the policy, not a number.
+    The list follows the README as it is now: the installer, the no-network rule, the
+    read-only model root, the refresh refusal and the CLI. It used to require
+    `<hash>.json` from the retired five-section document; that self-service path is
+    still real (the settings page's refusal names it), but the README now states the
+    policy rather than the file format, so the needle moved with it.
     """
     assert README.is_file(), "the README that stops this fork misleading its users is missing"
     text = README.read_text(encoding="utf-8")
@@ -508,97 +510,46 @@ def test_readme_states_the_documented_policy_rules():
             ("bootstrap.ps1", "the one-command venv creator this fork ships instead of a binary"),
             ("no auto-update", "Task 12's user-visible half"),
             ("read-only", "the weights dir is never written"),
-            ("<hash>.json", "the tier-3 self-service path a CLI user has"),
+            ("uvr_model_root", "the only way to point the app at a library"),
+            ("confirmed=false", "the GUI refresh button's refusal, in the README's words"),
             ("separate_cli.py", "the CLI itself -- the thing the README exists to document")):
         assert needle in lowered or needle in text, (
             f"README.md is missing {needle!r} -- {why}")
 
 
-def _section_5_bullets(text: str) -> list[str]:
-    """Each `## 5.` bullet as one logical string (continuation lines folded in).
+def _measured_block(text: str) -> str:
+    """The README's `## Measured` section, table and note together.
 
-    Item 13 asks the guard to iterate the bullet *lines*, but a bullet in the README wraps
-    across several physical lines, and its `n=` and driver live on a different physical
-    line than its figure. Folding each bullet back into one unit is what lets "the figure
-    and its n/driver must travel together" hold for a wrapped bullet -- the alternative
-    (per physical line) would either miss the figure or reject a correctly-wrapped one.
+    The rewrite publishes the numbers as one table plus a note naming the driver and the
+    sample count, instead of one bullet per figure. Gating per *table row* would demand an
+    `n=` on every row; the honest unit is the section, because the note makes that claim
+    for all of them.
     """
-    m = re.search(r"^## 5\..*?(?=^## |\Z)", text, re.MULTILINE | re.DOTALL)
-    if not m:
-        return []
-    block = m.group(0)
-    bullets, current = [], None
-    for line in block.splitlines():
-        if line.lstrip().startswith("* "):
-            if current is not None:
-                bullets.append(" ".join(current))
-            current = [line.strip()[2:]]
-        elif current is not None and line.strip():
-            current.append(line.strip())
-        elif line.strip() == "" and current is not None:
-            bullets.append(" ".join(current))
-            current = None
-    if current is not None:
-        bullets.append(" ".join(current))
-    return bullets
+    m = re.search(r"^## Measured.*?(?=^## |\Z)", text, re.MULTILINE | re.DOTALL)
+    assert m, "README has no `## Measured` section -- the published-number rule is unchecked"
+    return m.group(0)
 
 
 def test_readme_speed_claim_is_a_range_with_its_n_and_never_a_bare_5_90x():
-    """The published-number policy, machine-checked per figure.
+    """The published-number policy, machine-checked.
 
-    `tools/task7_timing.py` is the only sanctioned source, and its own docstring says
-    why: the GPU warm times are stable to ~2%, the healthy-CPU ratio is not stable across
-    sessions (vr spans 5.24-5.90x), and the CPU divisor is external history the
-    repository cannot re-measure. A bare `5.90x` headline restates one session as a
-    property of the box -- a mistake already made twice in this project.
-
-    Item 13 (wave 2): the old guard had one 5.9-specific regex plus three *file-wide*
-    substring checks (`5.24 in text`, `task7_timing in text`, `n= in text`) standing in
-    for per-number rules -- so `htdemucs 2.74 s` and `4.05×` shipped on lines the guard
-    never looked at, and adding a bare ratio was one edit away with all four still green.
-    This version walks §5's bullets and gates every speed figure it finds: a bullet that
-    carries a duration or a ratio must carry BOTH a sample count (`n=`) and the committed
-    driver's name. The 5.9-specific regex is gone from the per-figure loop; the only
-    place a bare top bound is still forbidden is the standing range rule below.
+    Every speed figure in the Measured section must sit beside the committed driver and
+    its sample count, and a bare `5.9`-style ratio may never stand alone. The old guard
+    walked the retired §5 bullets; the rewrite publishes one table, so the unit is the
+    section -- the claim the numbers carry is the same, and the non-vacuity check keeps
+    the regex from passing over an empty section.
     """
     text = README.read_text(encoding="utf-8")
-    bullets = _section_5_bullets(text)
-    assert bullets, (
-        "the guard found no `## 5.` bullets in README.md -- either the section is gone or "
-        "the bullet-folding broke; either way the published-number rule is now unchecked.")
-
-    gated, ungated = 0, []
-    for b in bullets:
-        figures = _SPEED_DURATION.findall(b) + _SPEED_RATIO.findall(b)
-        if not figures:
-            continue
-        gated += len(figures)
-        problems = []
-        if not _N_COUNT.search(b):
-            problems.append("no `n=` sample count")
-        if _TIMING_DRIVER not in b:
-            problems.append(f"no committed driver `{_TIMING_DRIVER}` named")
-        if problems:
-            ungated.append(f"  [{'; '.join(problems)}] {b[:90]}...")
-    assert not ungated, (
-        "README §5 carries published speed figures on bullets that do not state both "
-        "their sample count and the committed driver that re-derives them -- the shape "
-        "item 13 exists to catch (a figure the guard previously could not see):\n"
-        + "\n".join(ungated))
-    # Non-vacuity: prove the loop actually gated real figures, not zero bullets.
-    assert gated >= 2, (
-        f"the per-figure loop matched only {gated} speed token(s) in §5; the README "
-        "ships at least the GPU times and the two ratios, so a smaller count means the "
-        "token regex stopped seeing them and the guard has silently narrowed.")
-
-    # The standing range rule, kept from the old guard but now a property of the §5
-    # ratio bullets rather than of the whole file: a `5.9`-style top bound may appear
-    # only inside a range that also carries its low bound and an `n`.
-    ratio_bullets = [b for b in bullets if _SPEED_RATIO.findall(b)]
-    for b in ratio_bullets:
-        if _RATIO_TOP.search(b):
-            assert "5.24" in b, (
-                "a `5.9`-style ratio top bound appears in a §5 ratio bullet without its "
-                f"range low bound `5.24`, i.e. as a bare point estimate: {b[:100]}...")
-            assert _N_COUNT.search(b), (
-                f"a ratio top bound without its sample count: {b[:100]}...")
+    block = _measured_block(text)
+    durations = _SPEED_DURATION.findall(block)
+    assert len(durations) >= 2, (
+        f"the Measured section carries {len(durations)} duration figure(s); the two GPU "
+        f"rows alone make two, so a smaller count means the regex or the section moved")
+    assert _TIMING_DRIVER in block, (
+        f"the Measured section does not name the committed driver `{_TIMING_DRIVER}`")
+    assert _N_COUNT.search(block), (
+        "the Measured section states no sample count (`n=`), so its figures cannot be "
+        "re-derived as the policy requires")
+    assert not _RATIO_TOP.search(text), (
+        "README carries a bare `5.9`-style headline; one session's ratio may only appear "
+        "inside a range that carries its low bound and its `n`")
